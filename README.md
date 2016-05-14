@@ -21,7 +21,7 @@ A JSON config file looks like this:
 
 	{
 	  "mongo-url": "mongodb://someuser:password@localhost:40001",
-	  "elasticsearch-url": "http://someuser:password@localhost:9200"
+	  "elasticsearch-url": "http://someuser:password@localhost:9200",
 	  "elasticsearch-max-conns": 10
 	}
 
