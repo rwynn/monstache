@@ -1,5 +1,5 @@
 # monstache
-a go daemon which synchs mongodb to elasticsearch
+a go daemon which synchs mongodb to elasticsearch in near realtime
 
 <img src="https://raw.github.com/rwynn/monstache/master/images/monstache.png"/>
 
@@ -7,25 +7,74 @@ a go daemon which synchs mongodb to elasticsearch
 
 	go get github.com/rwynn/monstache
 
+### Getting Started ###
+
+Since monstache uses the mongodb oplog to tail events it is required that mongodb is cofigured to produce an oplog.
+
+This can be ensured by:
++ Setting up [replica sets](http://docs.mongodb.org/manual/tutorial/deploy-replica-set/)
++ Passing --master to the mongod process
++ Setting the following in /etc/mongod.conf
+
+	master = true
+
+monstache is not bi-directional.  It only synchs from mongodb to elasticsearch.
+
 ### Usage ###
 
-monstache -f PATH-TO-JSON -mongo-url URL -elasticsearch-url URL -elasticsearch-max-conns CONNS 
+monstache \[-f PATH-TO-JSON\] \[options\]
 
 All command line arguments are optional.  With no arguments monstache expects to connect to mongodb and
-elasticsearch on localhost using the default ports.  The maximum connection for elasticsearch will be set
-by default to 10.
+elasticsearch on localhost using the default ports. 
 
-If the -f option is supplied the argument value should correspond to the file path of a JSON config file.
+If the -f option is supplied the argument value should be the file path of a TOML config file.
 
-A JSON config file looks like this:
+A sample TOML config file looks like this:
 
-	{
-	  "mongo-url": "mongodb://someuser:password@localhost:40001",
-	  "elasticsearch-url": "http://someuser:password@localhost:9200",
-	  "elasticsearch-max-conns": 10
-	}
+	mongo-url = "mongodb://someuser:password@localhost:40001"
+	elasticsearch-url = "http://someuser:password@localhost:9200"
+	elasticsearch-max-conns = 10
+	replay = false
+	resume = true
+	resume-name = "default"
+	namespace-regex = "^mydb.mycollection$"
+	gtm-channel-size = 200
+	
+
+All options in the config file above also work if passed explicity by the same name to the monstache command
 
 Arguments supplied on the command line override settings in a config file
+
+The following defaults are used for missing config values:
+
+	mongo-url -> localhost
+	elasticsearch-url -> localhost
+	elasticsearch-max-conns -> 10
+	replay -> false
+	resume -> false
+	resume-name -> default
+	namespace-regex -> nil
+	gtm-channel-size -> 100
+
+When `resume` is true, monstache writes the timestamp of mongodb operations it has succefully synched to elasticsearch
+to the collection monstache.monstache.  It also reads this value from that collection when it starts in order to replay
+events which it might have missed because monstache was stopped. monstache uses the value of resume-name as a key when
+storing and retrieving timestamps.  If resume is true but resume-name is not supplied this key defaults to 'default'.
+
+When `replay` is true, monstache replays all events from the beginning of the mongodb oplog and synchs them to elasticsearch.
+
+When `resume` and `replay` are both true, monstache replays all events from the beginning of the mongodb oplog and synchs them
+to elasticsearch and also writes the timestamp of processed event to monstache.monstache. 
+
+When neither `resume` nor `replay` are true, monstache reads the last timestamp in the oplog and starts listening for events
+occurring after this timestamp.  Timestamps are not written to monstache.monstache.  This is the default behavior. 
+
+When `namespace-regex` is supplied this regex is tested against the namespace (<database>.<collection>) of the event. If
+the regex matches monstache propogates the event to elasticsearch, otherwise it drops the event. By default monstache
+processes events in all database and all collections with the exception of the reserverd database `monstache`.
+
+When `gtm-channel-size` is supplied it controls the size of the go channels created for processing events.  When many events
+are processed at once a larger channel size may prevent blocking in gtm.
 
 ### Config Syntax ###
 
@@ -40,11 +89,3 @@ When indexing documents from mongodb into elasticsearch the mapping is as follow
 	mongodb database -> elasticsearch index
 	mongodb collection -> elasticsearch type
 	mongodb document id -> elasticsearch document id
-
-### Planned Enhancments ###
-
-Provide control over resuming from the last recorded change in mongodb. Currently, if monstache is stopped
-and restarted, any changes between the stop and start will not be queued for elasticsearch.  
-
-Provide options to catchup from previous events.  Currently, when monstache starts it finds the last 
-operation in the log and starts tailing and processing events after that event.
