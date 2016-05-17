@@ -69,7 +69,7 @@ to elasticsearch and also writes the timestamp of processed event to monstache.m
 When neither `resume` nor `replay` are true, monstache reads the last timestamp in the oplog and starts listening for events
 occurring after this timestamp.  Timestamps are not written to monstache.monstache.  This is the default behavior. 
 
-When `namespace-regex` is supplied this regex is tested against the namespace (<database>.<collection>) of the event. If
+When `namespace-regex` is supplied this regex is tested against the namespace, `database.collection`, of the event. If
 the regex matches monstache propogates the event to elasticsearch, otherwise it drops the event. By default monstache
 processes events in all database and all collections with the exception of the reserverd database `monstache`.
 
