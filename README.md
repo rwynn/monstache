@@ -72,14 +72,14 @@ When neither `resume` nor `replay` are true, monstache reads the last timestamp 
 occurring after this timestamp.  Timestamps are not written to `monstache.monstache`.  This is the default behavior. 
 
 When `namespace-regex` is supplied this regex is tested against the namespace, `database.collection`, of the event. If
-the regex matches continues processing event filters, otherwise it drops the event. By default monstache
-processes events in all database and all collections with the exception of the reserved database `monstache`, any
-collections suffixed with `.chunks` and the system collections.
+the regex matches monstache continues processing event filters, otherwise it drops the event. By default monstache
+processes events in all databases and all collections with the exception of the reserved database `monstache`, any
+collections suffixed with `.chunks`, and the system collections.
 
 When `namespace-exclude-regex` is supplied this regex is tested against the namespace, `database.collection`, of the event. If
 the regex matches monstache ignores the event, otherwise it continues processing event filters. By default monstache
-processes events in all database and all collections with the exception of the reserved database `monstache`, any
-collections suffixed with `.chunks` and the system collections.
+processes events in all databases and all collections with the exception of the reserved database `monstache`, any
+collections suffixed with `.chunks`, and the system collections.
 
 When `gtm-channel-size` is supplied it controls the size of the go channels created for processing events.  When many events
 are processed at once a larger channel size may prevent blocking in gtm.
