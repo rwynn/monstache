@@ -132,6 +132,9 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		if configuration.NsRegex == "" {
 			configuration.NsRegex = tomlConfig.NsRegex
 		}
+		if configuration.NsExcludeRegex == "" {
+			configuration.NsExcludeRegex = tomlConfig.NsExcludeRegex
+		}
 	}
 	return configuration
 }
