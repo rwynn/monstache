@@ -38,6 +38,7 @@ A sample TOML config file looks like this:
 	resume = true
 	resume-name = "default"
 	namespace-regex = "^mydb.mycollection$"
+	namespace-exclude-regex = "^mydb.ignorecollection$"
 	gtm-channel-size = 200
 	
 
@@ -54,24 +55,31 @@ The following defaults are used for missing config values:
 	resume -> false
 	resume-name -> default
 	namespace-regex -> nil
+	namespace-exclude-regex -> nil
 	gtm-channel-size -> 100
 
 When `resume` is true, monstache writes the timestamp of mongodb operations it has succefully synched to elasticsearch
-to the collection monstache.monstache.  It also reads this value from that collection when it starts in order to replay
-events which it might have missed because monstache was stopped. monstache uses the value of resume-name as a key when
-storing and retrieving timestamps.  If resume is true but resume-name is not supplied this key defaults to 'default'.
+to the collection `monstache.monstache`.  It also reads this value from that collection when it starts in order to replay
+events which it might have missed because monstache was stopped. monstache uses the value of `resume-name` as a key when
+storing and retrieving timestamps.  If resume is true but `resume-name` is not supplied this key defaults to `default`.
 
 When `replay` is true, monstache replays all events from the beginning of the mongodb oplog and synchs them to elasticsearch.
 
 When `resume` and `replay` are both true, monstache replays all events from the beginning of the mongodb oplog and synchs them
-to elasticsearch and also writes the timestamp of processed event to monstache.monstache. 
+to elasticsearch and also writes the timestamp of processed event to `monstache.monstache`. 
 
 When neither `resume` nor `replay` are true, monstache reads the last timestamp in the oplog and starts listening for events
-occurring after this timestamp.  Timestamps are not written to monstache.monstache.  This is the default behavior. 
+occurring after this timestamp.  Timestamps are not written to `monstache.monstache`.  This is the default behavior. 
 
 When `namespace-regex` is supplied this regex is tested against the namespace, `database.collection`, of the event. If
-the regex matches monstache propogates the event to elasticsearch, otherwise it drops the event. By default monstache
-processes events in all database and all collections with the exception of the reserverd database `monstache`.
+the regex matches continues processing event filters, otherwise it drops the event. By default monstache
+processes events in all database and all collections with the exception of the reserved database `monstache`, any
+collections suffixed with `.chunks` and the system collections.
+
+When `namespace-exclude-regex` is supplied this regex is tested against the namespace, `database.collection`, of the event. If
+the regex matches monstache ignores the event, otherwise it continues processing event filters. By default monstache
+processes events in all database and all collections with the exception of the reserved database `monstache`, any
+collections suffixed with `.chunks` and the system collections.
 
 When `gtm-channel-size` is supplied it controls the size of the go channels created for processing events.  When many events
 are processed at once a larger channel size may prevent blocking in gtm.

@@ -14,6 +14,8 @@ import (
 	"syscall"
 )
 
+var chunksRegex = regexp.MustCompile("\\.chunks$")
+var systemsRegex = regexp.MustCompile("system\\..+$")
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -23,7 +25,8 @@ type configOptions struct {
 	MongoUrl        string `toml:"mongo-url"`
 	ElasticUrl      string `toml:"elasticsearch-url"`
 	ResumeName      string `toml:"resume-name"`
-	NamespaceRegex  string `toml:"namespace-regex"`
+	NsRegex		string `toml:"namespace-regex"`
+	NsExcludeRegex  string `toml:"namespace-exclude-regex"`
 	Resume          bool
 	Replay          bool
 	ElasticMaxConns int `toml:"elasticsearch-max-conns"`
@@ -54,10 +57,25 @@ func NotMonstache(op *gtm.Op) bool {
 	return op.GetDatabase() != "monstache"
 }
 
+func NotChunks(op *gtm.Op) bool {
+	return !chunksRegex.MatchString(op.GetCollection())
+}
+
+func NotSystem(op *gtm.Op) bool {
+	return !systemsRegex.MatchString(op.GetCollection())
+}
+
 func FilterWithRegex(regex string) gtm.OpFilter {
+	var validNameSpace = regexp.MustCompile(regex)
 	return func(op *gtm.Op) bool {
-		var validNameSpace = regexp.MustCompile(regex)
 		return validNameSpace.MatchString(op.Namespace)
+	}
+}
+
+func FilterInverseWithRegex(regex string) gtm.OpFilter {
+	var invalidNameSpace = regexp.MustCompile(regex)
+	return func(op *gtm.Op) bool {
+		return !invalidNameSpace.MatchString(op.Namespace)
 	}
 }
 
@@ -78,7 +96,8 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.BoolVar(&configuration.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
 	flag.BoolVar(&configuration.Replay, "replay", false, "True to replay all events from the oplog and index them in elasticsearch")
 	flag.StringVar(&configuration.ResumeName, "resume-name", "", "Name under which to load/store the resume state. Defaults to 'default'")
-	flag.StringVar(&configuration.NamespaceRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
+	flag.StringVar(&configuration.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
+	flag.StringVar(&configuration.NsRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
 	flag.Parse()
 	return configuration
 }
@@ -110,8 +129,8 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		if configuration.Resume && configuration.ResumeName == "" {
 			configuration.ResumeName = tomlConfig.ResumeName
 		}
-		if configuration.NamespaceRegex == "" {
-			configuration.NamespaceRegex = tomlConfig.NamespaceRegex
+		if configuration.NsRegex == "" {
+			configuration.NsRegex = tomlConfig.NsRegex
 		}
 	}
 	return configuration
@@ -162,6 +181,7 @@ func main() {
 	go func(mongo *mgo.Session, indexer *elastigo.BulkIndexer) {
 		<-sigs
 		mongo.Close()
+		indexer.Flush()
 		indexer.Stop()
 		done <- true
 	}(mongo, indexer)
@@ -189,11 +209,14 @@ func main() {
 	}
 
 	var filter gtm.OpFilter = nil
-	if configuration.NamespaceRegex != "" {
-		filter = gtm.ChainOpFilters(NotMonstache, FilterWithRegex(configuration.NamespaceRegex))
-	} else {
-		filter = NotMonstache
+	filterChain := []gtm.OpFilter{ NotMonstache, NotSystem, NotChunks }
+	if configuration.NsRegex != "" {
+		filterChain = append(filterChain, FilterWithRegex(configuration.NsRegex))
 	}
+	if configuration.NsExcludeRegex != "" {
+		filterChain = append(filterChain, FilterInverseWithRegex(configuration.NsExcludeRegex))
+	}
+	filter = gtm.ChainOpFilters(filterChain...)
 
 	ops, errs := gtm.Tail(mongo, &gtm.Options{
 		After:  after,
