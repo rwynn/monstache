@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/BurntSushi/toml"
 	elastigo "github.com/mattbaird/elastigo/lib"
 	"github.com/rwynn/gtm"
+	"github.com/robertkrimen/otto"
+	_ "github.com/robertkrimen/otto/underscore"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"os"
@@ -13,13 +16,23 @@ import (
 	"regexp"
 	"syscall"
 )
-
+var mapEnvs map[string]*executionEnv
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
 const gtmChannelSizeDefault int = 100
+
+type executionEnv struct {
+	Vm *otto.Otto
+	Script string
+}
+
+type javascript struct {
+	Namespace string
+	Script string
+}
 
 type configOptions struct {
 	MongoUrl        string `toml:"mongo-url"`
@@ -32,6 +45,7 @@ type configOptions struct {
 	ElasticMaxConns int `toml:"elasticsearch-max-conns"`
 	ChannelSize	int `toml:"gtm-channel-size"`
 	ConfigFile      string
+	Script		[]javascript
 }
 
 func OpIdToString(op *gtm.Op) string {
@@ -43,6 +57,27 @@ func OpIdToString(op *gtm.Op) string {
 		opIdStr = fmt.Sprintf("%v", op.Id)
 	}
 	return opIdStr
+}
+
+func MapData(op *gtm.Op) error {
+	if mapEnvs == nil {
+		return nil
+	}
+	if env := mapEnvs[op.Namespace]; env != nil {
+		val, err := env.Vm.Call("module.exports", op.Data, op.Data)
+		if err != nil {
+			return err
+		} else if (!val.IsObject()) {
+			return errors.New("exported function must return an object")
+		}
+		data, err := val.Export()
+		if err != nil {
+			return err
+		} else {
+			op.Data = data.(map[string]interface{})
+		}
+	}
+	return nil
 }
 
 func PrepareDataForIndexing(data map[string]interface{}) {
@@ -102,6 +137,34 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	return configuration
 }
 
+func (configuration *configOptions) LoadScripts() {
+	if configuration.Script != nil {
+		mapEnvs = make(map[string]*executionEnv)
+		for _, s := range configuration.Script {
+			if s.Namespace != "" && s.Script != "" {
+				env := &executionEnv{
+					Vm: otto.New(),
+					Script: s.Script,
+				}
+				if err := env.Vm.Set("module", make(map[string]interface{})); err != nil {
+					panic(err)
+				}
+				if _, err := env.Vm.Run(env.Script); err != nil {
+					panic(err)
+				}
+				val, err := env.Vm.Run("module.exports")
+				if err != nil {
+					panic(err)
+				} else if !val.IsFunction() {
+					panic("module.exports must be a function")
+
+				}
+				mapEnvs[s.Namespace] = env
+			}
+		}
+	}
+}
+
 func (configuration *configOptions) LoadConfigFile() *configOptions {
 	if configuration.ConfigFile != "" {
 		var tomlConfig configOptions
@@ -135,6 +198,7 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		if configuration.NsExcludeRegex == "" {
 			configuration.NsExcludeRegex = tomlConfig.NsExcludeRegex
 		}
+		tomlConfig.LoadScripts()
 	}
 	return configuration
 }
@@ -235,18 +299,26 @@ func main() {
 			exitStatus = 1
 			fmt.Println(err)
 		case op := <-ops:
+			indexed := false
 			objectId := OpIdToString(op)
 			if op.IsDelete() {
 				indexer.Delete(op.GetDatabase(), op.GetCollection(), objectId)
+				indexed = true
 			} else {
 				PrepareDataForIndexing(op.Data)
-				indexer.Index(op.GetDatabase(), op.GetCollection(), objectId, "", "", nil, op.Data)
+				if err := MapData(op); err == nil {
+					if err := indexer.Index(op.GetDatabase(), op.GetCollection(), objectId, "", "", nil, op.Data); err == nil {
+						indexed = true
+					} else {
+						errs <- err
+					}
+				} else {
+					errs <- err
+				}
 			}
-			if configuration.Resume {
-				err := SaveTimestamp(mongo, op, configuration.ResumeName)
-				if err != nil {
-					exitStatus = 1
-					fmt.Println(err)
+			if configuration.Resume && indexed {
+				if err := SaveTimestamp(mongo, op, configuration.ResumeName); err != nil {
+					errs <- err
 				}
 			}
 		}

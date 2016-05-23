@@ -97,3 +97,47 @@ When indexing documents from mongodb into elasticsearch the mapping is as follow
 	mongodb database -> elasticsearch index
 	mongodb collection -> elasticsearch type
 	mongodb document id -> elasticsearch document id
+
+### Field Mapping ###
+
+monstache uses the amazing [otto](https://github.com/robertkrimen/otto) library to provide transformation at the document field
+level in javascript.  You can associate one javascript mapping function per mongodb collection.  These javascript functions are
+added to your TOML config file, for example:
+	
+	[[script]]
+	namespace = "mydb.mycollection"
+	script = """
+	var counter = 1;
+	module.exports = function(doc) {
+		doc.foo += "test" + counter;
+		counter++;
+		return _.omit(doc, "password", "secret");
+	}
+	"""
+
+	[[script]]
+	namespace = "anotherdb.anothercollection"
+	script = """
+	var counter = 1;
+	module.exports = function(doc) {
+		doc.foo += "test2" + counter;
+		counter++;
+		return doc;
+	}
+	"""
+
+The example TOML above configures 2 scripts. The first is applied to `mycollection` in `mydb` while the second is applied
+to `anothercollection` in `anotherdb`.
+
+You will notice that the multi-line string feature of TOML is used to assign a javascript snippet to the variable named
+`script`.  The javascript assigned to script must assign a function to the exports property of the `module` object.  This 
+function will be passed the document from mongodb just before it is indexed in elasticsearch.  Inside the function you can
+manipulate the document to drop fields, add fields, or augment the existing fields.  The only requirement is that you
+return an object.  The object returned from the mapping function is what actually gets indexed in elasticsearch. The `this`
+reference in the mapping function is also assigned to the document from mongodb.  
+
+You may have noticed that in the example above the exported mapping function closes over a var named `counter`.  You can
+use closures to maintain state between invocations of you mapping function.
+
+Finally, since Otto makes it so easy, the venerable [Underscore](http://underscorejs.org/) library is included for you at 
+no extra charge.  Feel free to abuse the power of the `_`.  
