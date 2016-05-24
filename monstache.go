@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,14 +13,20 @@ import (
 	_ "github.com/robertkrimen/otto/underscore"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
+	"io/ioutil"
+	"net"
 	"os"
 	"os/signal"
 	"regexp"
 	"syscall"
 )
+
 var mapEnvs map[string]*executionEnv
+var mapIndexTypes map[string]*indexTypeMapping
+
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
+
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -34,8 +42,15 @@ type javascript struct {
 	Script string
 }
 
+type indexTypeMapping struct {
+	Namespace string
+	Index string
+	Type string
+}
+
 type configOptions struct {
 	MongoUrl        string `toml:"mongo-url"`
+	MongoPemFile	string `toml:"mongo-pem-file"`
 	ElasticUrl      string `toml:"elasticsearch-url"`
 	ResumeName      string `toml:"resume-name"`
 	NsRegex		string `toml:"namespace-regex"`
@@ -46,6 +61,25 @@ type configOptions struct {
 	ChannelSize	int `toml:"gtm-channel-size"`
 	ConfigFile      string
 	Script		[]javascript
+	Mapping		[]indexTypeMapping
+}
+
+func DefaultIndexTypeMapping(op *gtm.Op) *indexTypeMapping {
+	return &indexTypeMapping{
+		Namespace: op.Namespace,
+		Index: op.GetDatabase(),
+		Type: op.GetCollection(),
+	}
+}
+
+func IndexTypeMapping(op *gtm.Op) *indexTypeMapping {
+	mapping := DefaultIndexTypeMapping(op)
+	if mapIndexTypes != nil {
+		if m := mapIndexTypes[op.Namespace]; m != nil {
+			mapping = m;
+		}
+	}
+	return mapping
 }
 
 func OpIdToString(op *gtm.Op) string {
@@ -124,6 +158,7 @@ func SaveTimestamp(session *mgo.Session, op *gtm.Op, resumeName string) error {
 
 func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&configuration.MongoUrl, "mongo-url", "", "MongoDB connection URL")
+	flag.StringVar(&configuration.MongoPemFile, "mongo-pem-file", "", "Path to a PEM file for secure connections to MongoDB")
 	flag.StringVar(&configuration.ElasticUrl, "elasticsearch-url", "", "ElasticSearch connection URL")
 	flag.IntVar(&configuration.ElasticMaxConns, "elasticsearch-max-conns", 0, "ElasticSearch max connections")
 	flag.IntVar(&configuration.ChannelSize, "gtm-channel-size", 0, "Size of gtm channels")
@@ -135,6 +170,23 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&configuration.NsRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
 	flag.Parse()
 	return configuration
+}
+
+func (configuration *configOptions) LoadIndexTypes() {
+	if configuration.Mapping != nil {
+		mapIndexTypes = make(map[string]*indexTypeMapping)
+		for _, m := range configuration.Mapping {
+			if m.Namespace != "" && m.Index != "" && m.Type != "" {
+				mapIndexTypes[m.Namespace] = &indexTypeMapping{
+					Namespace: m.Namespace,
+					Index: m.Index,
+					Type: m.Type,
+				}
+			} else {
+				panic("mappings must specify namespace, index, and type attributes")
+			}
+		}
+	}
 }
 
 func (configuration *configOptions) LoadScripts() {
@@ -160,6 +212,8 @@ func (configuration *configOptions) LoadScripts() {
 
 				}
 				mapEnvs[s.Namespace] = env
+			} else {
+				panic("scripts must specify namespace and script attributes")
 			}
 		}
 	}
@@ -173,6 +227,9 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		}
 		if configuration.MongoUrl == "" {
 			configuration.MongoUrl = tomlConfig.MongoUrl
+		}
+		if configuration.MongoPemFile == "" {
+			configuration.MongoPemFile = tomlConfig.MongoPemFile
 		}
 		if configuration.ElasticUrl == "" {
 			configuration.ElasticUrl = tomlConfig.ElasticUrl
@@ -199,6 +256,7 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 			configuration.NsExcludeRegex = tomlConfig.NsExcludeRegex
 		}
 		tomlConfig.LoadScripts()
+		tomlConfig.LoadIndexTypes()
 	}
 	return configuration
 }
@@ -219,6 +277,29 @@ func (configuration *configOptions) SetDefaults() *configOptions {
 	return configuration
 }
 
+func (configuration *configOptions) DialMongo() (*mgo.Session, error) {
+	if configuration.MongoPemFile != "" {
+		certs := x509.NewCertPool()
+		if ca, err := ioutil.ReadFile(configuration.MongoPemFile); err == nil {
+			certs.AppendCertsFromPEM(ca)
+		} else {
+			return nil, err
+		}
+		tlsConfig := &tls.Config{ RootCAs: certs }
+		dialInfo, err := mgo.ParseURL(configuration.MongoUrl)
+		if err != nil {
+			return nil, err
+		} else {
+			dialInfo.DialServer = func(addr *mgo.ServerAddr) (net.Conn, error) {
+				return tls.Dial("tcp", addr.String(), tlsConfig)
+			}
+			return mgo.DialWithInfo(dialInfo)
+		}
+	} else {
+		return mgo.Dial(configuration.MongoUrl)
+	}
+}
+
 func main() {
 
 	sigs := make(chan os.Signal, 1)
@@ -228,7 +309,7 @@ func main() {
 	configuration := &configOptions{}
 	configuration.ParseCommandLineFlags().LoadConfigFile().SetDefaults()
 
-	mongo, err := mgo.Dial(configuration.MongoUrl)
+	mongo, err := configuration.DialMongo()
 	if err != nil {
 		fmt.Println(fmt.Sprintf("Unable to connect to mongodb using URL <%s>",
 			configuration.MongoUrl))
@@ -301,13 +382,14 @@ func main() {
 		case op := <-ops:
 			indexed := false
 			objectId := OpIdToString(op)
+			indexType := IndexTypeMapping(op)
 			if op.IsDelete() {
-				indexer.Delete(op.GetDatabase(), op.GetCollection(), objectId)
+				indexer.Delete(indexType.Index, indexType.Type, objectId)
 				indexed = true
 			} else {
 				PrepareDataForIndexing(op.Data)
 				if err := MapData(op); err == nil {
-					if err := indexer.Index(op.GetDatabase(), op.GetCollection(), objectId, "", "", nil, op.Data); err == nil {
+					if err := indexer.Index(indexType.Index, indexType.Type, objectId, "", "", nil, op.Data); err == nil {
 						indexed = true
 					} else {
 						errs <- err
