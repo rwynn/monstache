@@ -237,6 +237,6 @@ under the type `fs.files`.
 
 After a short time you should be able to query the contents of resume.docx in the users index in elasticsearch
 
-	curl -XGET 'http://localhost:9200/user/fs.files/_search?q=golang'
+	curl -XGET 'http://localhost:9200/users/fs.files/_search?q=golang'
 
 
