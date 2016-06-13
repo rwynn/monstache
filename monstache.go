@@ -1,28 +1,34 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
 	"github.com/BurntSushi/toml"
 	elastigo "github.com/mattbaird/elastigo/lib"
-	"github.com/rwynn/gtm"
 	"github.com/robertkrimen/otto"
 	_ "github.com/robertkrimen/otto/underscore"
+	"github.com/rwynn/gtm"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
+	"io"
 	"io/ioutil"
 	"net"
 	"os"
 	"os/signal"
 	"regexp"
+	"strings"
 	"syscall"
 )
 
 var mapEnvs map[string]*executionEnv
 var mapIndexTypes map[string]*indexTypeMapping
+var fileNamespaces map[string]bool
 
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
@@ -33,42 +39,70 @@ const elasticMaxConnsDefault int = 10
 const gtmChannelSizeDefault int = 100
 
 type executionEnv struct {
-	Vm *otto.Otto
+	Vm     *otto.Otto
 	Script string
 }
 
 type javascript struct {
 	Namespace string
-	Script string
+	Script    string
 }
 
 type indexTypeMapping struct {
 	Namespace string
-	Index string
-	Type string
+	Index     string
+	Type      string
 }
 
 type configOptions struct {
 	MongoUrl        string `toml:"mongo-url"`
-	MongoPemFile	string `toml:"mongo-pem-file"`
+	MongoPemFile    string `toml:"mongo-pem-file"`
 	ElasticUrl      string `toml:"elasticsearch-url"`
 	ResumeName      string `toml:"resume-name"`
-	NsRegex		string `toml:"namespace-regex"`
+	NsRegex         string `toml:"namespace-regex"`
 	NsExcludeRegex  string `toml:"namespace-exclude-regex"`
 	Resume          bool
 	Replay          bool
-	ElasticMaxConns int `toml:"elasticsearch-max-conns"`
-	ChannelSize	int `toml:"gtm-channel-size"`
+	IndexFiles      bool `toml:"index-files"`
+	ElasticMaxConns int  `toml:"elasticsearch-max-conns"`
+	ChannelSize     int  `toml:"gtm-channel-size"`
 	ConfigFile      string
-	Script		[]javascript
-	Mapping		[]indexTypeMapping
+	Script          []javascript
+	Mapping         []indexTypeMapping
+	FileNamespaces  []string `toml:"file-namespaces"`
+}
+
+func EnsureFileMapping(conn *elastigo.Conn, namespace string) (err error) {
+	parts := strings.SplitN(namespace, ".", 2)
+	esIndex, esType := parts[0], parts[1]
+	if m := mapIndexTypes[namespace]; m != nil {
+		esIndex, esType = m.Index, m.Type
+	}
+	if exists, _ := conn.ExistsIndex(esIndex, "", nil); exists {
+		_, err = conn.DoCommand("PUT", fmt.Sprintf("/%s/%s/_mapping", esIndex, esType), nil, fmt.Sprintf(`
+		{ "%s": {
+			"properties": {
+				"filecontent": { "type": "attachment" }
+			}}}
+		`, esType))
+	} else {
+		_, err = conn.DoCommand("PUT", fmt.Sprintf("/%s", esIndex), nil, fmt.Sprintf(`
+		{
+			"mappings": {
+				"%s": {
+					"properties": {
+						"filecontent": { "type": "attachment" }
+					}}}}
+		`, esType))
+	}
+	return err
 }
 
 func DefaultIndexTypeMapping(op *gtm.Op) *indexTypeMapping {
 	return &indexTypeMapping{
 		Namespace: op.Namespace,
-		Index: op.GetDatabase(),
-		Type: op.GetCollection(),
+		Index:     op.GetDatabase(),
+		Type:      op.GetCollection(),
 	}
 }
 
@@ -76,7 +110,7 @@ func IndexTypeMapping(op *gtm.Op) *indexTypeMapping {
 	mapping := DefaultIndexTypeMapping(op)
 	if mapIndexTypes != nil {
 		if m := mapIndexTypes[op.Namespace]; m != nil {
-			mapping = m;
+			mapping = m
 		}
 	}
 	return mapping
@@ -101,7 +135,7 @@ func MapData(op *gtm.Op) error {
 		val, err := env.Vm.Call("module.exports", op.Data, op.Data)
 		if err != nil {
 			return err
-		} else if (!val.IsObject()) {
+		} else if !val.IsObject() {
 			return errors.New("exported function must return an object")
 		}
 		data, err := val.Export()
@@ -120,6 +154,24 @@ func PrepareDataForIndexing(data map[string]interface{}) {
 	delete(data, "_index")
 	delete(data, "_score")
 	delete(data, "_source")
+}
+
+func AddFileContent(session *mgo.Session, op *gtm.Op) (err error) {
+	var buff bytes.Buffer
+	writer, db, bucket := bufio.NewWriter(&buff), session.DB(op.GetDatabase()), strings.SplitN(op.GetCollection(), ".", 2)[0]
+	file, err := db.GridFS(bucket).OpenId(op.Data["_id"])
+	if file != nil {
+		defer file.Close()
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(writer, file); err != nil {
+		return err
+	}
+	writer.Flush()
+	op.Data["filecontent"] = base64.StdEncoding.EncodeToString(buff.Bytes())
+	return err
 }
 
 func NotMonstache(op *gtm.Op) bool {
@@ -165,6 +217,7 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&configuration.ConfigFile, "f", "", "Location of configuration file")
 	flag.BoolVar(&configuration.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
 	flag.BoolVar(&configuration.Replay, "replay", false, "True to replay all events from the oplog and index them in elasticsearch")
+	flag.BoolVar(&configuration.IndexFiles, "index-files", false, "True to index gridfs files into elasticsearch. Requires the elasticsearch mapper-attachments (deprecated) or ingest-attachment plugin")
 	flag.StringVar(&configuration.ResumeName, "resume-name", "", "Name under which to load/store the resume state. Defaults to 'default'")
 	flag.StringVar(&configuration.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
 	flag.StringVar(&configuration.NsRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
@@ -179,8 +232,8 @@ func (configuration *configOptions) LoadIndexTypes() {
 			if m.Namespace != "" && m.Index != "" && m.Type != "" {
 				mapIndexTypes[m.Namespace] = &indexTypeMapping{
 					Namespace: m.Namespace,
-					Index: m.Index,
-					Type: m.Type,
+					Index:     m.Index,
+					Type:      m.Type,
 				}
 			} else {
 				panic("mappings must specify namespace, index, and type attributes")
@@ -195,7 +248,7 @@ func (configuration *configOptions) LoadScripts() {
 		for _, s := range configuration.Script {
 			if s.Namespace != "" && s.Script != "" {
 				env := &executionEnv{
-					Vm: otto.New(),
+					Vm:     otto.New(),
 					Script: s.Script,
 				}
 				if err := env.Vm.Set("module", make(map[string]interface{})); err != nil {
@@ -240,6 +293,9 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		if configuration.ChannelSize == 0 {
 			configuration.ChannelSize = tomlConfig.ChannelSize
 		}
+		if !configuration.IndexFiles && tomlConfig.IndexFiles {
+			configuration.IndexFiles = true
+		}
 		if !configuration.Replay && tomlConfig.Replay {
 			configuration.Replay = true
 		}
@@ -255,8 +311,20 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		if configuration.NsExcludeRegex == "" {
 			configuration.NsExcludeRegex = tomlConfig.NsExcludeRegex
 		}
+		if configuration.IndexFiles {
+			configuration.FileNamespaces = tomlConfig.FileNamespaces
+			tomlConfig.LoadGridFsConfig()
+		}
 		tomlConfig.LoadScripts()
 		tomlConfig.LoadIndexTypes()
+	}
+	return configuration
+}
+
+func (configuration *configOptions) LoadGridFsConfig() *configOptions {
+	fileNamespaces = make(map[string]bool)
+	for _, namespace := range configuration.FileNamespaces {
+		fileNamespaces[namespace] = true
 	}
 	return configuration
 }
@@ -285,7 +353,7 @@ func (configuration *configOptions) DialMongo() (*mgo.Session, error) {
 		} else {
 			return nil, err
 		}
-		tlsConfig := &tls.Config{ RootCAs: certs }
+		tlsConfig := &tls.Config{RootCAs: certs}
 		dialInfo, err := mgo.ParseURL(configuration.MongoUrl)
 		if err != nil {
 			return nil, err
@@ -356,8 +424,20 @@ func main() {
 		}
 	}
 
+	if configuration.IndexFiles {
+		if len(configuration.FileNamespaces) == 0 {
+			fmt.Println("Configuration error: file indexing is ON but no file namespaces are configured")
+			os.Exit(1)
+		}
+		for _, namespace := range configuration.FileNamespaces {
+			if err := EnsureFileMapping(elastic, namespace); err != nil {
+				panic(err)
+			}
+		}
+	}
+
 	var filter gtm.OpFilter = nil
-	filterChain := []gtm.OpFilter{ NotMonstache, NotSystem, NotChunks }
+	filterChain := []gtm.OpFilter{NotMonstache, NotSystem, NotChunks}
 	if configuration.NsRegex != "" {
 		filterChain = append(filterChain, FilterWithRegex(configuration.NsRegex))
 	}
@@ -367,8 +447,8 @@ func main() {
 	filter = gtm.ChainOpFilters(filterChain...)
 
 	ops, errs := gtm.Tail(mongo, &gtm.Options{
-		After:  after,
-		Filter: filter,
+		After:       after,
+		Filter:      filter,
 		ChannelSize: configuration.ChannelSize,
 	})
 	exitStatus := 0
@@ -380,13 +460,18 @@ func main() {
 			exitStatus = 1
 			fmt.Println(err)
 		case op := <-ops:
-			indexed := false
-			objectId := OpIdToString(op)
-			indexType := IndexTypeMapping(op)
+			indexed, objectId, indexType := false, OpIdToString(op), IndexTypeMapping(op)
 			if op.IsDelete() {
 				indexer.Delete(indexType.Index, indexType.Type, objectId)
 				indexed = true
-			} else {
+			} else if op.Data != nil {
+				if configuration.IndexFiles {
+					if fileNamespaces[op.Namespace] {
+						if err := AddFileContent(mongo, op); err != nil {
+							errs <- err
+						}
+					}
+				}
 				PrepareDataForIndexing(op.Data)
 				if err := MapData(op); err == nil {
 					if err := indexer.Index(indexType.Index, indexType.Type, objectId, "", "", nil, op.Data); err == nil {

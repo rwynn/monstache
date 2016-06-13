@@ -43,6 +43,7 @@ A sample TOML config file looks like this:
 	namespace-regex = "^mydb.mycollection$"
 	namespace-exclude-regex = "^mydb.ignorecollection$"
 	gtm-channel-size = 200
+	index-files = true
 	
 
 All options in the config file above also work if passed explicity by the same name to the monstache command
@@ -61,8 +62,9 @@ The following defaults are used for missing config values:
 	namespace-regex -> nil
 	namespace-exclude-regex -> nil
 	gtm-channel-size -> 100
+	index-files -> false
 
-When `resume` is true, monstache writes the timestamp of mongodb operations it has succefully synced to elasticsearch
+When `resume` is true, monstache writes the timestamp of mongodb operations it has successfully synced to elasticsearch
 to the collection `monstache.monstache`.  It also reads this value from that collection when it starts in order to replay
 events which it might have missed because monstache was stopped. monstache uses the value of `resume-name` as a key when
 storing and retrieving timestamps.  If `resume` is true but `resume-name` is not supplied this key defaults to `default`.
@@ -90,6 +92,13 @@ are processed at once a larger channel size may prevent blocking in gtm.
 
 When `mongo-pem-file` is supplied monstache will use the supplied file path to add a local certificate to x509 cert
 pool when connecting to mongodb. This should only be used when mongodb is configured with SSL enabled.
+
+When `index-files` is true monstache will index the raw content of files stored in GridFS into elasticsearch as an attachment type.
+By default `index-files` is false meaning that monstache will only index metadata associated with files stored in GridFS.
+In order for `index-files` to index the raw content of files stored in GridFS you must install a plugin for elasticsearch.
+For versions of elasticsearch prior to version 5, you should install the [mapper-attachments](https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/mapper-attachments.html) plugin.  In version 5 or greater
+of elasticsearch the mapper-attachment plugin is deprecated and you should install the [ingest-attachment](https://www.elastic.co/guide/en/elasticsearch/plugins/master/ingest-attachment.html) plugin instead.
+For further information on how to configure monstache to index content from grids, see the section [Indexing Gridfs Files](#files).
 
 ### Config Syntax ###
 
@@ -164,3 +173,70 @@ use closures to maintain state between invocations of your mapping function.
 
 Finally, since Otto makes it so easy, the venerable [Underscore](http://underscorejs.org/) library is included for you at 
 no extra charge.  Feel free to abuse the power of the `_`.  
+
+<a name="files"></a>
+### Indexing GridFS Files ###
+
+As of version 1.1 monstache supports indexing the raw content of files stored in GridFS into elasticsearch for full
+text search.  This feature requires that you install an elasticsearch plugin which enables the field type `attachment`.
+For versions of elasticsearch prior to version 5 you should install the 
+[mapper-attachments](https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/mapper-attachments.html) plugin.
+For version 5 or later of elasticsearch you should instead install the 
+[ingest-attachment](https://www.elastic.co/guide/en/elasticsearch/plugins/master/ingest-attachment.html) plugin.
+
+Once you have installed the appropriate plugin for elasticsearch, getting file content from GridFS into elasticsearch is
+as simple as configuring monstache.  You will want to enable the `index-files` option and also tell monstache the 
+namespace of all collections which will hold GridFS files. For example in your TOML config file,
+
+	index-files = true
+
+	file-namespaces = ["users.fs.files", "posts.fs.files"]
+
+The above configuration tells monstache that you wish to index the raw content of GridFS files in the `users` and `posts`
+mongodb databases. By default, mongodb uses a bucket named `fs`, so if you just use the defaults your collection name will
+be `fs.files`.  However, if you have customized the bucket name, then your file collection would be something like `mybucket.files`
+and the entire namespace would be `users.mybucket.files`.
+
+When you configure monstache this way it will perform an additional operation at startup to ensure the destination indexes in
+elasticsearch have a field named `filecontent` with a type mapping of `attachment`.  
+
+For the example TOML configuration above, monstache would initialize 2 indices in preparation for indexing into
+elasticsearch by issuing the following REST commands:
+
+	POST /users
+	{
+	  "mappings": {
+	    "fs.files": {
+	      "properties": {
+		"filecontent": { "type": "attachment" }
+	}}}}
+
+	POST /posts
+	{
+	  "mappings": {
+	    "fs.files": {
+	      "properties": {
+		"filecontent": { "type": "attachment" }
+	}}}}
+
+
+When a file is inserted into mongodb via GridFS, monstache will detect the new file, use the mongodb api to retrieve the raw
+content, and index a document into elasticsearch with the raw content stored in a `filecontent` field as a base64 
+encoded string. The elasticsearch plugin will then extract text content from the raw content using 
+[Apache Tika](https://tika.apache.org/)
+, tokenize the text content, and allow you to query on the content of the file.
+
+To test this feature of monstache you can simply use the [mongofiles](https://docs.mongodb.com/manual/reference/program/mongofiles/)
+command to quickly add a file to mongodb via GridFS.  Continuing the example above one could issue the following command to put a 
+file named `resume.docx` into GridFS and after a short time this file should be searchable in elasticsearch in the index `users`
+under the type `fs.files`.
+
+
+	mongofiles -d users put resume.docx
+
+
+After a short time you should be able to query the contents of resume.docx in the users index in elasticsearch
+
+	curl -XGET 'http://localhost:9200/user/fs.files/_search?q=golang'
+
+
