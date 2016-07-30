@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,11 +20,13 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var mapEnvs map[string]*executionEnv
@@ -55,21 +58,50 @@ type indexTypeMapping struct {
 }
 
 type configOptions struct {
-	MongoUrl        string `toml:"mongo-url"`
-	MongoPemFile    string `toml:"mongo-pem-file"`
-	ElasticUrl      string `toml:"elasticsearch-url"`
-	ResumeName      string `toml:"resume-name"`
-	NsRegex         string `toml:"namespace-regex"`
-	NsExcludeRegex  string `toml:"namespace-exclude-regex"`
-	Resume          bool
-	Replay          bool
-	IndexFiles      bool `toml:"index-files"`
-	ElasticMaxConns int  `toml:"elasticsearch-max-conns"`
-	ChannelSize     int  `toml:"gtm-channel-size"`
-	ConfigFile      string
-	Script          []javascript
-	Mapping         []indexTypeMapping
-	FileNamespaces  []string `toml:"file-namespaces"`
+	MongoUrl            string `toml:"mongo-url"`
+	MongoPemFile        string `toml:"mongo-pem-file"`
+	ElasticUrl          string `toml:"elasticsearch-url"`
+	ElasticPemFile      string `toml:"elasticsearch-pem-file"`
+	ResumeName          string `toml:"resume-name"`
+	NsRegex             string `toml:"namespace-regex"`
+	NsExcludeRegex      string `toml:"namespace-exclude-regex"`
+	Verbose             bool
+	Resume              bool
+	Replay              bool
+	IndexFiles          bool `toml:"index-files"`
+	ElasticMaxConns     int  `toml:"elasticsearch-max-conns"`
+	ElasticRetrySeconds int  `toml:"elasticsearch-retry-seconds"`
+	ElasticMaxDocs      int  `toml:"elasticsearch-max-docs"`
+	ElasticMaxBytes     int  `toml:"elasticsearch-max-bytes"`
+	ElasticMaxSeconds   int  `toml:"elasticsearch-max-seconds"`
+	ChannelSize         int  `toml:"gtm-channel-size"`
+	ConfigFile          string
+	Script              []javascript
+	Mapping             []indexTypeMapping
+	FileNamespaces      []string `toml:"file-namespaces"`
+}
+
+func TestElasticSearchConn(conn *elastigo.Conn, configuration *configOptions) (err error) {
+	var result map[string]interface{}
+	body, err := conn.DoCommand("GET", "/", nil, nil)
+	if err != nil {
+		return
+	}
+	err = json.Unmarshal(body, &result)
+	if err == nil {
+		version := result["version"].(map[string]interface{})
+		if version == nil {
+			err = errors.New("ERROR: Unable to determine elasticsearch version")
+		} else {
+			number := version["number"]
+			if number == nil {
+				err = errors.New("ERROR: Unable to determine elasticsearch version")
+			} else if configuration.Verbose {
+				fmt.Println(fmt.Sprintf("Successfully connected to elasticsearch version %s", number))
+			}
+		}
+	}
+	return
 }
 
 func EnsureFileMapping(conn *elastigo.Conn, namespace string) (err error) {
@@ -212,9 +244,15 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&configuration.MongoUrl, "mongo-url", "", "MongoDB connection URL")
 	flag.StringVar(&configuration.MongoPemFile, "mongo-pem-file", "", "Path to a PEM file for secure connections to MongoDB")
 	flag.StringVar(&configuration.ElasticUrl, "elasticsearch-url", "", "ElasticSearch connection URL")
+	flag.StringVar(&configuration.ElasticPemFile, "elasticsearch-pem-file", "", "Path to a PEM file for secure connections to elasticsearch")
 	flag.IntVar(&configuration.ElasticMaxConns, "elasticsearch-max-conns", 0, "ElasticSearch max connections")
+	flag.IntVar(&configuration.ElasticRetrySeconds, "elasticsearch-retry-seconds", 0, "Number of seconds before retrying ElasticSearch requests")
+	flag.IntVar(&configuration.ElasticMaxDocs, "elasticsearch-max-docs", 0, "Number of docs to hold before flushing to ElasticSearch")
+	flag.IntVar(&configuration.ElasticMaxBytes, "elasticsearch-max-bytes", 0, "Number of bytes to hold before flushing to ElasticSearch")
+	flag.IntVar(&configuration.ElasticMaxSeconds, "elasticsearch-max-seconds", 0, "Number of seconds before flushing to ElasticSearch")
 	flag.IntVar(&configuration.ChannelSize, "gtm-channel-size", 0, "Size of gtm channels")
 	flag.StringVar(&configuration.ConfigFile, "f", "", "Location of configuration file")
+	flag.BoolVar(&configuration.Verbose, "verbose", false, "True to output verbose messages")
 	flag.BoolVar(&configuration.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
 	flag.BoolVar(&configuration.Replay, "replay", false, "True to replay all events from the oplog and index them in elasticsearch")
 	flag.BoolVar(&configuration.IndexFiles, "index-files", false, "True to index gridfs files into elasticsearch. Requires the elasticsearch mapper-attachments (deprecated) or ingest-attachment plugin")
@@ -284,14 +322,32 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		if configuration.MongoPemFile == "" {
 			configuration.MongoPemFile = tomlConfig.MongoPemFile
 		}
+		if configuration.ElasticPemFile == "" {
+			configuration.ElasticPemFile = tomlConfig.ElasticPemFile
+		}
 		if configuration.ElasticUrl == "" {
 			configuration.ElasticUrl = tomlConfig.ElasticUrl
 		}
 		if configuration.ElasticMaxConns == 0 {
 			configuration.ElasticMaxConns = tomlConfig.ElasticMaxConns
 		}
+		if configuration.ElasticRetrySeconds == 0 {
+			configuration.ElasticRetrySeconds = tomlConfig.ElasticRetrySeconds
+		}
+		if configuration.ElasticMaxDocs == 0 {
+			configuration.ElasticMaxDocs = tomlConfig.ElasticMaxDocs
+		}
+		if configuration.ElasticMaxBytes == 0 {
+			configuration.ElasticMaxBytes = tomlConfig.ElasticMaxBytes
+		}
+		if configuration.ElasticMaxSeconds == 0 {
+			configuration.ElasticMaxSeconds = tomlConfig.ElasticMaxSeconds
+		}
 		if configuration.ChannelSize == 0 {
 			configuration.ChannelSize = tomlConfig.ChannelSize
+		}
+		if !configuration.Verbose && tomlConfig.Verbose {
+			configuration.Verbose = true
 		}
 		if !configuration.IndexFiles && tomlConfig.IndexFiles {
 			configuration.IndexFiles = true
@@ -368,6 +424,29 @@ func (configuration *configOptions) DialMongo() (*mgo.Session, error) {
 	}
 }
 
+func (configuration *configOptions) ConfigHttpTransport() error {
+	if configuration.ElasticPemFile != "" {
+		certs := x509.NewCertPool()
+		if ca, err := ioutil.ReadFile(configuration.ElasticPemFile); err == nil {
+			certs.AppendCertsFromPEM(ca)
+		} else {
+			return err
+		}
+		tlsConfig := &tls.Config{RootCAs: certs}
+		http.DefaultTransport.(*http.Transport).TLSClientConfig = tlsConfig
+	}
+	return nil
+}
+
+func TraceRequest(method, url, body string) {
+	fmt.Println(fmt.Sprintf("<%s> request sent to <%s>",
+		method, url))
+	if body != "" {
+		fmt.Println("request body was ...")
+		fmt.Println(body)
+	}
+}
+
 func main() {
 
 	sigs := make(chan os.Signal, 1)
@@ -377,9 +456,13 @@ func main() {
 	configuration := &configOptions{}
 	configuration.ParseCommandLineFlags().LoadConfigFile().SetDefaults()
 
+	if err := configuration.ConfigHttpTransport(); err != nil {
+		fmt.Println("ERROR: Unable to configure HTTP transport")
+		panic(err)
+	}
 	mongo, err := configuration.DialMongo()
 	if err != nil {
-		fmt.Println(fmt.Sprintf("Unable to connect to mongodb using URL <%s>",
+		fmt.Println(fmt.Sprintf("ERROR: Unable to connect to mongodb using URL <%s>",
 			configuration.MongoUrl))
 		panic(err)
 	}
@@ -390,7 +473,25 @@ func main() {
 	if configuration.ElasticUrl != "" {
 		elastic.SetFromUrl(configuration.ElasticUrl)
 	}
-	indexer := elastic.NewBulkIndexer(configuration.ElasticMaxConns)
+	if configuration.Verbose {
+		elastic.RequestTracer = TraceRequest
+	}
+	if err := TestElasticSearchConn(elastic, configuration); err != nil {
+		fmt.Println(fmt.Sprintf("ERROR: Unable to validate connection to elasticsearch using Protocol ( %s ) Host ( %s ) Port ( %s ) Username ( %s ) Password ( %s )",
+			elastic.Protocol, elastic.Domain, elastic.Port, elastic.Username, elastic.Password))
+		panic(err)
+	}
+	indexer := elastic.NewBulkIndexerErrors(configuration.ElasticMaxConns, configuration.ElasticRetrySeconds)
+	if configuration.ElasticMaxDocs != 0 {
+		indexer.BulkMaxDocs = configuration.ElasticMaxDocs
+	}
+	if configuration.ElasticMaxBytes != 0 {
+		indexer.BulkMaxBuffer = configuration.ElasticMaxBytes
+	}
+	if configuration.ElasticMaxSeconds != 0 {
+		indexer.BufferDelayMax = time.Duration(configuration.ElasticMaxSeconds) * time.Second
+
+	}
 	indexer.Start()
 	defer indexer.Stop()
 
@@ -458,7 +559,9 @@ func main() {
 			os.Exit(exitStatus)
 		case err = <-errs:
 			exitStatus = 1
-			fmt.Println(err)
+			fmt.Println(fmt.Sprintf("ERROR: %s", err))
+		case indexErr := <-indexer.ErrorChannel:
+			errs <- indexErr.Err
 		case op := <-ops:
 			indexed, objectId, indexType := false, OpIdToString(op), IndexTypeMapping(op)
 			if op.IsDelete() {

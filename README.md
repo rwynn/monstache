@@ -5,13 +5,17 @@ a go daemon which syncs mongodb to elasticsearch in near realtime
 
 ### Install ###
 
+You can download monstache binaries for Linux from the [Releases](https://github.com/rwynn/monstache/releases) page.
+
+Or you can build monstache from source using go get
+
 	go get github.com/rwynn/monstache
 
 ### Getting Started ###
 
 Since monstache uses the mongodb oplog to tail events it is required that mongodb is configured to produce an oplog.
 
-This can be ensured by:
+This can be ensured by doing one of the following:
 + Setting up [replica sets](http://docs.mongodb.org/manual/tutorial/deploy-replica-set/)
 + Passing --master to the mongod process
 + Setting the following in /etc/mongod.conf
@@ -19,6 +23,8 @@ This can be ensured by:
 	```
 	master = true
 	```
+
+You will also want to ensure that automatic index creation is not disabled in elasticsearch.yml.
 
 monstache is not bi-directional.  It only syncs from mongodb to elasticsearch.
 
@@ -44,8 +50,8 @@ A sample TOML config file looks like this:
 	namespace-exclude-regex = "^mydb.ignorecollection$"
 	gtm-channel-size = 200
 	index-files = true
+	verbose = true
 	
-
 All options in the config file above also work if passed explicity by the same name to the monstache command
 
 Arguments supplied on the command line override settings in a config file
@@ -56,6 +62,10 @@ The following defaults are used for missing config values:
 	mongo-pem-file -> nil
 	elasticsearch-url -> localhost
 	elasticsearch-max-conns -> 10
+	elasticsearch-retry-seconds -> 0 
+	elasticsearch-max-docs -> 100
+	elasticsearch-max-bytes -> 16384
+	elasticsearch-max-seconds -> 5
 	replay -> false
 	resume -> false
 	resume-name -> default
@@ -63,6 +73,7 @@ The following defaults are used for missing config values:
 	namespace-exclude-regex -> nil
 	gtm-channel-size -> 100
 	index-files -> false
+	verbose -> false
 
 When `resume` is true, monstache writes the timestamp of mongodb operations it has successfully synced to elasticsearch
 to the collection `monstache.monstache`.  It also reads this value from that collection when it starts in order to replay
@@ -77,20 +88,20 @@ to elasticsearch and also writes the timestamp of processed events to `monstache
 When neither `resume` nor `replay` are true, monstache reads the last timestamp in the oplog and starts listening for events
 occurring after this timestamp.  Timestamps are not written to `monstache.monstache`.  This is the default behavior. 
 
-When `namespace-regex` is supplied this regex is tested against the namespace, `database.collection`, of the event. If
+When `namespace-regex` is given this regex is tested against the namespace, `database.collection`, of the event. If
 the regex matches monstache continues processing event filters, otherwise it drops the event. By default monstache
 processes events in all databases and all collections with the exception of the reserved database `monstache`, any
 collections suffixed with `.chunks`, and the system collections.
 
-When `namespace-exclude-regex` is supplied this regex is tested against the namespace, `database.collection`, of the event. If
+When `namespace-exclude-regex` is given this regex is tested against the namespace, `database.collection`, of the event. If
 the regex matches monstache ignores the event, otherwise it continues processing event filters. By default monstache
 processes events in all databases and all collections with the exception of the reserved database `monstache`, any
 collections suffixed with `.chunks`, and the system collections.
 
-When `gtm-channel-size` is supplied it controls the size of the go channels created for processing events.  When many events
+When `gtm-channel-size` is given it controls the size of the go channels created for processing events.  When many events
 are processed at once a larger channel size may prevent blocking in gtm.
 
-When `mongo-pem-file` is supplied monstache will use the supplied file path to add a local certificate to x509 cert
+When `mongo-pem-file` is given monstache will use the given file path to add a local certificate to x509 cert
 pool when connecting to mongodb. This should only be used when mongodb is configured with SSL enabled.
 
 When `index-files` is true monstache will index the raw content of files stored in GridFS into elasticsearch as an attachment type.
@@ -99,6 +110,16 @@ In order for `index-files` to index the raw content of files stored in GridFS yo
 For versions of elasticsearch prior to version 5, you should install the [mapper-attachments](https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/mapper-attachments.html) plugin.  In version 5 or greater
 of elasticsearch the mapper-attachment plugin is deprecated and you should install the [ingest-attachment](https://www.elastic.co/guide/en/elasticsearch/plugins/master/ingest-attachment.html) plugin instead.
 For further information on how to configure monstache to index content from grids, see the section [Indexing Gridfs Files](#files).
+
+When `verbose` is true monstache with enable debug logging including a trace of requests to elasticsearch
+
+When `elasticseach-retry-seconds` is greater than 0 a failed request to elasticsearch with retry the request after the given number of seconds
+
+When `elasticsearch-max-docs` is given a bulk index request to elasticsearch will be forced when the buffer reaches the given number of documents
+
+When `elasticsearch-max-bytes` is given a bulk index request to elasticsearch will be forced when the buffer reaches the given number of bytes
+
+When `elasticsearch-max-seconds` is given a bulk index request to elasticsearch will be forced when a request has not been made in the given number of seconds
 
 ### Config Syntax ###
 
@@ -129,6 +150,10 @@ the following to your TOML config file:
 
 With the configuration above documents in the `test.test` namespace in mongodb are indexed into the `index1` 
 index in elasticsearch with the `type1` type.
+
+Make sure that automatic index creation is not disabled in elasticsearch.yml.
+
+If automatic index creation must be controlled, whitelist any indexes in elasticsearch.yml that monstache will create.
 
 ### Field Mapping ###
 
