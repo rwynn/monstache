@@ -142,9 +142,9 @@ The elasticsearch URL should point to where elasticsearch's RESTful API is confi
 
 When indexing documents from mongodb into elasticsearch the mapping is as follows:
 
-	mongodb database -> elasticsearch index
-	mongodb collection -> elasticsearch type
-	mongodb document id -> elasticsearch document id
+	mongodb database name . mongodb collection name -> elasticsearch index name
+	mongodb collection name -> elasticsearch type
+	mongodb document _id -> elasticsearch document _id
 
 If these default won't work for some reason you can override the index and collection mapping on a per collection basis by adding
 the following to your TOML config file:
@@ -243,7 +243,7 @@ elasticsearch by issuing the following REST commands:
 
 For elasticsearch versions prior to version 5...
 
-	POST /users
+	POST /users.fs.files
 	{
 	  "mappings": {
 	    "fs.files": {
@@ -251,7 +251,7 @@ For elasticsearch versions prior to version 5...
 		"file": { "type": "attachment" }
 	}}}}
 
-	POST /posts
+	POST /posts.fs.files
 	{
 	  "mappings": {
 	    "fs.files": {
@@ -287,13 +287,13 @@ under the type `fs.files`.
 
 After a short time you should be able to query the contents of resume.docx in the users index in elasticsearch
 
-	curl -XGET 'http://localhost:9200/users/fs.files/_search?q=golang'
+	curl -XGET 'http://localhost:9200/users.fs.files/_search?q=golang'
 
 If you would like to see the text extracted by Apache Tika you can project the appropriate sub-field
 
 For elasticsearch versions prior to version 5...
 
-	curl localhost:9200/users/fs.files/_search?pretty -d '{
+	curl localhost:9200/users.fs.files/_search?pretty -d '{
 		"fields": [ "file.content" ],
 		"query": {
 			"match": {
@@ -304,7 +304,7 @@ For elasticsearch versions prior to version 5...
 
 For elasticsearch version 5 and above...
 
-	curl localhost:9200/users/fs.files/_search?pretty -d '{
+	curl localhost:9200/users.fs.files/_search?pretty -d '{
 		"_source": [ "attachment.content" ],
 		"query": {
 			"match": {
@@ -317,7 +317,7 @@ When `file-highlighting` is enabled you can add a highlight clause to your query
 
 For elasticsearch versions prior to version 5...
 
-	curl localhost:9200/users/fs.files/_search?pretty -d '{
+	curl localhost:9200/users.fs.files/_search?pretty -d '{
 		"fields": ["file.content"],
 		"query": {
 			"match": {
@@ -334,7 +334,7 @@ For elasticsearch versions prior to version 5...
 
 For elasticsearch version 5 and above...
 
-	curl localhost:9200/users/fs.files/_search?pretty -d '{
+	curl localhost:9200/users.fs.files/_search?pretty -d '{
 		"_source": ["attachment.content"],
 		"query": {
 			"match": {

@@ -162,7 +162,7 @@ func EnsureFileMappingIngestAttachment(conn *elastigo.Conn, namespace string, co
 func EnsureFileMappingMapperAttachment(conn *elastigo.Conn, namespace string, configuration *configOptions) (err error) {
 	var body []byte
 	parts := strings.SplitN(namespace, ".", 2)
-	esIndex, esType := parts[0], parts[1]
+	esIndex, esType := namespace, parts[1]
 	if m := mapIndexTypes[namespace]; m != nil {
 		esIndex, esType = m.Index, m.Type
 	}
@@ -208,7 +208,7 @@ func EnsureFileMappingMapperAttachment(conn *elastigo.Conn, namespace string, co
 func DefaultIndexTypeMapping(op *gtm.Op) *indexTypeMapping {
 	return &indexTypeMapping{
 		Namespace: op.Namespace,
-		Index:     op.GetDatabase(),
+		Index:     op.Namespace,
 		Type:      op.GetCollection(),
 	}
 }
