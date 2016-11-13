@@ -120,6 +120,28 @@ func TestElasticSearchConn(conn *elastigo.Conn, configuration *configOptions) (e
 	return
 }
 
+func DeleteIndexes(conn *elastigo.Conn, db string, configuration *configOptions) (err error) {
+	for ns, m := range mapIndexTypes {
+		parts := strings.SplitN(ns, ".", 2)
+		if parts[0] == db {
+			if _, err = conn.DeleteIndex(m.Index + "*"); err != nil {
+				return
+			}
+		}
+	}
+	_, err = conn.DeleteIndex(db + "*")
+	return
+}
+
+func DeleteIndex(conn *elastigo.Conn, namespace string, configuration *configOptions) (err error) {
+	esIndex := namespace
+	if m := mapIndexTypes[namespace]; m != nil {
+		esIndex = m.Index
+	}
+	_, err = conn.DeleteIndex(esIndex)
+	return err
+}
+
 func IngestAttachment(conn *elastigo.Conn, esIndex string, esType string, esId string, data map[string]interface{}) (err error) {
 	var body []byte
 	args := map[string]interface{}{
@@ -637,7 +659,21 @@ func main() {
 			errs <- indexErr.Err
 		case op := <-ops:
 			ingestAttachment, indexed, objectId, indexType := false, false, OpIdToString(op), IndexTypeMapping(op)
-			if op.IsDelete() {
+			if op.IsDrop() {
+				if db, drop := op.IsDropDatabase(); drop {
+					if err := DeleteIndexes(elastic, db, configuration); err == nil {
+						indexed = true
+					} else {
+						errs <- err
+					}
+				} else if col, drop := op.IsDropCollection(); drop {
+					if err := DeleteIndex(elastic, op.GetDatabase()+"."+col, configuration); err == nil {
+						indexed = true
+					} else {
+						errs <- err
+					}
+				}
+			} else if op.IsDelete() {
 				indexer.Delete(indexType.Index, indexType.Type, objectId)
 				indexed = true
 			} else if op.Data != nil {
