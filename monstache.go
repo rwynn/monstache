@@ -72,6 +72,8 @@ type configOptions struct {
 	Verbose             bool
 	Resume              bool
 	Replay              bool
+	DroppedDatabases    bool `toml:"dropped-databases"`
+	DroppedCollections  bool `toml:"dropped-collections"`
 	IndexFiles          bool `toml:"index-files"`
 	FileHighlighting    bool `toml:"file-highlighting"`
 	ElasticMaxConns     int  `toml:"elasticsearch-max-conns"`
@@ -270,6 +272,8 @@ func MapData(op *gtm.Op) error {
 		data, err := val.Export()
 		if err != nil {
 			return err
+		} else if data == val {
+			return errors.New("exported function must return an object")
 		} else {
 			op.Data = data.(map[string]interface{})
 		}
@@ -349,6 +353,8 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.IntVar(&configuration.ElasticMaxSeconds, "elasticsearch-max-seconds", 0, "Number of seconds before flushing to ElasticSearch")
 	flag.IntVar(&configuration.ChannelSize, "gtm-channel-size", 0, "Size of gtm channels")
 	flag.StringVar(&configuration.ConfigFile, "f", "", "Location of configuration file")
+	flag.BoolVar(&configuration.DroppedDatabases, "dropped-databases", true, "True to delete indexes from dropped databases")
+	flag.BoolVar(&configuration.DroppedCollections, "dropped-collections", true, "True to delete indexes from dropped collections")
 	flag.BoolVar(&configuration.Verbose, "verbose", false, "True to output verbose messages")
 	flag.BoolVar(&configuration.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
 	flag.BoolVar(&configuration.Replay, "replay", false, "True to replay all events from the oplog and index them in elasticsearch")
@@ -410,7 +416,10 @@ func (configuration *configOptions) LoadScripts() {
 
 func (configuration *configOptions) LoadConfigFile() *configOptions {
 	if configuration.ConfigFile != "" {
-		var tomlConfig configOptions
+		var tomlConfig configOptions = configOptions{
+			DroppedDatabases:   true,
+			DroppedCollections: true,
+		}
 		if _, err := toml.DecodeFile(configuration.ConfigFile, &tomlConfig); err != nil {
 			panic(err)
 		}
@@ -443,6 +452,12 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		}
 		if configuration.ChannelSize == 0 {
 			configuration.ChannelSize = tomlConfig.ChannelSize
+		}
+		if configuration.DroppedDatabases && !tomlConfig.DroppedDatabases {
+			configuration.DroppedDatabases = false
+		}
+		if configuration.DroppedCollections && !tomlConfig.DroppedCollections {
+			configuration.DroppedCollections = false
 		}
 		if !configuration.Verbose && tomlConfig.Verbose {
 			configuration.Verbose = true
@@ -661,16 +676,24 @@ func main() {
 			ingestAttachment, indexed, objectId, indexType := false, false, OpIdToString(op), IndexTypeMapping(op)
 			if op.IsDrop() {
 				if db, drop := op.IsDropDatabase(); drop {
-					if err := DeleteIndexes(elastic, db, configuration); err == nil {
-						indexed = true
+					if configuration.DroppedDatabases {
+						if err := DeleteIndexes(elastic, db, configuration); err == nil {
+							indexed = true
+						} else {
+							errs <- err
+						}
 					} else {
-						errs <- err
+						indexed = true
 					}
 				} else if col, drop := op.IsDropCollection(); drop {
-					if err := DeleteIndex(elastic, op.GetDatabase()+"."+col, configuration); err == nil {
-						indexed = true
+					if configuration.DroppedCollections {
+						if err := DeleteIndex(elastic, op.GetDatabase()+"."+col, configuration); err == nil {
+							indexed = true
+						} else {
+							errs <- err
+						}
 					} else {
-						errs <- err
+						indexed = true
 					}
 				}
 			} else if op.IsDelete() {
