@@ -291,20 +291,23 @@ func PrepareDataForIndexing(data map[string]interface{}) {
 
 func AddFileContent(session *mgo.Session, op *gtm.Op) (err error) {
 	var buff bytes.Buffer
-	writer, db, bucket := bufio.NewWriter(&buff), session.DB(op.GetDatabase()), strings.SplitN(op.GetCollection(), ".", 2)[0]
+	writer, db, bucket :=
+		bufio.NewWriter(&buff),
+		session.DB(op.GetDatabase()),
+		strings.SplitN(op.GetCollection(), ".", 2)[0]
+	encoder := base64.NewEncoder(base64.StdEncoding, writer)
 	file, err := db.GridFS(bucket).OpenId(op.Data["_id"])
-	if file != nil {
-		defer file.Close()
-	}
 	if err != nil {
-		return err
+		return
 	}
-	if _, err = io.Copy(writer, file); err != nil {
-		return err
+	defer file.Close()
+	if _, err = io.Copy(encoder, file); err != nil {
+		return
 	}
+	encoder.Close()
 	writer.Flush()
-	op.Data["file"] = base64.StdEncoding.EncodeToString(buff.Bytes())
-	return err
+	op.Data["file"] = string(buff.Bytes())
+	return
 }
 
 func NotMonstache(op *gtm.Op) bool {
@@ -643,6 +646,9 @@ func main() {
 		for _, namespace := range configuration.FileNamespaces {
 			if err := EnsureFileMapping(elastic, namespace, configuration); err != nil {
 				panic(err)
+			}
+			if configuration.ElasticMajorVersion >= 5 {
+				break
 			}
 		}
 	}
