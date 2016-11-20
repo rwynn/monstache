@@ -82,7 +82,8 @@ type configOptions struct {
 	ElasticMaxBytes     int  `toml:"elasticsearch-max-bytes"`
 	ElasticMaxSeconds   int  `toml:"elasticsearch-max-seconds"`
 	ElasticMajorVersion int
-	ChannelSize         int `toml:"gtm-channel-size"`
+	ChannelSize         int   `toml:"gtm-channel-size"`
+	MaxFileSize         int64 `toml:"max-file-size"`
 	ConfigFile          string
 	Script              []javascript
 	Mapping             []indexTypeMapping
@@ -122,6 +123,21 @@ func TestElasticSearchConn(conn *elastigo.Conn, configuration *configOptions) (e
 	return
 }
 
+func NormalizeIndexName(name string) (normal string) {
+	normal = strings.ToLower(strings.TrimPrefix(name, "_"))
+	return
+}
+
+func NormalizeTypeName(name string) (normal string) {
+	normal = strings.TrimPrefix(name, "_")
+	return
+}
+
+func NormalizeEsId(id string) (normal string) {
+	normal = strings.TrimPrefix(id, "_")
+	return
+}
+
 func DeleteIndexes(conn *elastigo.Conn, db string, configuration *configOptions) (err error) {
 	for ns, m := range mapIndexTypes {
 		parts := strings.SplitN(ns, ".", 2)
@@ -131,12 +147,12 @@ func DeleteIndexes(conn *elastigo.Conn, db string, configuration *configOptions)
 			}
 		}
 	}
-	_, err = conn.DeleteIndex(db + "*")
+	_, err = conn.DeleteIndex(NormalizeIndexName(db) + "*")
 	return
 }
 
 func DeleteIndex(conn *elastigo.Conn, namespace string, configuration *configOptions) (err error) {
-	esIndex := namespace
+	esIndex := NormalizeIndexName(namespace)
 	if m := mapIndexTypes[namespace]; m != nil {
 		esIndex = m.Index
 	}
@@ -186,7 +202,7 @@ func EnsureFileMappingIngestAttachment(conn *elastigo.Conn, namespace string, co
 func EnsureFileMappingMapperAttachment(conn *elastigo.Conn, namespace string, configuration *configOptions) (err error) {
 	var body []byte
 	parts := strings.SplitN(namespace, ".", 2)
-	esIndex, esType := namespace, parts[1]
+	esIndex, esType := NormalizeIndexName(namespace), NormalizeTypeName(parts[1])
 	if m := mapIndexTypes[namespace]; m != nil {
 		esIndex, esType = m.Index, m.Type
 	}
@@ -232,8 +248,8 @@ func EnsureFileMappingMapperAttachment(conn *elastigo.Conn, namespace string, co
 func DefaultIndexTypeMapping(op *gtm.Op) *indexTypeMapping {
 	return &indexTypeMapping{
 		Namespace: op.Namespace,
-		Index:     op.Namespace,
-		Type:      op.GetCollection(),
+		Index:     NormalizeIndexName(op.Namespace),
+		Type:      NormalizeTypeName(op.GetCollection()),
 	}
 }
 
@@ -253,7 +269,7 @@ func OpIdToString(op *gtm.Op) string {
 	case bson.ObjectId:
 		opIdStr = op.Id.(bson.ObjectId).Hex()
 	default:
-		opIdStr = fmt.Sprintf("%v", op.Id)
+		opIdStr = NormalizeEsId(fmt.Sprintf("%v", op.Id))
 	}
 	return opIdStr
 }
@@ -289,7 +305,7 @@ func PrepareDataForIndexing(data map[string]interface{}) {
 	delete(data, "_source")
 }
 
-func AddFileContent(session *mgo.Session, op *gtm.Op) (err error) {
+func AddFileContent(session *mgo.Session, op *gtm.Op, configuration *configOptions) (err error) {
 	var buff bytes.Buffer
 	writer, db, bucket :=
 		bufio.NewWriter(&buff),
@@ -301,6 +317,14 @@ func AddFileContent(session *mgo.Session, op *gtm.Op) (err error) {
 		return
 	}
 	defer file.Close()
+	if configuration.MaxFileSize > 0 {
+		if file.Size() > configuration.MaxFileSize {
+			infoLog.Printf("file %s md5(%s) exceeds max file size. file content omitted.",
+				file.Name(), file.MD5())
+			op.Data["file"] = ""
+			return
+		}
+	}
 	if _, err = io.Copy(encoder, file); err != nil {
 		return
 	}
@@ -355,6 +379,7 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.IntVar(&configuration.ElasticMaxBytes, "elasticsearch-max-bytes", 0, "Number of bytes to hold before flushing to ElasticSearch")
 	flag.IntVar(&configuration.ElasticMaxSeconds, "elasticsearch-max-seconds", 0, "Number of seconds before flushing to ElasticSearch")
 	flag.IntVar(&configuration.ChannelSize, "gtm-channel-size", 0, "Size of gtm channels")
+	flag.Int64Var(&configuration.MaxFileSize, "max-file-size", 0, "GridFs file content exceeding this limit in bytes will not be indexed in ElasticSearch")
 	flag.StringVar(&configuration.ConfigFile, "f", "", "Location of configuration file")
 	flag.BoolVar(&configuration.DroppedDatabases, "dropped-databases", true, "True to delete indexes from dropped databases")
 	flag.BoolVar(&configuration.DroppedCollections, "dropped-collections", true, "True to delete indexes from dropped collections")
@@ -377,8 +402,8 @@ func (configuration *configOptions) LoadIndexTypes() {
 			if m.Namespace != "" && m.Index != "" && m.Type != "" {
 				mapIndexTypes[m.Namespace] = &indexTypeMapping{
 					Namespace: m.Namespace,
-					Index:     m.Index,
-					Type:      m.Type,
+					Index:     NormalizeIndexName(m.Index),
+					Type:      NormalizeTypeName(m.Type),
 				}
 			} else {
 				panic("mappings must specify namespace, index, and type attributes")
@@ -455,6 +480,9 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		}
 		if configuration.ChannelSize == 0 {
 			configuration.ChannelSize = tomlConfig.ChannelSize
+		}
+		if configuration.MaxFileSize == 0 {
+			configuration.MaxFileSize = tomlConfig.MaxFileSize
 		}
 		if configuration.DroppedDatabases && !tomlConfig.DroppedDatabases {
 			configuration.DroppedDatabases = false
@@ -604,7 +632,6 @@ func main() {
 	}
 	if configuration.ElasticMaxSeconds != 0 {
 		indexer.BufferDelayMax = time.Duration(configuration.ElasticMaxSeconds) * time.Second
-
 	}
 	indexer.Start()
 	defer indexer.Stop()
@@ -708,11 +735,13 @@ func main() {
 			} else if op.Data != nil {
 				if configuration.IndexFiles {
 					if fileNamespaces[op.Namespace] {
-						if err := AddFileContent(mongo, op); err != nil {
+						if err := AddFileContent(mongo, op, configuration); err != nil {
 							errs <- err
 						}
 						if configuration.ElasticMajorVersion >= 5 {
-							ingestAttachment = true
+							if op.Data["file"] != "" {
+								ingestAttachment = true
+							}
 						}
 					}
 				}

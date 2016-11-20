@@ -79,6 +79,7 @@ The following defaults are used for missing config values:
 	namespace-exclude-regex -> nil
 	gtm-channel-size -> 100
 	index-files -> false
+	max-file-size -> 0
 	file-highlighting -> false
 	file-namespaces -> nil
 	verbose -> false
@@ -118,6 +119,8 @@ In order for `index-files` to index the raw content of files stored in GridFS yo
 For versions of elasticsearch prior to version 5, you should install the [mapper-attachments](https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/mapper-attachments.html) plugin.  In version 5 or greater
 of elasticsearch the mapper-attachment plugin is deprecated and you should install the [ingest-attachment](https://www.elastic.co/guide/en/elasticsearch/plugins/master/ingest-attachment.html) plugin instead.
 For further information on how to configure monstache to index content from grids, see the section [Indexing Gridfs Files](#files).
+
+When `max-file-size` is greater than 0 monstache will not index the content of GridFS files that exceed this limit in bytes.
 
 The `file-namespaces` config must be set when `index-files` is enabled.  `file-namespaces` must be set to an array of mongodb
 namespace strings.  Files uploaded through gridfs to any of the namespaces in `file-namespaces` will be retrieved and their
@@ -173,6 +176,10 @@ index in elasticsearch with the `type1` type.
 Make sure that automatic index creation is not disabled in elasticsearch.yml.
 
 If automatic index creation must be controlled, whitelist any indexes in elasticsearch.yml that monstache will create.
+
+Note that when monstache maps index and type names for ElasticSearch it does normalization based on the 
+[Validity Rules](https://github.com/elastic/elasticsearch/issues/6736).  This includes making sure index names are
+all lowercase and that index, types, and ids do not being with an underscore.
 
 ### Field Mapping ###
 
