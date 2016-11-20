@@ -307,6 +307,7 @@ func PrepareDataForIndexing(data map[string]interface{}) {
 
 func AddFileContent(session *mgo.Session, op *gtm.Op, configuration *configOptions) (err error) {
 	var buff bytes.Buffer
+	op.Data["file"] = ""
 	writer, db, bucket :=
 		bufio.NewWriter(&buff),
 		session.DB(op.GetDatabase()),
@@ -321,7 +322,6 @@ func AddFileContent(session *mgo.Session, op *gtm.Op, configuration *configOptio
 		if file.Size() > configuration.MaxFileSize {
 			infoLog.Printf("file %s md5(%s) exceeds max file size. file content omitted.",
 				file.Name(), file.MD5())
-			op.Data["file"] = ""
 			return
 		}
 	}
