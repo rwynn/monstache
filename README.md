@@ -229,7 +229,7 @@ manipulate the document to drop fields, add fields, or augment the existing fiel
 The `this` reference in the mapping function is assigned to the document from mongodb.  
 
 When the return value from the mapping function is an `object` then that mapped object is what actually gets indexed in elasticsearch.
-For these purposes an object is a javascript non-primitive, `excluding` Function, Array, String, Number, Boolean, Date, and RegExp.
+For these purposes an object is a javascript non-primitive, `excluding` Function, Array, String, Number, Boolean, Date, Error and RegExp.
 
 If the return value from the mapping function is not an `object` per the definition above then the result is converted into a `boolean`
 and if the boolean value is `false` then that indicates to monstache that you `would not` like to index the document. If the boolean value is `true` then
