@@ -224,11 +224,33 @@ to `anothercollection` in `anotherdb`.
 You will notice that the multi-line string feature of TOML is used to assign a javascript snippet to the variable named
 `script`.  The javascript assigned to script must assign a function to the exports property of the `module` object.  This 
 function will be passed the document from mongodb just before it is indexed in elasticsearch.  Inside the function you can
-manipulate the document to drop fields, add fields, or augment the existing fields.  The only requirement is that you
-return an object.  The object returned from the mapping function is what actually gets indexed in elasticsearch. The `this`
-reference in the mapping function is assigned to the document from mongodb.  
+manipulate the document to drop fields, add fields, or augment the existing fields.
 
-You may have noticed that in the example above the exported mapping function closes over a var named `counter`.  You can
+The `this` reference in the mapping function is assigned to the document from mongodb.  
+
+When the return value from the mapping function is an `object` then that mapped object is what actually gets indexed in elasticsearch.
+For these purposes an object is a javascript non-primitive, `excluding` Function, Array, String, Number, Boolean, Date, and RegExp.
+
+If the return value from the mapping function is not an `object` per the definition above then the result is converted into a `boolean`
+and if the boolean value is `false` then that indicates to monstache that you `would not` like to index the document. If the boolean value is `true` then
+the original document from mongodb gets indexed in elasticsearch.
+
+This allows you to return nil or false if you have implemented soft deletes in mongodb.
+
+	namespace = "db.collection"
+	script = """
+	module.exports = function(doc) {
+		if (!!doc.deletedAt) {
+			return false;
+		}
+		return doc;
+	}
+
+In the above example monstache will index any document except the ones with a `deletedAt` property.  If the document is first
+inserted without a `deletedAt` property, but later updated to include the `deletedAt` property then monstache will remove the
+previously indexed document from the elasticsearch index.
+
+You may have noticed that in the first example above the exported mapping function closes over a var named `counter`.  You can
 use closures to maintain state between invocations of your mapping function.
 
 Finally, since Otto makes it so easy, the venerable [Underscore](http://underscorejs.org/) library is included for you at 
@@ -304,8 +326,7 @@ encoded string. The elasticsearch plugin will then extract text content from the
 
 To test this feature of monstache you can simply use the [mongofiles](https://docs.mongodb.com/manual/reference/program/mongofiles/)
 command to quickly add a file to mongodb via GridFS.  Continuing the example above one could issue the following command to put a 
-file named `resume.docx` into GridFS and after a short time this file should be searchable in elasticsearch in the index `users`
-under the type `fs.files`.
+file named `resume.docx` into GridFS and after a short time this file should be searchable in elasticsearch in the index `users.fs.files`.
 
 	mongofiles -d users put resume.docx
 

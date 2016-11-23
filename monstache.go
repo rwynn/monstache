@@ -282,16 +282,23 @@ func MapData(op *gtm.Op) error {
 		val, err := env.Vm.Call("module.exports", op.Data, op.Data)
 		if err != nil {
 			return err
-		} else if !val.IsObject() {
-			return errors.New("exported function must return an object")
 		}
-		data, err := val.Export()
-		if err != nil {
-			return err
-		} else if data == val {
-			return errors.New("exported function must return an object")
+		if strings.ToLower(val.Class()) == "object" {
+			data, err := val.Export()
+			if err != nil {
+				return err
+			} else if data == val {
+				return errors.New("exported function must return an object")
+			} else {
+				op.Data = data.(map[string]interface{})
+			}
 		} else {
-			op.Data = data.(map[string]interface{})
+			b, err := val.ToBoolean()
+			if err != nil {
+				return err
+			} else if !b {
+				op.Data = nil
+			}
 		}
 	}
 	return nil
@@ -749,21 +756,28 @@ func main() {
 						}
 					}
 				}
-				PrepareDataForIndexing(op.Data)
 				if err := MapData(op); err == nil {
-					if ingestAttachment {
-						if err := IngestAttachment(elastic, indexType.Index, indexType.Type, objectId, op.Data); err == nil {
-							indexed = true
-						} else {
-							errs <- err
-						}
+					if op.Data != nil {
+						PrepareDataForIndexing(op.Data)
+						if ingestAttachment {
+							if err := IngestAttachment(elastic, indexType.Index, indexType.Type, objectId, op.Data); err == nil {
+								indexed = true
+							} else {
+								errs <- err
+							}
 
-					} else {
-						if err := indexer.Index(indexType.Index, indexType.Type, objectId, "", "", nil, op.Data); err == nil {
-							indexed = true
 						} else {
-							errs <- err
+							if err := indexer.Index(indexType.Index, indexType.Type, objectId, "", "", nil, op.Data); err == nil {
+								indexed = true
+							} else {
+								errs <- err
+							}
 						}
+					} else if op.IsUpdate() {
+						indexer.Delete(indexType.Index, indexType.Type, objectId)
+						indexed = true
+					} else {
+						indexed = true
 					}
 				} else {
 					errs <- err
