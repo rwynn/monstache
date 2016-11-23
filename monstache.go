@@ -328,8 +328,12 @@ func AddFileContent(session *mgo.Session, op *gtm.Op, configuration *configOptio
 	if _, err = io.Copy(encoder, file); err != nil {
 		return
 	}
-	encoder.Close()
-	writer.Flush()
+	if err = encoder.Close(); err != nil {
+		return
+	}
+	if err = writer.Flush(); err != nil {
+		return
+	}
 	op.Data["file"] = string(buff.Bytes())
 	return
 }
