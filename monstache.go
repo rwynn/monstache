@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
@@ -294,10 +293,10 @@ func MapData(op *gtm.Op) error {
 				op.Data = data.(map[string]interface{})
 			}
 		} else {
-			b, err := val.ToBoolean()
+			indexed, err := val.ToBoolean()
 			if err != nil {
 				return err
-			} else if !b {
+			} else if !indexed {
 				op.Data = nil
 			}
 		}
@@ -316,12 +315,11 @@ func PrepareDataForIndexing(data map[string]interface{}) {
 func AddFileContent(session *mgo.Session, op *gtm.Op, configuration *configOptions) (err error) {
 	var buff bytes.Buffer
 	op.Data["file"] = ""
-	writer, db, bucket :=
-		bufio.NewWriter(&buff),
+	db, bucket :=
 		session.DB(op.GetDatabase()),
 		strings.SplitN(op.GetCollection(), ".", 2)[0]
-	encoder := base64.NewEncoder(base64.StdEncoding, writer)
-	file, err := db.GridFS(bucket).OpenId(op.Data["_id"])
+	encoder := base64.NewEncoder(base64.StdEncoding, &buff)
+	file, err := db.GridFS(bucket).OpenId(op.Id)
 	if err != nil {
 		return
 	}
@@ -337,9 +335,6 @@ func AddFileContent(session *mgo.Session, op *gtm.Op, configuration *configOptio
 		return
 	}
 	if err = encoder.Close(); err != nil {
-		return
-	}
-	if err = writer.Flush(); err != nil {
 		return
 	}
 	op.Data["file"] = string(buff.Bytes())
