@@ -242,7 +242,7 @@ If the return value from the mapping function is not an `object` per the definit
 and if the boolean value is `false` then that indicates to monstache that you would not like to index the document. If the boolean value is `true` then
 the original document from mongodb gets indexed in elasticsearch.
 
-This allows you to return nil or false if you have implemented soft deletes in mongodb.
+This allows you to return false or null if you have implemented soft deletes in mongodb.
 
 	namespace = "db.collection"
 	script = """
