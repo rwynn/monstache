@@ -71,6 +71,7 @@ type configOptions struct {
 	NsExcludeRegex      string `toml:"namespace-exclude-regex"`
 	Verbose             bool
 	Resume              bool
+	ResumeWriteUnsafe   bool `toml:"resume-write-unsafe"`
 	Replay              bool
 	DroppedDatabases    bool `toml:"dropped-databases"`
 	DroppedCollections  bool `toml:"dropped-collections"`
@@ -396,6 +397,7 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.BoolVar(&configuration.DroppedCollections, "dropped-collections", true, "True to delete indexes from dropped collections")
 	flag.BoolVar(&configuration.Verbose, "verbose", false, "True to output verbose messages")
 	flag.BoolVar(&configuration.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
+	flag.BoolVar(&configuration.ResumeWriteUnsafe, "resume-write-unsafe", false, "True to speedup writes of the last timestamp synched for resuming at the cost of error checking")
 	flag.BoolVar(&configuration.Replay, "replay", false, "True to replay all events from the oplog and index them in elasticsearch")
 	flag.BoolVar(&configuration.IndexFiles, "index-files", false, "True to index gridfs files into elasticsearch. Requires the elasticsearch mapper-attachments (deprecated) or ingest-attachment plugin")
 	flag.BoolVar(&configuration.FileHighlighting, "file-highlighting", false, "True to enable the ability to highlight search times for a file query")
@@ -516,6 +518,9 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		if !configuration.Resume && tomlConfig.Resume {
 			configuration.Resume = true
 		}
+		if !configuration.ResumeWriteUnsafe && tomlConfig.ResumeWriteUnsafe {
+			configuration.ResumeWriteUnsafe = true
+		}
 		if configuration.Resume && configuration.ResumeName == "" {
 			configuration.ResumeName = tomlConfig.ResumeName
 		}
@@ -603,6 +608,86 @@ func TraceRequest(method, url, body string) {
 	}
 }
 
+func DoDrop(elastic *elastigo.Conn, op *gtm.Op, configuration *configOptions) (indexed bool, err error) {
+	if db, drop := op.IsDropDatabase(); drop {
+		if configuration.DroppedDatabases {
+			if err = DeleteIndexes(elastic, db, configuration); err == nil {
+				indexed = true
+			}
+		} else {
+			indexed = true
+		}
+	} else if col, drop := op.IsDropCollection(); drop {
+		if configuration.DroppedCollections {
+			if err = DeleteIndex(elastic, op.GetDatabase()+"."+col, configuration); err == nil {
+				indexed = true
+			}
+		} else {
+			indexed = true
+		}
+	}
+	return
+}
+
+func DoFileContent(mongo *mgo.Session, op *gtm.Op, configuration *configOptions) (ingestAttachment bool, err error) {
+	if !configuration.IndexFiles {
+		return
+	}
+	if fileNamespaces[op.Namespace] {
+		err = AddFileContent(mongo, op, configuration)
+		if configuration.ElasticMajorVersion >= 5 {
+			if op.Data["file"] != "" {
+				ingestAttachment = true
+			}
+		}
+	}
+	return
+}
+
+func DoResume(mongo *mgo.Session, op *gtm.Op, configuration *configOptions) (err error) {
+	if configuration.Resume {
+		err = SaveTimestamp(mongo, op, configuration.ResumeName)
+	}
+	return
+}
+
+func DoIndexing(indexer *elastigo.BulkIndexer, elastic *elastigo.Conn, op *gtm.Op, ingestAttachment bool) (indexed bool, err error) {
+	PrepareDataForIndexing(op.Data)
+	objectId, indexType := OpIdToString(op), IndexTypeMapping(op)
+	if ingestAttachment {
+		if err = IngestAttachment(elastic, indexType.Index, indexType.Type, objectId, op.Data); err == nil {
+			indexed = true
+		}
+	} else {
+		if err = indexer.Index(indexType.Index, indexType.Type, objectId, "", "", nil, op.Data); err == nil {
+			indexed = true
+		}
+	}
+	return
+}
+
+func DoIndex(indexer *elastigo.BulkIndexer, elastic *elastigo.Conn, op *gtm.Op, ingestAttachment bool) (indexed bool, err error) {
+	if err = MapData(op); err == nil {
+		if op.Data != nil {
+			indexed, err = DoIndexing(indexer, elastic, op, ingestAttachment)
+		} else if op.IsUpdate() {
+			objectId, indexType := OpIdToString(op), IndexTypeMapping(op)
+			indexer.Delete(indexType.Index, indexType.Type, objectId)
+			indexed = true
+		} else {
+			indexed = true
+		}
+	}
+	return
+}
+
+func DoDelete(indexer *elastigo.BulkIndexer, op *gtm.Op) (indexed bool) {
+	objectId, indexType := OpIdToString(op), IndexTypeMapping(op)
+	indexer.Delete(indexType.Index, indexType.Type, objectId)
+	indexed = true
+	return
+}
+
 func main() {
 	log.SetPrefix("ERROR ")
 
@@ -622,7 +707,9 @@ func main() {
 	}
 	defer mongo.Close()
 	mongo.SetMode(mgo.Monotonic, true)
-
+	if configuration.Resume && configuration.ResumeWriteUnsafe {
+		mongo.SetSafe(nil)
+	}
 	elastic := elastigo.NewConn()
 	if configuration.ElasticUrl != "" {
 		elastic.SetFromUrl(configuration.ElasticUrl)
@@ -715,76 +802,29 @@ func main() {
 			exitStatus = 1
 			log.Println(err)
 		case indexErr := <-indexer.ErrorChannel:
-			errs <- indexErr.Err
+			if indexErr.Buf != nil {
+				errs <- fmt.Errorf("%s. Failed Request Body : %s", indexErr.Err, indexErr.Buf)
+			} else {
+				errs <- indexErr.Err
+			}
 		case op := <-ops:
-			ingestAttachment, indexed, objectId, indexType := false, false, OpIdToString(op), IndexTypeMapping(op)
+			ingestAttachment, indexed := false, false
 			if op.IsDrop() {
-				if db, drop := op.IsDropDatabase(); drop {
-					if configuration.DroppedDatabases {
-						if err := DeleteIndexes(elastic, db, configuration); err == nil {
-							indexed = true
-						} else {
-							errs <- err
-						}
-					} else {
-						indexed = true
-					}
-				} else if col, drop := op.IsDropCollection(); drop {
-					if configuration.DroppedCollections {
-						if err := DeleteIndex(elastic, op.GetDatabase()+"."+col, configuration); err == nil {
-							indexed = true
-						} else {
-							errs <- err
-						}
-					} else {
-						indexed = true
-					}
+				if indexed, err = DoDrop(elastic, op, configuration); err != nil {
+					errs <- err
 				}
 			} else if op.IsDelete() {
-				indexer.Delete(indexType.Index, indexType.Type, objectId)
-				indexed = true
+				indexed = DoDelete(indexer, op)
 			} else if op.Data != nil {
-				if configuration.IndexFiles {
-					if fileNamespaces[op.Namespace] {
-						if err := AddFileContent(mongo, op, configuration); err != nil {
-							errs <- err
-						}
-						if configuration.ElasticMajorVersion >= 5 {
-							if op.Data["file"] != "" {
-								ingestAttachment = true
-							}
-						}
-					}
+				if ingestAttachment, err = DoFileContent(mongo, op, configuration); err != nil {
+					errs <- err
 				}
-				if err := MapData(op); err == nil {
-					if op.Data != nil {
-						PrepareDataForIndexing(op.Data)
-						if ingestAttachment {
-							if err := IngestAttachment(elastic, indexType.Index, indexType.Type, objectId, op.Data); err == nil {
-								indexed = true
-							} else {
-								errs <- err
-							}
-
-						} else {
-							if err := indexer.Index(indexType.Index, indexType.Type, objectId, "", "", nil, op.Data); err == nil {
-								indexed = true
-							} else {
-								errs <- err
-							}
-						}
-					} else if op.IsUpdate() {
-						indexer.Delete(indexType.Index, indexType.Type, objectId)
-						indexed = true
-					} else {
-						indexed = true
-					}
-				} else {
+				if indexed, err = DoIndex(indexer, elastic, op, ingestAttachment); err != nil {
 					errs <- err
 				}
 			}
-			if configuration.Resume && indexed {
-				if err := SaveTimestamp(mongo, op, configuration.ResumeName); err != nil {
+			if indexed {
+				if err = DoResume(mongo, op, configuration); err != nil {
 					errs <- err
 				}
 			}

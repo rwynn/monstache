@@ -47,6 +47,7 @@ A sample TOML config file looks like this:
 	dropped-databases = true
 	replay = false
 	resume = true
+	resume-write-unsafe = false
 	resume-name = "default"
 	namespace-regex = "^mydb\.(mycollection|\$cmd)$"
 	namespace-exclude-regex = "^mydb\.(ignorecollection|\$cmd)$"
@@ -74,6 +75,7 @@ The following defaults are used for missing config values:
 	dropped-collections -> true
 	replay -> false
 	resume -> false
+	resume-write-unsafe -> false
 	resume-name -> default
 	namespace-regex -> nil
 	namespace-exclude-regex -> nil
@@ -96,6 +98,11 @@ to elasticsearch and also writes the timestamp of processed events to `monstache
 
 When neither `resume` nor `replay` are true, monstache reads the last timestamp in the oplog and starts listening for events
 occurring after this timestamp.  Timestamps are not written to `monstache.monstache`.  This is the default behavior. 
+
+When `resume-write-unsafe` is true monstache sets the safety mode of the mongodb session such that writes are fire and forget.
+This speeds up writing of timestamps used to resume synching in a subsequent run of monstache.  This speed up comes at the cost
+of no error checking on the write of the timestamp.  Since errors writing the last synched timestamp are only logged by monstache
+and do not stop execution it's not unreasonable to set this to true to get a speedup.  
 
 When `namespace-regex` is given this regex is tested against the namespace, `database.collection`, of the event. If
 the regex matches monstache continues processing event filters, otherwise it drops the event. By default monstache
@@ -245,6 +252,7 @@ This allows you to return nil or false if you have implemented soft deletes in m
 		}
 		return true;
 	}
+	"""
 
 In the above example monstache will index any document except the ones with a `deletedAt` property.  If the document is first
 inserted without a `deletedAt` property, but later updated to include the `deletedAt` property then monstache will remove the
