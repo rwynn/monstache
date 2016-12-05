@@ -30,6 +30,7 @@ import (
 	"time"
 )
 
+var gridByteBuffer bytes.Buffer
 var infoLog *log.Logger = log.New(os.Stdout, "INFO ", log.Flags())
 
 var mapEnvs map[string]*executionEnv
@@ -313,12 +314,12 @@ func PrepareDataForIndexing(data map[string]interface{}) {
 }
 
 func AddFileContent(session *mgo.Session, op *gtm.Op, configuration *configOptions) (err error) {
-	var buff bytes.Buffer
 	op.Data["file"] = ""
+	gridByteBuffer.Reset()
 	db, bucket :=
 		session.DB(op.GetDatabase()),
 		strings.SplitN(op.GetCollection(), ".", 2)[0]
-	encoder := base64.NewEncoder(base64.StdEncoding, &buff)
+	encoder := base64.NewEncoder(base64.StdEncoding, &gridByteBuffer)
 	file, err := db.GridFS(bucket).OpenId(op.Id)
 	if err != nil {
 		return
@@ -337,7 +338,7 @@ func AddFileContent(session *mgo.Session, op *gtm.Op, configuration *configOptio
 	if err = encoder.Close(); err != nil {
 		return
 	}
-	op.Data["file"] = string(buff.Bytes())
+	op.Data["file"] = string(gridByteBuffer.Bytes())
 	return
 }
 
