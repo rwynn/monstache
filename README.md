@@ -84,6 +84,8 @@ The following defaults are used for missing config values:
 	max-file-size -> 0
 	file-highlighting -> false
 	file-namespaces -> nil
+	worker -> nil
+	workers -> nil
 	verbose -> false
 
 When `resume` is true, monstache writes the timestamp of mongodb operations it has successfully synced to elasticsearch
@@ -149,6 +151,10 @@ When `elasticsearch-max-seconds` is given a bulk index request to elasticsearch 
 When `dropped-databases` is false monstache will not delete the mapped indexes in elasticsearch if a mongodb database is dropped
 
 When `dropped-collections` is false monstache will not delete the mapped index in elasticsearch if a mongodb collection is dropped
+
+When `worker` is given monstache will enter multi-worker mode and will require you to also provide the config option `workers`.  Use this mode to run
+multiple monstache processes and distribute the work between them.  In this mode monstache will ensure that each mongo document id always goes to the
+same worker and none of the other workers. See the section [workers](#workers) for more information.
 
 ### Config Syntax ###
 
@@ -423,4 +429,22 @@ For elasticsearch version 5 and above...
 			"attachment.content" : [ "I like to program in <em>golang</em>." ]
 		}
 	}]
+
+<a name="workers"></a>
+### Multiple Workers ###
+
+You can run multiple monstache processes and distribute the work between them.  First configure
+the names of all the workers in a shared config.toml file.
+
+	workers = ["Tom", "Dick", "Harry"]
+
+In this case we have 3 workers.  Now we can start 3 monstache processes and give each one of the worker
+names.
+
+	monstache -f config.toml -worker Tom
+	monstache -f config.toml -worker Dick
+	monstache -f config.toml -worker Harry
+
+monstache will hash the id of each document using consistent hashing so that each id is handled by only
+one of the available workers.
 

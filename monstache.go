@@ -14,6 +14,7 @@ import (
 	"github.com/robertkrimen/otto"
 	_ "github.com/robertkrimen/otto/underscore"
 	"github.com/rwynn/gtm"
+	"github.com/rwynn/gtm/consistent"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"io"
@@ -89,6 +90,8 @@ type configOptions struct {
 	Script              []javascript
 	Mapping             []indexTypeMapping
 	FileNamespaces      []string `toml:"file-namespaces"`
+	Workers             []string
+	Worker              string
 }
 
 func TestElasticSearchConn(conn *elastigo.Conn, configuration *configOptions) (err error) {
@@ -398,6 +401,7 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.BoolVar(&configuration.IndexFiles, "index-files", false, "True to index gridfs files into elasticsearch. Requires the elasticsearch mapper-attachments (deprecated) or ingest-attachment plugin")
 	flag.BoolVar(&configuration.FileHighlighting, "file-highlighting", false, "True to enable the ability to highlight search times for a file query")
 	flag.StringVar(&configuration.ResumeName, "resume-name", "", "Name under which to load/store the resume state. Defaults to 'default'")
+	flag.StringVar(&configuration.Worker, "worker", "", "The name of this worker in a multi-worker configuration")
 	flag.StringVar(&configuration.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
 	flag.StringVar(&configuration.NsRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
 	flag.Parse()
@@ -530,6 +534,10 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 			configuration.FileNamespaces = tomlConfig.FileNamespaces
 			tomlConfig.LoadGridFsConfig()
 		}
+		if configuration.Worker == "" {
+			configuration.Worker = tomlConfig.Worker
+		}
+		configuration.Workers = tomlConfig.Workers
 		tomlConfig.LoadScripts()
 		tomlConfig.LoadIndexTypes()
 	}
@@ -781,6 +789,15 @@ func main() {
 	}
 	if configuration.NsExcludeRegex != "" {
 		filterChain = append(filterChain, FilterInverseWithRegex(configuration.NsExcludeRegex))
+	}
+	if configuration.Worker != "" {
+		workerFilter, err := consistent.ConsistentHashFilter(configuration.Worker, configuration.Workers)
+		if err != nil {
+			panic(err)
+		}
+		filterChain = append(filterChain, workerFilter)
+	} else if configuration.Workers != nil {
+		panic("workers configured but this worker is undefined. worker must be set to one of the workers.")
 	}
 	filter = gtm.ChainOpFilters(filterChain...)
 
