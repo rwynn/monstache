@@ -563,7 +563,11 @@ func (configuration *configOptions) SetDefaults() *configOptions {
 		configuration.MongoUrl = mongoUrlDefault
 	}
 	if configuration.ResumeName == "" {
-		configuration.ResumeName = resumeNameDefault
+		if configuration.Worker != "" {
+			configuration.ResumeName = configuration.Worker
+		} else {
+			configuration.ResumeName = resumeNameDefault
+		}
 	}
 	if configuration.ElasticMaxConns == 0 {
 		configuration.ElasticMaxConns = elasticMaxConnsDefault

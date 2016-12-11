@@ -98,7 +98,9 @@ set `http.compression: true`. Enabling `gzip` is recommended especially if you e
 When `resume` is true, monstache writes the timestamp of mongodb operations it has successfully synced to elasticsearch
 to the collection `monstache.monstache`.  It also reads this value from that collection when it starts in order to replay
 events which it might have missed because monstache was stopped. monstache uses the value of `resume-name` as a key when
-storing and retrieving timestamps.  If `resume` is true but `resume-name` is not supplied this key defaults to `default`.
+storing and retrieving timestamps.  If `resume` is true but `resume-name` is not set the key defaults to `default`.
+In the case where `resume` is true and `worker` is set but `resume-name` is not set the key defaults to the name of the
+worker.
 
 When `replay` is true, monstache replays all events from the beginning of the mongodb oplog and syncs them to elasticsearch.
 
@@ -134,7 +136,7 @@ By default `index-files` is false meaning that monstache will only index metadat
 In order for `index-files` to index the raw content of files stored in GridFS you must install a plugin for elasticsearch.
 For versions of elasticsearch prior to version 5, you should install the [mapper-attachments](https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/mapper-attachments.html) plugin.  In version 5 or greater
 of elasticsearch the mapper-attachment plugin is deprecated and you should install the [ingest-attachment](https://www.elastic.co/guide/en/elasticsearch/plugins/master/ingest-attachment.html) plugin instead.
-For further information on how to configure monstache to index content from grids, see the section [Indexing Gridfs Files](#files).
+For further information on how to configure monstache to index content from GridFS, see the section [Indexing Gridfs Files](#files).
 
 When `max-file-size` is greater than 0 monstache will not index the content of GridFS files that exceed this limit in bytes.
 
