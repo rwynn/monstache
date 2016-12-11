@@ -90,10 +90,10 @@ The following defaults are used for missing config values:
 	workers -> nil
 	verbose -> false
 
-When `gzip` is true, monstache will compress requests to elasticsearch to increase performance.  Compression is enabled
-by default in elasticsearch 5, but is disabled by default in previous elasticsearch versions.  If you enable `gzip` in
-monstache and are using elasticsearch prior to version 5 you will need to update the elasticsearch config file to
-set `http.compression: true`. Enabling `gzip` is recommended especially if you enable the `index-files` setting.
+When `gzip` is true, monstache will compress requests to elasticsearch to increase performance. If you enable `gzip`
+in monstache and are using elasticsearch prior to version 5 you will also need to update the elasticsearch config file
+to set `http.compression: true`. In elasticsearch version 5 and above `http.compression` is enabled by default. Enabling
+`gzip` is recommended especially if you enable the `index-files` setting.
 
 When `resume` is true, monstache writes the timestamp of mongodb operations it has successfully synced to elasticsearch
 to the collection `monstache.monstache`.  It also reads this value from that collection when it starts in order to replay
