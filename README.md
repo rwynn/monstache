@@ -39,6 +39,7 @@ If the -f option is supplied the argument value should be the file path of a TOM
 
 A sample TOML config file looks like this:
 
+	gzip = true
 	mongo-url = "mongodb://someuser:password@localhost:40001"
 	mongo-pem-file = "/path/to/mongoCert.pem"
 	elasticsearch-url = "http://someuser:password@localhost:9200"
@@ -63,6 +64,7 @@ Arguments supplied on the command line override settings in a config file
 
 The following defaults are used for missing config values:
 
+	gzip -> false
 	mongo-url -> localhost
 	mongo-pem-file -> nil
 	elasticsearch-url -> localhost
@@ -87,6 +89,11 @@ The following defaults are used for missing config values:
 	worker -> nil
 	workers -> nil
 	verbose -> false
+
+When `gzip` is true, monstache will compress requests to elasticsearch to increase performance.  Compression is enabled
+by default in elasticsearch 5, but is disabled by default in previous elasticsearch versions.  If you enable `gzip` in
+monstache and are using elasticsearch prior to version 5 you will need to update the elasticsearch config file to
+set `http.compression: true`. Enabling `gzip` is recommended especially if you enable the `index-files` setting.
 
 When `resume` is true, monstache writes the timestamp of mongodb operations it has successfully synced to elasticsearch
 to the collection `monstache.monstache`.  It also reads this value from that collection when it starts in order to replay

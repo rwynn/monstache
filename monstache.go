@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -70,6 +71,7 @@ type configOptions struct {
 	ResumeName          string `toml:"resume-name"`
 	NsRegex             string `toml:"namespace-regex"`
 	NsExcludeRegex      string `toml:"namespace-exclude-regex"`
+	Gzip                bool
 	Verbose             bool
 	Resume              bool
 	ResumeWriteUnsafe   bool `toml:"resume-write-unsafe"`
@@ -394,6 +396,7 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&configuration.ConfigFile, "f", "", "Location of configuration file")
 	flag.BoolVar(&configuration.DroppedDatabases, "dropped-databases", true, "True to delete indexes from dropped databases")
 	flag.BoolVar(&configuration.DroppedCollections, "dropped-collections", true, "True to delete indexes from dropped collections")
+	flag.BoolVar(&configuration.Gzip, "gzip", false, "True to use gzip for requests to elasticsearch")
 	flag.BoolVar(&configuration.Verbose, "verbose", false, "True to output verbose messages")
 	flag.BoolVar(&configuration.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
 	flag.BoolVar(&configuration.ResumeWriteUnsafe, "resume-write-unsafe", false, "True to speedup writes of the last timestamp synched for resuming at the cost of error checking")
@@ -503,6 +506,9 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		if configuration.DroppedCollections && !tomlConfig.DroppedCollections {
 			configuration.DroppedCollections = false
 		}
+		if !configuration.Gzip && tomlConfig.Gzip {
+			configuration.Gzip = true
+		}
 		if !configuration.Verbose && tomlConfig.Verbose {
 			configuration.Verbose = true
 		}
@@ -608,7 +614,20 @@ func (configuration *configOptions) ConfigHttpTransport() error {
 func TraceRequest(method, url, body string) {
 	infoLog.Printf("%s request sent to %s", method, url)
 	if body != "" {
-		infoLog.Printf("request body: %s", body)
+		ba := []byte(body)
+		if len(ba) > 1 && ba[0] == 0x1f && ba[1] == 0x8b {
+			buff := bytes.NewBuffer(ba)
+			reader, err := gzip.NewReader(buff)
+			if err != nil {
+				return
+			}
+			defer reader.Close()
+			if unzipped, err := ioutil.ReadAll(reader); err == nil {
+				infoLog.Printf("request body: %s", unzipped)
+			}
+		} else {
+			infoLog.Printf("request body: %s", body)
+		}
 	}
 }
 
@@ -720,6 +739,9 @@ func main() {
 	}
 	if configuration.Verbose {
 		elastic.RequestTracer = TraceRequest
+	}
+	if configuration.Gzip {
+		elastic.Gzip = true
 	}
 	if err := TestElasticSearchConn(elastic, configuration); err != nil {
 		log.Panicf("Unable to validate connection to elasticsearch using %s://%s:%s: %s",
