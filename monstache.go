@@ -78,15 +78,16 @@ type configOptions struct {
 	Resume              bool
 	ResumeWriteUnsafe   bool `toml:"resume-write-unsafe"`
 	Replay              bool
-	DroppedDatabases    bool `toml:"dropped-databases"`
-	DroppedCollections  bool `toml:"dropped-collections"`
-	IndexFiles          bool `toml:"index-files"`
-	FileHighlighting    bool `toml:"file-highlighting"`
-	ElasticMaxConns     int  `toml:"elasticsearch-max-conns"`
-	ElasticRetrySeconds int  `toml:"elasticsearch-retry-seconds"`
-	ElasticMaxDocs      int  `toml:"elasticsearch-max-docs"`
-	ElasticMaxBytes     int  `toml:"elasticsearch-max-bytes"`
-	ElasticMaxSeconds   int  `toml:"elasticsearch-max-seconds"`
+	DroppedDatabases    bool     `toml:"dropped-databases"`
+	DroppedCollections  bool     `toml:"dropped-collections"`
+	IndexFiles          bool     `toml:"index-files"`
+	FileHighlighting    bool     `toml:"file-highlighting"`
+	ElasticMaxConns     int      `toml:"elasticsearch-max-conns"`
+	ElasticRetrySeconds int      `toml:"elasticsearch-retry-seconds"`
+	ElasticMaxDocs      int      `toml:"elasticsearch-max-docs"`
+	ElasticMaxBytes     int      `toml:"elasticsearch-max-bytes"`
+	ElasticMaxSeconds   int      `toml:"elasticsearch-max-seconds"`
+	ElasticHosts        []string `toml:"elasticsearch-hosts"`
 	ElasticMajorVersion int
 	ChannelSize         int   `toml:"gtm-channel-size"`
 	MaxFileSize         int64 `toml:"max-file-size"`
@@ -547,6 +548,7 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 			configuration.Worker = tomlConfig.Worker
 		}
 		configuration.Workers = tomlConfig.Workers
+		configuration.ElasticHosts = tomlConfig.ElasticHosts
 		tomlConfig.LoadScripts()
 		tomlConfig.LoadIndexTypes()
 	}
@@ -749,6 +751,9 @@ func main() {
 	if configuration.ElasticUrl != "" {
 		elastic.SetFromUrl(configuration.ElasticUrl)
 	}
+	if configuration.ElasticHosts != nil {
+		elastic.SetHosts(configuration.ElasticHosts)
+	}
 	if configuration.Verbose {
 		elastic.RequestTracer = TraceRequest
 	}
@@ -756,8 +761,12 @@ func main() {
 		elastic.Gzip = true
 	}
 	if err := TestElasticSearchConn(elastic, configuration); err != nil {
+		host := elastic.Domain
+		if configuration.ElasticHosts != nil {
+			host = configuration.ElasticHosts[0]
+		}
 		log.Panicf("Unable to validate connection to elasticsearch using %s://%s:%s: %s",
-			elastic.Protocol, elastic.Domain, elastic.Port, err)
+			elastic.Protocol, host, elastic.Port, err)
 	}
 	indexer := elastic.NewBulkIndexerErrors(configuration.ElasticMaxConns, configuration.ElasticRetrySeconds)
 	if configuration.ElasticMaxDocs != 0 {

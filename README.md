@@ -47,6 +47,7 @@ A sample TOML config file looks like this:
 	elasticsearch-url = "http://someuser:password@localhost:9200"
 	elasticsearch-max-conns = 10
 	elasticsearch-pem-file = "/path/to/elasticCert.pem"
+	elasticsearch-hosts = ["localhost", "example.com"]
 	dropped-collections = true
 	dropped-databases = true
 	replay = false
@@ -61,7 +62,8 @@ A sample TOML config file looks like this:
 	file-namespaces = ["users.fs.files"]
 	verbose = true
 	
-All options in the config file above also work if passed explicity by the same name to the monstache command
+Most options in the config file above also work if passed explicity by the same name to the monstache command. When
+the value of the option is an array or object it must reside in the TOML config file.
 
 Arguments supplied on the command line override settings in a config file
 
@@ -77,6 +79,7 @@ The following defaults are used for missing config values:
 	elasticsearch-max-bytes -> 16384
 	elasticsearch-max-seconds -> 5
 	elasticsearch-pem-file -> nil
+	elasticsearch-hosts -> nil
 	dropped-databases -> true
 	dropped-collections -> true
 	replay -> false
@@ -163,6 +166,12 @@ When `elasticsearch-max-seconds` is given a bulk index request to elasticsearch 
 
 When `elasticsearch-pem-file` is given monstache will use the given file path to add a local certificate to x509 cert
 pool when connecting to elasticsearch. This should only be used when elasticsearch is configured with SSL enabled.
+
+When `elasticsearch-hosts` is given monstache will set the hosts array on the `elastigo` client connection. You must duplicate and include in this array value
+the host that you already configured in the `elasticsearch-url` option along with any other hosts. Use this option if you have a cluster with multiple nodes
+and would like index requests to be intelligently distributed between the cluster nodes.  Note that index requests will go to only one of the configured hosts
+within a cluster.  If you have multiple elasticsearch clusters you should use one dedicated monstache process per cluster.  This configures the hosts within
+a single cluster and not across clusters.
 
 When `dropped-databases` is false monstache will not delete the mapped indexes in elasticsearch if a mongodb database is dropped
 
