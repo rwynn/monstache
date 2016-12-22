@@ -44,6 +44,7 @@ A sample TOML config file looks like this:
 	mongo-pem-file = "/path/to/mongoCert.pem"
 	elasticsearch-url = "http://someuser:password@localhost:9200"
 	elasticsearch-max-conns = 10
+	elasticsearch-pem-file = "/path/to/elasticCert.pem"
 	dropped-collections = true
 	dropped-databases = true
 	replay = false
@@ -73,6 +74,7 @@ The following defaults are used for missing config values:
 	elasticsearch-max-docs -> 100
 	elasticsearch-max-bytes -> 16384
 	elasticsearch-max-seconds -> 5
+	elasticsearch-pem-file -> nil
 	dropped-databases -> true
 	dropped-collections -> true
 	replay -> false
@@ -156,6 +158,9 @@ When `elasticsearch-max-docs` is given a bulk index request to elasticsearch wil
 When `elasticsearch-max-bytes` is given a bulk index request to elasticsearch will be forced when the buffer reaches the given number of bytes
 
 When `elasticsearch-max-seconds` is given a bulk index request to elasticsearch will be forced when a request has not been made in the given number of seconds
+
+When `elasticsearch-pem-file` is given monstache will use the given file path to add a local certificate to x509 cert
+pool when connecting to elasticsearch. This should only be used when elasticsearch is configured with SSL enabled.
 
 When `dropped-databases` is false monstache will not delete the mapped indexes in elasticsearch if a mongodb database is dropped
 
