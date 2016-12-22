@@ -30,10 +30,12 @@ monstache is not bi-directional.  It only syncs from mongodb to elasticsearch.
 
 ### Usage ###
 
-monstache \[-f PATH-TO-TOML\] \[options\]
+monstache \[-v\] \[-f PATH-TO-TOML\] \[options\]
 
 All command line arguments are optional.  With no arguments monstache expects to connect to mongodb and
 elasticsearch on localhost using the default ports. 
+
+Supply the -v flag to print the version of monstache and then exit.
 
 If the -f option is supplied the argument value should be the file path of a TOML config file.
 

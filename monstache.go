@@ -42,6 +42,7 @@ var fileNamespaces map[string]bool
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
+const Version = "2.8"
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -71,6 +72,7 @@ type configOptions struct {
 	ResumeName          string `toml:"resume-name"`
 	NsRegex             string `toml:"namespace-regex"`
 	NsExcludeRegex      string `toml:"namespace-exclude-regex"`
+	Version             bool
 	Gzip                bool
 	Verbose             bool
 	Resume              bool
@@ -396,6 +398,7 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&configuration.ConfigFile, "f", "", "Location of configuration file")
 	flag.BoolVar(&configuration.DroppedDatabases, "dropped-databases", true, "True to delete indexes from dropped databases")
 	flag.BoolVar(&configuration.DroppedCollections, "dropped-collections", true, "True to delete indexes from dropped collections")
+	flag.BoolVar(&configuration.Version, "v", false, "True to print the version number")
 	flag.BoolVar(&configuration.Gzip, "gzip", false, "True to use gzip for requests to elasticsearch")
 	flag.BoolVar(&configuration.Verbose, "verbose", false, "True to output verbose messages")
 	flag.BoolVar(&configuration.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
@@ -718,12 +721,17 @@ func DoDelete(indexer *elastigo.BulkIndexer, op *gtm.Op) (indexed bool) {
 func main() {
 	log.SetPrefix("ERROR ")
 
+	configuration := &configOptions{}
+	configuration.ParseCommandLineFlags()
+	if configuration.Version {
+		fmt.Println(Version)
+		os.Exit(0)
+	}
+	configuration.LoadConfigFile().SetDefaults()
+
 	sigs := make(chan os.Signal, 1)
 	done := make(chan bool, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
-
-	configuration := &configOptions{}
-	configuration.ParseCommandLineFlags().LoadConfigFile().SetDefaults()
 
 	if err := configuration.ConfigHttpTransport(); err != nil {
 		log.Panicf("Unable to configure HTTP transport: %s", err)
