@@ -42,7 +42,7 @@ var fileNamespaces map[string]bool
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
-const Version = "2.8"
+const Version = "2.8.1"
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
