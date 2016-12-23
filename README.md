@@ -107,7 +107,8 @@ to the collection `monstache.monstache`.  It also reads this value from that col
 events which it might have missed because monstache was stopped. monstache uses the value of `resume-name` as a key when
 storing and retrieving timestamps.  If `resume` is true but `resume-name` is not set the key defaults to `default`.
 In the case where `resume` is true and `worker` is set but `resume-name` is not set the key defaults to the name of the
-worker.
+worker. Note when using multiple monstache processes it is always best to ensure that `resume-name` is set to a unique 
+value for each process.  This ensures that each process will not overwrite the timestamp information of another.
 
 When `replay` is true, monstache replays all events from the beginning of the mongodb oplog and syncs them to elasticsearch.
 
@@ -472,4 +473,12 @@ names.
 
 monstache will hash the id of each document using consistent hashing so that each id is handled by only
 one of the available workers.
+
+<a name="multiple_clusters"></a>
+### Synching a single mongodb cluster to multipe elasticsearch clusters ###
+
+The best way to sync a single mongodb cluster to multiple elasticsearch cluster is to use a dedicated monstache 
+process (or processes if using workers) for each target elasticsearch cluster.  If you are using the `resume` feature
+you should ensure that each monstache process has a unique `resume-name` set for it among the monstache processes to
+avoid collisions when writing timestamps to mongodb.
 
