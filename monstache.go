@@ -65,38 +65,41 @@ type indexTypeMapping struct {
 }
 
 type configOptions struct {
-	MongoUrl            string `toml:"mongo-url"`
-	MongoPemFile        string `toml:"mongo-pem-file"`
-	ElasticUrl          string `toml:"elasticsearch-url"`
-	ElasticPemFile      string `toml:"elasticsearch-pem-file"`
-	ResumeName          string `toml:"resume-name"`
-	NsRegex             string `toml:"namespace-regex"`
-	NsExcludeRegex      string `toml:"namespace-exclude-regex"`
-	Version             bool
-	Gzip                bool
-	Verbose             bool
-	Resume              bool
-	ResumeWriteUnsafe   bool `toml:"resume-write-unsafe"`
-	Replay              bool
-	DroppedDatabases    bool     `toml:"dropped-databases"`
-	DroppedCollections  bool     `toml:"dropped-collections"`
-	IndexFiles          bool     `toml:"index-files"`
-	FileHighlighting    bool     `toml:"file-highlighting"`
-	ElasticMaxConns     int      `toml:"elasticsearch-max-conns"`
-	ElasticRetrySeconds int      `toml:"elasticsearch-retry-seconds"`
-	ElasticMaxDocs      int      `toml:"elasticsearch-max-docs"`
-	ElasticMaxBytes     int      `toml:"elasticsearch-max-bytes"`
-	ElasticMaxSeconds   int      `toml:"elasticsearch-max-seconds"`
-	ElasticHosts        []string `toml:"elasticsearch-hosts"`
-	ElasticMajorVersion int
-	ChannelSize         int   `toml:"gtm-channel-size"`
-	MaxFileSize         int64 `toml:"max-file-size"`
-	ConfigFile          string
-	Script              []javascript
-	Mapping             []indexTypeMapping
-	FileNamespaces      []string `toml:"file-namespaces"`
-	Workers             []string
-	Worker              string
+	MongoUrl                 string `toml:"mongo-url"`
+	MongoPemFile             string `toml:"mongo-pem-file"`
+	MongoOpLogDatabaseName   string `toml:"mongo-oplog-database-name"`
+	MongoOpLogCollectionName string `toml:"mongo-oplog-collection-name"`
+	MongoCursorTimeout       string `toml:"mongo-cursor-timeout"`
+	ElasticUrl               string `toml:"elasticsearch-url"`
+	ElasticPemFile           string `toml:"elasticsearch-pem-file"`
+	ResumeName               string `toml:"resume-name"`
+	NsRegex                  string `toml:"namespace-regex"`
+	NsExcludeRegex           string `toml:"namespace-exclude-regex"`
+	Version                  bool
+	Gzip                     bool
+	Verbose                  bool
+	Resume                   bool
+	ResumeWriteUnsafe        bool `toml:"resume-write-unsafe"`
+	Replay                   bool
+	DroppedDatabases         bool     `toml:"dropped-databases"`
+	DroppedCollections       bool     `toml:"dropped-collections"`
+	IndexFiles               bool     `toml:"index-files"`
+	FileHighlighting         bool     `toml:"file-highlighting"`
+	ElasticMaxConns          int      `toml:"elasticsearch-max-conns"`
+	ElasticRetrySeconds      int      `toml:"elasticsearch-retry-seconds"`
+	ElasticMaxDocs           int      `toml:"elasticsearch-max-docs"`
+	ElasticMaxBytes          int      `toml:"elasticsearch-max-bytes"`
+	ElasticMaxSeconds        int      `toml:"elasticsearch-max-seconds"`
+	ElasticHosts             []string `toml:"elasticsearch-hosts"`
+	ElasticMajorVersion      int
+	ChannelSize              int   `toml:"gtm-channel-size"`
+	MaxFileSize              int64 `toml:"max-file-size"`
+	ConfigFile               string
+	Script                   []javascript
+	Mapping                  []indexTypeMapping
+	FileNamespaces           []string `toml:"file-namespaces"`
+	Workers                  []string
+	Worker                   string
 }
 
 func TestElasticSearchConn(conn *elastigo.Conn, configuration *configOptions) (err error) {
@@ -387,6 +390,9 @@ func SaveTimestamp(session *mgo.Session, op *gtm.Op, resumeName string) error {
 func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&configuration.MongoUrl, "mongo-url", "", "MongoDB connection URL")
 	flag.StringVar(&configuration.MongoPemFile, "mongo-pem-file", "", "Path to a PEM file for secure connections to MongoDB")
+	flag.StringVar(&configuration.MongoOpLogDatabaseName, "mongo-oplog-database-name", "", "Override the database name which contains the mongodb oplog")
+	flag.StringVar(&configuration.MongoOpLogCollectionName, "mongo-oplog-collection-name", "", "Override the collection name which contains the mongodb oplog")
+	flag.StringVar(&configuration.MongoCursorTimeout, "mongo-cursor-timeout", "", "Override the duration before a cursor timeout occurs when tailing the oplog")
 	flag.StringVar(&configuration.ElasticUrl, "elasticsearch-url", "", "ElasticSearch connection URL")
 	flag.StringVar(&configuration.ElasticPemFile, "elasticsearch-pem-file", "", "Path to a PEM file for secure connections to elasticsearch")
 	flag.IntVar(&configuration.ElasticMaxConns, "elasticsearch-max-conns", 0, "ElasticSearch max connections")
@@ -476,6 +482,15 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		}
 		if configuration.MongoPemFile == "" {
 			configuration.MongoPemFile = tomlConfig.MongoPemFile
+		}
+		if configuration.MongoOpLogDatabaseName == "" {
+			configuration.MongoOpLogDatabaseName = tomlConfig.MongoOpLogDatabaseName
+		}
+		if configuration.MongoOpLogCollectionName == "" {
+			configuration.MongoOpLogCollectionName = tomlConfig.MongoOpLogCollectionName
+		}
+		if configuration.MongoCursorTimeout == "" {
+			configuration.MongoCursorTimeout = tomlConfig.MongoCursorTimeout
 		}
 		if configuration.ElasticPemFile == "" {
 			configuration.ElasticPemFile = tomlConfig.ElasticPemFile
@@ -633,6 +648,8 @@ func TraceRequest(method, url, body string) {
 			defer reader.Close()
 			if unzipped, err := ioutil.ReadAll(reader); err == nil {
 				infoLog.Printf("request body: %s", unzipped)
+			} else {
+				log.Printf("unable to unzip response: %s", err)
 			}
 		} else {
 			infoLog.Printf("request body: %s", body)
@@ -843,11 +860,23 @@ func main() {
 		panic("workers configured but this worker is undefined. worker must be set to one of the workers.")
 	}
 	filter = gtm.ChainOpFilters(filterChain...)
-
+	var oplogDatabaseName, oplogCollectionName, cursorTimeout *string
+	if configuration.MongoOpLogDatabaseName != "" {
+		oplogDatabaseName = &configuration.MongoOpLogDatabaseName
+	}
+	if configuration.MongoOpLogCollectionName != "" {
+		oplogCollectionName = &configuration.MongoOpLogCollectionName
+	}
+	if configuration.MongoCursorTimeout != "" {
+		cursorTimeout = &configuration.MongoCursorTimeout
+	}
 	ops, errs := gtm.Tail(mongo, &gtm.Options{
-		After:       after,
-		Filter:      filter,
-		ChannelSize: configuration.ChannelSize,
+		After:               after,
+		Filter:              filter,
+		OpLogDatabaseName:   oplogDatabaseName,
+		OpLogCollectionName: oplogCollectionName,
+		CursorTimeout:       cursorTimeout,
+		ChannelSize:         configuration.ChannelSize,
 	})
 	exitStatus := 0
 	for {

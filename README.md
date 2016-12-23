@@ -72,6 +72,9 @@ The following defaults are used for missing config values:
 	gzip -> false
 	mongo-url -> localhost
 	mongo-pem-file -> nil
+	mongo-oplog-database-name -> local
+	mongo-oplog-collection-name -> $oplog.main
+	mongo-cursor-timeout -> 100s
 	elasticsearch-url -> localhost
 	elasticsearch-max-conns -> 10
 	elasticsearch-retry-seconds -> 0 
@@ -138,6 +141,13 @@ are processed at once a larger channel size may prevent blocking in gtm.
 
 When `mongo-pem-file` is given monstache will use the given file path to add a local certificate to x509 cert
 pool when connecting to mongodb. This should only be used when mongodb is configured with SSL enabled.
+
+When `mongo-oplog-database-name` is given monstache will look for the mongodb oplog in the supplied database
+
+When `mongo-oplog-collection-name` is given monstache will look for the mongodb oplog in the supplied collection
+
+When `mongo-cursor-timeout` is given monstache will time out and re-query the oplog after the supplied duration.
+Duration values are expected in the form `50s`.
 
 When `index-files` is true monstache will index the raw content of files stored in GridFS into elasticsearch as an attachment type.
 By default `index-files` is false meaning that monstache will only index metadata associated with files stored in GridFS.
