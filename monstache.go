@@ -762,7 +762,7 @@ func main() {
 	}
 	if err := TestElasticSearchConn(elastic, configuration); err != nil {
 		host := elastic.Domain
-		if configuration.ElasticHosts != nil {
+		if len(configuration.ElasticHosts) > 0 {
 			host = configuration.ElasticHosts[0]
 		}
 		log.Panicf("Unable to validate connection to elasticsearch using %s://%s:%s: %s",
