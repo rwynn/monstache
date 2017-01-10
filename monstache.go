@@ -42,7 +42,7 @@ var fileNamespaces map[string]bool
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
-const Version = "2.8.1"
+const Version = "2.8.2"
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -67,6 +67,7 @@ type indexTypeMapping struct {
 type configOptions struct {
 	MongoUrl                 string `toml:"mongo-url"`
 	MongoPemFile             string `toml:"mongo-pem-file"`
+	MongoValidatePemFile     bool `toml:"mongo-validate-pem-file"`
 	MongoOpLogDatabaseName   string `toml:"mongo-oplog-database-name"`
 	MongoOpLogCollectionName string `toml:"mongo-oplog-collection-name"`
 	MongoCursorTimeout       string `toml:"mongo-cursor-timeout"`
@@ -390,6 +391,7 @@ func SaveTimestamp(session *mgo.Session, op *gtm.Op, resumeName string) error {
 func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&configuration.MongoUrl, "mongo-url", "", "MongoDB connection URL")
 	flag.StringVar(&configuration.MongoPemFile, "mongo-pem-file", "", "Path to a PEM file for secure connections to MongoDB")
+	flag.BoolVar(&configuration.MongoValidatePemFile, "mongo-validate-pem-file", true, "Set to boolean false to not validate the MongoDB PEM file")
 	flag.StringVar(&configuration.MongoOpLogDatabaseName, "mongo-oplog-database-name", "", "Override the database name which contains the mongodb oplog")
 	flag.StringVar(&configuration.MongoOpLogCollectionName, "mongo-oplog-collection-name", "", "Override the collection name which contains the mongodb oplog")
 	flag.StringVar(&configuration.MongoCursorTimeout, "mongo-cursor-timeout", "", "Override the duration before a cursor timeout occurs when tailing the oplog")
@@ -482,6 +484,9 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		}
 		if configuration.MongoPemFile == "" {
 			configuration.MongoPemFile = tomlConfig.MongoPemFile
+		}
+		if configuration.MongoValidatePemFile && !tomlConfig.MongoValidatePemFile {
+			configuration.MongoValidatePemFile = false
 		}
 		if configuration.MongoOpLogDatabaseName == "" {
 			configuration.MongoOpLogDatabaseName = tomlConfig.MongoOpLogDatabaseName
@@ -607,6 +612,12 @@ func (configuration *configOptions) DialMongo() (*mgo.Session, error) {
 			return nil, err
 		}
 		tlsConfig := &tls.Config{RootCAs: certs}
+
+		// Check to see if we don't need to validate the PEM
+		if configuration.MongoValidatePemFile == false {
+			// Turn off validation
+			tlsConfig.InsecureSkipVerify = true
+		}
 		dialInfo, err := mgo.ParseURL(configuration.MongoUrl)
 		if err != nil {
 			return nil, err
