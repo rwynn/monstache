@@ -762,7 +762,7 @@ func TraceRequest(method, url, body string) {
 			if unzipped, err := ioutil.ReadAll(reader); err == nil {
 				infoLog.Printf("request body: %s", unzipped)
 			} else {
-				log.Printf("unable to unzip response: %s", err)
+				log.Printf("unable to unzip request: %s", err)
 			}
 		} else {
 			infoLog.Printf("request body: %s", body)
