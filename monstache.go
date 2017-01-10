@@ -715,7 +715,11 @@ func (configuration *configOptions) DialMongo() (*mgo.Session, error) {
 		} else {
 			dialInfo.Timeout = time.Duration(10) * time.Second
 			dialInfo.DialServer = func(addr *mgo.ServerAddr) (net.Conn, error) {
-				return tls.Dial("tcp", addr.String(), tlsConfig)
+				conn, err := tls.Dial("tcp", addr.String(), tlsConfig)
+				if err != nil {
+					log.Printf("Unable to dial mongodb: %s", err)
+				}
+				return conn, err
 			}
 			session, err := mgo.DialWithInfo(dialInfo)
 			if err == nil {
