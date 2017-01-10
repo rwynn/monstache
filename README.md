@@ -44,9 +44,11 @@ A sample TOML config file looks like this:
 	gzip = true
 	mongo-url = "mongodb://someuser:password@localhost:40001"
 	mongo-pem-file = "/path/to/mongoCert.pem"
+	mongo-validate-pem-file = false
 	elasticsearch-url = "http://someuser:password@localhost:9200"
 	elasticsearch-max-conns = 10
 	elasticsearch-pem-file = "/path/to/elasticCert.pem"
+	elastic-validate-pem-file = true
 	elasticsearch-hosts = ["localhost", "example.com"]
 	dropped-collections = true
 	dropped-databases = true
@@ -61,6 +63,7 @@ A sample TOML config file looks like this:
 	file-highlighting = true
 	file-namespaces = ["users.fs.files"]
 	verbose = true
+	cluster-name = 'apollo'
 	
 Most options in the config file above also work if passed explicity by the same name to the monstache command. When
 the value of the option is an array or object it must reside in the TOML config file.
@@ -72,6 +75,7 @@ The following defaults are used for missing config values:
 	gzip -> false
 	mongo-url -> localhost
 	mongo-pem-file -> nil
+	mongo-validate-pem-file -> true
 	mongo-oplog-database-name -> local
 	mongo-oplog-collection-name -> $oplog.main
 	mongo-cursor-timeout -> 100s
@@ -82,6 +86,7 @@ The following defaults are used for missing config values:
 	elasticsearch-max-bytes -> 16384
 	elasticsearch-max-seconds -> 5
 	elasticsearch-pem-file -> nil
+	elasticsearch-validate-pem-file -> true
 	elasticsearch-hosts -> nil
 	dropped-databases -> true
 	dropped-collections -> true
@@ -89,6 +94,7 @@ The following defaults are used for missing config values:
 	resume -> false
 	resume-write-unsafe -> false
 	resume-name -> default
+	resume-from-timestamp -> 0
 	namespace-regex -> nil
 	namespace-exclude-regex -> nil
 	gtm-channel-size -> 100
@@ -99,6 +105,7 @@ The following defaults are used for missing config values:
 	worker -> nil
 	workers -> nil
 	verbose -> false
+	cluster-name -> nil
 
 When `gzip` is true, monstache will compress requests to elasticsearch to increase performance. If you enable `gzip`
 in monstache and are using elasticsearch prior to version 5 you will also need to update the elasticsearch config file
@@ -112,6 +119,10 @@ storing and retrieving timestamps.  If `resume` is true but `resume-name` is not
 In the case where `resume` is true and `worker` is set but `resume-name` is not set the key defaults to the name of the
 worker. Note when using multiple monstache processes it is always best to ensure that `resume-name` is set to a unique 
 value for each process.  This ensures that each process will not overwrite the timestamp information of another.
+
+When `resume-from-timestamp` (a 64 bit timestamp where the first 32 bytes represent the time since epoch and the last 32 bits
+represent an offset) is given, monstache will sync events starting immediately after the timestamp.  This is useful if you have 
+a specific timestamp from the oplog and would like to start syncing from after this event. 
 
 When `replay` is true, monstache replays all events from the beginning of the mongodb oplog and syncs them to elasticsearch.
 
@@ -141,6 +152,8 @@ are processed at once a larger channel size may prevent blocking in gtm.
 
 When `mongo-pem-file` is given monstache will use the given file path to add a local certificate to x509 cert
 pool when connecting to mongodb. This should only be used when mongodb is configured with SSL enabled.
+
+When `mongo-validate-pem-file` is false TLS will be configured to skip verification
 
 When `mongo-oplog-database-name` is given monstache will look for the mongodb oplog in the supplied database
 
@@ -178,6 +191,8 @@ When `elasticsearch-max-seconds` is given a bulk index request to elasticsearch 
 When `elasticsearch-pem-file` is given monstache will use the given file path to add a local certificate to x509 cert
 pool when connecting to elasticsearch. This should only be used when elasticsearch is configured with SSL enabled.
 
+When `elasticsearch-validate-pem-file` is false TLS will be configured to skip verification
+
 When `elasticsearch-hosts` is given monstache will set the hosts array on the `elastigo` client connection. You must duplicate and include in this array value
 the host that you already configured in the `elasticsearch-url` option along with any other hosts. Use this option if you have a cluster with multiple nodes
 and would like index requests to be intelligently distributed between the cluster nodes.  Note that index requests will go to only one of the configured hosts
@@ -191,6 +206,10 @@ When `dropped-collections` is false monstache will not delete the mapped index i
 When `worker` is given monstache will enter multi-worker mode and will require you to also provide the config option `workers`.  Use this mode to run
 multiple monstache processes and distribute the work between them.  In this mode monstache will ensure that each mongo document id always goes to the
 same worker and none of the other workers. See the section [workers](#workers) for more information.
+
+When `cluster-name` is given monstache will enter a high availablity mode. Processes with cluster name set to the same value will coordinate.  Only one of the
+processes in a cluster will be sync changes.  The other process will be in a paused state.  If the process which is syncing changes goes down for some reason
+one of the processes in paused state will take control and start syncing.  See the section [high availability](#high_availability) for more information.
 
 ### Config Syntax ###
 
@@ -484,11 +503,47 @@ names.
 monstache will hash the id of each document using consistent hashing so that each id is handled by only
 one of the available workers.
 
+<a name="high_availability"></a>
+### High Availability ###
+
+You can run monstache in high availability mode by starting multiple processes with the same value for `cluster-name`.
+Each process will join a cluster which works together to ensure that a monstache process is always syncing to elasticsearch.
+
+High availability works by ensuring a active process in the `monstache.cluster` collection in mongodb. Only the processes in
+this collection will be syncing for the cluster.  Processes not present in this collection will be paused.  Documents in the 
+`monstache.cluster` collection have a TTL assigned to them.  When a document in this collection times out it will be removed from
+the collection by mongodb and another process in the cluster will them have a chance to write to the collection and become the
+new active process.
+
+When `cluster-name` is supplied the `resume` feature is automatically turned on and the `resume-name` becomes the name of the cluster.
+This is to ensure that each of the processes is able to pick up syncing where the last one left off.  
+
+You can combine the HA feature with the workers feature.  For 3 cluster nodes with 3 workers per node you would have something like the following:
+
+	// config.toml
+	workers = ["Tom", "Dick", "Harry"]
+	
+	// on host A
+	monstache -cluster-name HA -worker Tom -f config.toml
+	monstache -cluster-name HA -worker Dick -f config.toml
+	monstache -cluster-name HA -worker Harry -f config.toml
+
+	// on host B
+	monstache -cluster-name HA -worker Tom -f config.toml
+	monstache -cluster-name HA -worker Dick -f config.toml
+	monstache -cluster-name HA -worker Harry -f config.toml
+
+	// on host C
+	monstache -cluster-name HA -worker Tom -f config.toml
+	monstache -cluster-name HA -worker Dick -f config.toml
+	monstache -cluster-name HA -worker Harry -f config.toml
+
+When the clustering feature is combined with workers then the `resume` name becomes the cluster name concatenated with the worker name.
+
 <a name="multiple_clusters"></a>
 ### Synching a single mongodb cluster to multipe elasticsearch clusters ###
 
 The best way to sync a single mongodb cluster to multiple elasticsearch cluster is to use a dedicated monstache 
-process (or processes if using workers) for each target elasticsearch cluster.  If you are using the `resume` feature
+process (or processes if using HA/Workers) for each target elasticsearch cluster.  If you are using the `resume` feature
 you should ensure that each monstache process has a unique `resume-name` set for it among the monstache processes to
 avoid collisions when writing timestamps to mongodb.
-

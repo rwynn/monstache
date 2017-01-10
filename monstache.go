@@ -67,20 +67,23 @@ type indexTypeMapping struct {
 type configOptions struct {
 	MongoUrl                 string `toml:"mongo-url"`
 	MongoPemFile             string `toml:"mongo-pem-file"`
-	MongoValidatePemFile     bool `toml:"mongo-validate-pem-file"`
+	MongoValidatePemFile     bool   `toml:"mongo-validate-pem-file"`
 	MongoOpLogDatabaseName   string `toml:"mongo-oplog-database-name"`
 	MongoOpLogCollectionName string `toml:"mongo-oplog-collection-name"`
 	MongoCursorTimeout       string `toml:"mongo-cursor-timeout"`
 	ElasticUrl               string `toml:"elasticsearch-url"`
 	ElasticPemFile           string `toml:"elasticsearch-pem-file"`
+	ElasticValidatePemFile   bool   `toml:"elasticsearch-validate-pem-file`
 	ResumeName               string `toml:"resume-name"`
 	NsRegex                  string `toml:"namespace-regex"`
 	NsExcludeRegex           string `toml:"namespace-exclude-regex"`
+	ClusterName              string `toml:"cluster-name"`
 	Version                  bool
 	Gzip                     bool
 	Verbose                  bool
 	Resume                   bool
-	ResumeWriteUnsafe        bool `toml:"resume-write-unsafe"`
+	ResumeWriteUnsafe        bool  `toml:"resume-write-unsafe"`
+	ResumeFromTimestamp      int64 `toml:"resume-from-timestamp"`
 	Replay                   bool
 	DroppedDatabases         bool     `toml:"dropped-databases"`
 	DroppedCollections       bool     `toml:"dropped-collections"`
@@ -380,6 +383,71 @@ func FilterInverseWithRegex(regex string) gtm.OpFilter {
 	}
 }
 
+func EnsureClusterTTL(session *mgo.Session) error {
+	col := session.DB("monstache").C("cluster")
+	return col.EnsureIndex(mgo.Index{
+		Key:         []string{"expireAt"},
+		Background:  true,
+		ExpireAfter: time.Duration(30) * time.Second,
+	})
+}
+
+func IsEnabledProcess(session *mgo.Session, configuration *configOptions) (bool, error) {
+	col := session.DB("monstache").C("cluster")
+	doc := make(map[string]interface{})
+	doc["_id"] = configuration.ResumeName
+	doc["expireAt"] = time.Now().UTC()
+	doc["pid"] = os.Getpid()
+	if host, err := os.Hostname(); err == nil {
+		doc["host"] = host
+	} else {
+		return false, err
+	}
+	err := col.Insert(doc)
+	if err == nil {
+		return true, nil
+	}
+	lastError := err.(*mgo.LastError)
+	if lastError.Code == 11000 {
+		return false, nil
+	} else {
+		return false, err
+	}
+}
+
+func ResetClusterState(session *mgo.Session, configuration *configOptions) error {
+	col := session.DB("monstache").C("cluster")
+	return col.RemoveId(configuration.ResumeName)
+}
+
+func IsEnabledProcessId(session *mgo.Session, configuration *configOptions) bool {
+	col := session.DB("monstache").C("cluster")
+	doc := make(map[string]interface{})
+	col.FindId(configuration.ResumeName).One(doc)
+	if doc["pid"] != nil && doc["host"] != nil {
+		pid := doc["pid"].(int)
+		host := doc["host"].(string)
+		hostname, err := os.Hostname()
+		if err != nil {
+			log.Println(err)
+			return false
+		}
+		return pid == os.Getpid() && host == hostname
+	}
+	return false
+}
+
+func ResumeWork(session *mgo.Session, configuration *configOptions) {
+	col := session.DB("monstache").C("monstache")
+	doc := make(map[string]interface{})
+	col.FindId(configuration.ResumeName).One(doc)
+	if doc["ts"] != nil {
+		ts := doc["ts"].(bson.MongoTimestamp)
+		gtm.Since(ts)
+		gtm.Resume()
+	}
+}
+
 func SaveTimestamp(session *mgo.Session, op *gtm.Op, resumeName string) error {
 	col := session.DB("monstache").C("monstache")
 	doc := make(map[string]interface{})
@@ -397,6 +465,7 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&configuration.MongoCursorTimeout, "mongo-cursor-timeout", "", "Override the duration before a cursor timeout occurs when tailing the oplog")
 	flag.StringVar(&configuration.ElasticUrl, "elasticsearch-url", "", "ElasticSearch connection URL")
 	flag.StringVar(&configuration.ElasticPemFile, "elasticsearch-pem-file", "", "Path to a PEM file for secure connections to elasticsearch")
+	flag.BoolVar(&configuration.ElasticValidatePemFile, "elasticsearch-validate-pem-file", true, "Set to boolean false to not validate the ElasticSearch PEM file")
 	flag.IntVar(&configuration.ElasticMaxConns, "elasticsearch-max-conns", 0, "ElasticSearch max connections")
 	flag.IntVar(&configuration.ElasticRetrySeconds, "elasticsearch-retry-seconds", 0, "Number of seconds before retrying ElasticSearch requests")
 	flag.IntVar(&configuration.ElasticMaxDocs, "elasticsearch-max-docs", 0, "Number of docs to hold before flushing to ElasticSearch")
@@ -411,11 +480,13 @@ func (configuration *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.BoolVar(&configuration.Gzip, "gzip", false, "True to use gzip for requests to elasticsearch")
 	flag.BoolVar(&configuration.Verbose, "verbose", false, "True to output verbose messages")
 	flag.BoolVar(&configuration.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
+	flag.Int64Var(&configuration.ResumeFromTimestamp, "resume-from-timestamp", 0, "Timestamp to resume syncing from")
 	flag.BoolVar(&configuration.ResumeWriteUnsafe, "resume-write-unsafe", false, "True to speedup writes of the last timestamp synched for resuming at the cost of error checking")
 	flag.BoolVar(&configuration.Replay, "replay", false, "True to replay all events from the oplog and index them in elasticsearch")
 	flag.BoolVar(&configuration.IndexFiles, "index-files", false, "True to index gridfs files into elasticsearch. Requires the elasticsearch mapper-attachments (deprecated) or ingest-attachment plugin")
 	flag.BoolVar(&configuration.FileHighlighting, "file-highlighting", false, "True to enable the ability to highlight search times for a file query")
 	flag.StringVar(&configuration.ResumeName, "resume-name", "", "Name under which to load/store the resume state. Defaults to 'default'")
+	flag.StringVar(&configuration.ClusterName, "cluster-name", "", "Name of the monstache process cluster")
 	flag.StringVar(&configuration.Worker, "worker", "", "The name of this worker in a multi-worker configuration")
 	flag.StringVar(&configuration.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
 	flag.StringVar(&configuration.NsRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
@@ -500,6 +571,9 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		if configuration.ElasticPemFile == "" {
 			configuration.ElasticPemFile = tomlConfig.ElasticPemFile
 		}
+		if configuration.ElasticValidatePemFile && !tomlConfig.ElasticValidatePemFile {
+			configuration.ElasticValidatePemFile = false
+		}
 		if configuration.ElasticUrl == "" {
 			configuration.ElasticUrl = tomlConfig.ElasticUrl
 		}
@@ -551,8 +625,14 @@ func (configuration *configOptions) LoadConfigFile() *configOptions {
 		if !configuration.ResumeWriteUnsafe && tomlConfig.ResumeWriteUnsafe {
 			configuration.ResumeWriteUnsafe = true
 		}
+		if configuration.ResumeFromTimestamp == 0 {
+			configuration.ResumeFromTimestamp = tomlConfig.ResumeFromTimestamp
+		}
 		if configuration.Resume && configuration.ResumeName == "" {
 			configuration.ResumeName = tomlConfig.ResumeName
+		}
+		if configuration.ClusterName == "" {
+			configuration.ClusterName = tomlConfig.ClusterName
 		}
 		if configuration.NsRegex == "" {
 			configuration.NsRegex = tomlConfig.NsRegex
@@ -587,7 +667,14 @@ func (configuration *configOptions) SetDefaults() *configOptions {
 	if configuration.MongoUrl == "" {
 		configuration.MongoUrl = mongoUrlDefault
 	}
-	if configuration.ResumeName == "" {
+	if configuration.ClusterName != "" {
+		if configuration.ClusterName != "" && configuration.Worker != "" {
+			configuration.ResumeName = fmt.Sprintf("%s:%s", configuration.ClusterName, configuration.Worker)
+		} else {
+			configuration.ResumeName = configuration.ClusterName
+		}
+		configuration.Resume = true
+	} else if configuration.ResumeName == "" {
 		if configuration.Worker != "" {
 			configuration.ResumeName = configuration.Worker
 		} else {
@@ -622,10 +709,16 @@ func (configuration *configOptions) DialMongo() (*mgo.Session, error) {
 		if err != nil {
 			return nil, err
 		} else {
+			dialInfo.Timeout = time.Duration(10) * time.Second
 			dialInfo.DialServer = func(addr *mgo.ServerAddr) (net.Conn, error) {
 				return tls.Dial("tcp", addr.String(), tlsConfig)
 			}
-			return mgo.DialWithInfo(dialInfo)
+			session, err := mgo.DialWithInfo(dialInfo)
+			if err == nil {
+				session.SetSyncTimeout(1 * time.Minute)
+				session.SetSocketTimeout(1 * time.Minute)
+			}
+			return session, err
 		}
 	} else {
 		return mgo.Dial(configuration.MongoUrl)
@@ -641,6 +734,11 @@ func (configuration *configOptions) ConfigHttpTransport() error {
 			return err
 		}
 		tlsConfig := &tls.Config{RootCAs: certs}
+		// Check to see if we don't need to validate the PEM
+		if configuration.ElasticValidatePemFile == false {
+			// Turn off validation
+			tlsConfig.InsecureSkipVerify = true
+		}
 		http.DefaultTransport.(*http.Transport).TLSClientConfig = tlsConfig
 	}
 	return nil
@@ -750,7 +848,7 @@ func DoDelete(indexer *elastigo.BulkIndexer, op *gtm.Op) (indexed bool) {
 
 func main() {
 	log.SetPrefix("ERROR ")
-
+	enabled := true
 	configuration := &configOptions{}
 	configuration.ParseCommandLineFlags()
 	if configuration.Version {
@@ -771,9 +869,10 @@ func main() {
 		log.Panicf("Unable to connect to mongodb using URL %s: %s", configuration.MongoUrl, err)
 	}
 	defer mongo.Close()
-	mongo.SetMode(mgo.Monotonic, true)
 	if configuration.Resume && configuration.ResumeWriteUnsafe {
-		mongo.SetSafe(nil)
+		if configuration.ClusterName == "" {
+			mongo.SetSafe(nil)
+		}
 	}
 	elastic := elastigo.NewConn()
 	if configuration.ElasticUrl != "" {
@@ -809,13 +908,16 @@ func main() {
 	indexer.Start()
 	defer indexer.Stop()
 
-	go func(mongo *mgo.Session, indexer *elastigo.BulkIndexer) {
+	go func(mongo *mgo.Session, indexer *elastigo.BulkIndexer, configuration *configOptions) {
 		<-sigs
+		if configuration.ClusterName != "" {
+			ResetClusterState(mongo, configuration)
+		}
 		mongo.Close()
 		indexer.Flush()
 		indexer.Stop()
 		done <- true
-	}(mongo, indexer)
+	}(mongo, indexer, configuration)
 
 	var after gtm.TimestampGenerator = nil
 	if configuration.Resume {
@@ -823,6 +925,8 @@ func main() {
 			ts := gtm.LastOpTimestamp(session, options)
 			if configuration.Replay {
 				ts = 0
+			} else if configuration.ResumeFromTimestamp != 0 {
+				ts = bson.MongoTimestamp(configuration.ResumeFromTimestamp)
 			} else {
 				collection := session.DB("monstache").C("monstache")
 				doc := make(map[string]interface{})
@@ -881,6 +985,23 @@ func main() {
 	if configuration.MongoCursorTimeout != "" {
 		cursorTimeout = &configuration.MongoCursorTimeout
 	}
+	if configuration.ClusterName != "" {
+		if err = EnsureClusterTTL(mongo); err == nil {
+			infoLog.Printf("Joined cluster %s", configuration.ClusterName)
+		} else {
+			log.Panicf("Unable to enable cluster mode: %s", err)
+		}
+		enabled, err = IsEnabledProcess(mongo, configuration)
+		if err != nil {
+			log.Panicf("Unable to determine enabled cluster process: %s", err)
+		}
+		if enabled {
+			infoLog.Printf("Starting work for cluster %s", configuration.ClusterName)
+		} else {
+			infoLog.Printf("Pausing work for cluster %s", configuration.ClusterName)
+			gtm.Pause()
+		}
+	}
 	ops, errs := gtm.Tail(mongo, &gtm.Options{
 		After:               after,
 		Filter:              filter,
@@ -889,11 +1010,32 @@ func main() {
 		CursorTimeout:       cursorTimeout,
 		ChannelSize:         configuration.ChannelSize,
 	})
+	heartBeat := time.NewTicker(10 * time.Second)
+	if configuration.ClusterName == "" {
+		heartBeat.Stop()
+	}
 	exitStatus := 0
 	for {
 		select {
 		case <-done:
 			os.Exit(exitStatus)
+		case <-heartBeat.C:
+			if enabled {
+				enabled = IsEnabledProcessId(mongo, configuration)
+				if !enabled {
+					infoLog.Printf("Pausing work for cluster %s", configuration.ClusterName)
+					gtm.Pause()
+				}
+			} else {
+				if enabled, err = IsEnabledProcess(mongo, configuration); err == nil {
+					if enabled {
+						infoLog.Printf("Resuming work for cluster %s", configuration.ClusterName)
+						ResumeWork(mongo, configuration)
+					}
+				} else {
+					errs <- err
+				}
+			}
 		case err = <-errs:
 			exitStatus = 1
 			log.Println(err)
@@ -904,6 +1046,9 @@ func main() {
 				errs <- indexErr.Err
 			}
 		case op := <-ops:
+			if !enabled {
+				break
+			}
 			ingestAttachment, indexed := false, false
 			if op.IsDrop() {
 				if indexed, err = DoDrop(elastic, op, configuration); err != nil {
