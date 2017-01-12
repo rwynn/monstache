@@ -512,7 +512,7 @@ Each process will join a cluster which works together to ensure that a monstache
 High availability works by ensuring a active process in the `monstache.cluster` collection in mongodb. Only the processes in
 this collection will be syncing for the cluster.  Processes not present in this collection will be paused.  Documents in the 
 `monstache.cluster` collection have a TTL assigned to them.  When a document in this collection times out it will be removed from
-the collection by mongodb and another process in the cluster will them have a chance to write to the collection and become the
+the collection by mongodb and another process in the cluster will then have a chance to write to the collection and become the
 new active process.
 
 When `cluster-name` is supplied the `resume` feature is automatically turned on and the `resume-name` becomes the name of the cluster.
