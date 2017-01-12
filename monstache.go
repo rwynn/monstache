@@ -448,8 +448,8 @@ func ResumeWork(session *mgo.Session, configuration *configOptions) {
 	if doc["ts"] != nil {
 		ts := doc["ts"].(bson.MongoTimestamp)
 		gtm.Since(ts)
-		gtm.Resume()
 	}
+	gtm.Resume()
 }
 
 func SaveTimestamp(session *mgo.Session, op *gtm.Op, resumeName string) error {
