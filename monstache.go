@@ -285,9 +285,19 @@ func OpIdToString(op *gtm.Op) string {
 	case bson.ObjectId:
 		opIdStr = op.Id.(bson.ObjectId).Hex()
 	case float64:
-		opIdStr = fmt.Sprintf("%v", int(op.Id.(float64)))
+		intId := int(op.Id.(float64))
+		if op.Id.(float64) == float64(intId) {
+			opIdStr = fmt.Sprintf("%v", intId)
+		} else {
+			opIdStr = fmt.Sprintf("%v", op.Id)
+		}
 	case float32:
-		opIdStr = fmt.Sprintf("%v", int(op.Id.(float32)))
+		intId := int(op.Id.(float32))
+		if op.Id.(float32) == float32(intId) {
+			opIdStr = fmt.Sprintf("%v", intId)
+		} else {
+			opIdStr = fmt.Sprintf("%v", op.Id)
+		}
 	default:
 		opIdStr = NormalizeEsId(fmt.Sprintf("%v", op.Id))
 	}
