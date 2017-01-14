@@ -201,7 +201,7 @@ func EnsureFileMappingIngestAttachment(conn *elastigo.Conn, namespace string, co
 	pipeline := map[string]interface{}{
 		"description": "Extract file information",
 		"processors": [1]map[string]interface{}{
-			map[string]interface{}{
+			{
 				"attachment": map[string]interface{}{
 					"field": "file",
 				},
