@@ -446,7 +446,12 @@ func IsEnabledProcessId(session *mgo.Session, configuration *configOptions) bool
 			log.Println(err)
 			return false
 		}
-		return pid == os.Getpid() && host == hostname
+		enabled := pid == os.Getpid() && host == hostname
+		if enabled {
+			col.UpdateId(configuration.ResumeName,
+				bson.M{"$set": bson.M{"expireAt": time.Now().UTC()}})
+		}
+		return enabled
 	}
 	return false
 }
