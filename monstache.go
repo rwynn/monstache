@@ -11,9 +11,9 @@ import (
 	"flag"
 	"fmt"
 	"github.com/BurntSushi/toml"
-	elastigo "github.com/mattbaird/elastigo/lib"
 	"github.com/robertkrimen/otto"
 	_ "github.com/robertkrimen/otto/underscore"
+	elastigo "github.com/rwynn/elastigo/lib"
 	"github.com/rwynn/gtm"
 	"github.com/rwynn/gtm/consistent"
 	"gopkg.in/mgo.v2"
@@ -49,19 +49,25 @@ const elasticMaxConnsDefault int = 10
 const gtmChannelSizeDefault int = 100
 
 type executionEnv struct {
-	Vm     *otto.Otto
-	Script string
+	Vm      *otto.Otto
+	Script  string
+	Routing bool
 }
 
 type javascript struct {
 	Namespace string
 	Script    string
+	Routing   bool
 }
 
 type indexTypeMapping struct {
 	Namespace string
 	Index     string
 	Type      string
+}
+
+type indexingMeta struct {
+	Routing string
 }
 
 type configOptions struct {
@@ -176,10 +182,13 @@ func DeleteIndex(conn *elastigo.Conn, namespace string, configuration *configOpt
 	return err
 }
 
-func IngestAttachment(conn *elastigo.Conn, esIndex string, esType string, esId string, data map[string]interface{}) (err error) {
+func IngestAttachment(conn *elastigo.Conn, esIndex string, esType string, esId string, data map[string]interface{}, meta *indexingMeta) (err error) {
 	var body []byte
 	args := map[string]interface{}{
 		"pipeline": "attachment",
+	}
+	if meta.Routing != "" {
+		args["routing"] = meta.Routing
 	}
 	body, err = json.Marshal(data)
 	if err == nil {
@@ -340,6 +349,36 @@ func PrepareDataForIndexing(data map[string]interface{}) {
 	delete(data, "_index")
 	delete(data, "_score")
 	delete(data, "_source")
+	delete(data, "_meta_monstache")
+}
+
+func GetIndexingMeta(data map[string]interface{}) (meta *indexingMeta) {
+	meta = &indexingMeta{}
+	if m, ok := data["_meta_monstache"]; ok {
+		switch m.(type) {
+		case map[string]interface{}:
+			metaAttrs := m.(map[string]interface{})
+			if r, ok := metaAttrs["routing"]; ok {
+				meta.Routing = fmt.Sprintf("%v", r)
+			}
+		case otto.Value:
+			ex, err := m.(otto.Value).Export()
+			if err == nil && ex != m {
+				switch ex.(type) {
+				case map[string]interface{}:
+					metaAttrs := ex.(map[string]interface{})
+					if r, ok := metaAttrs["routing"]; ok {
+						meta.Routing = fmt.Sprintf("%v", r)
+					}
+				default:
+					log.Println("invalid indexing metadata")
+				}
+			}
+		default:
+			log.Println("invalid indexing metadata")
+		}
+	}
+	return meta
 }
 
 func AddFileContent(session *mgo.Session, op *gtm.Op, configuration *configOptions) (err error) {
@@ -536,8 +575,9 @@ func (configuration *configOptions) LoadScripts() {
 		for _, s := range configuration.Script {
 			if s.Namespace != "" && s.Script != "" {
 				env := &executionEnv{
-					Vm:     otto.New(),
-					Script: s.Script,
+					Vm:      otto.New(),
+					Script:  s.Script,
+					Routing: s.Routing,
 				}
 				if err := env.Vm.Set("module", make(map[string]interface{})); err != nil {
 					panic(err)
@@ -832,29 +872,33 @@ func DoResume(mongo *mgo.Session, op *gtm.Op, configuration *configOptions) (err
 	return
 }
 
-func DoIndexing(indexer *elastigo.BulkIndexer, elastic *elastigo.Conn, op *gtm.Op, ingestAttachment bool) (indexed bool, err error) {
+func DoIndexing(mongo *mgo.Session, indexer *elastigo.BulkIndexer, elastic *elastigo.Conn, op *gtm.Op, ingestAttachment bool) (indexed bool, err error) {
+	meta := GetIndexingMeta(op.Data)
 	PrepareDataForIndexing(op.Data)
 	objectId, indexType := OpIdToString(op), IndexTypeMapping(op)
 	if ingestAttachment {
-		if err = IngestAttachment(elastic, indexType.Index, indexType.Type, objectId, op.Data); err == nil {
+		if err = IngestAttachment(elastic, indexType.Index, indexType.Type, objectId, op.Data, meta); err == nil {
 			indexed = true
 		}
 	} else {
-		if err = indexer.Index(indexType.Index, indexType.Type, objectId, "", "", nil, op.Data); err == nil {
+		if err = indexer.Index(indexType.Index, indexType.Type, objectId, "", meta.Routing, "", nil, op.Data); err == nil {
 			indexed = true
+		}
+	}
+	if meta.Routing != "" {
+		if e := SetRouting(mongo, op.Namespace, objectId, meta.Routing); e != nil {
+			log.Printf("unable to save routing info: %s", e)
 		}
 	}
 	return
 }
 
-func DoIndex(indexer *elastigo.BulkIndexer, elastic *elastigo.Conn, op *gtm.Op, ingestAttachment bool) (indexed bool, err error) {
+func DoIndex(mongo *mgo.Session, indexer *elastigo.BulkIndexer, elastic *elastigo.Conn, op *gtm.Op, ingestAttachment bool) (indexed bool, err error) {
 	if err = MapData(op); err == nil {
 		if op.Data != nil {
-			indexed, err = DoIndexing(indexer, elastic, op, ingestAttachment)
+			indexed, err = DoIndexing(mongo, indexer, elastic, op, ingestAttachment)
 		} else if op.IsUpdate() {
-			objectId, indexType := OpIdToString(op), IndexTypeMapping(op)
-			indexer.Delete(indexType.Index, indexType.Type, objectId)
-			indexed = true
+			indexed = DoDelete(mongo, indexer, op)
 		} else {
 			indexed = true
 		}
@@ -862,9 +906,35 @@ func DoIndex(indexer *elastigo.BulkIndexer, elastic *elastigo.Conn, op *gtm.Op, 
 	return
 }
 
-func DoDelete(indexer *elastigo.BulkIndexer, op *gtm.Op) (indexed bool) {
-	objectId, indexType := OpIdToString(op), IndexTypeMapping(op)
-	indexer.Delete(indexType.Index, indexType.Type, objectId)
+func SetRouting(session *mgo.Session, namespace, id, route string) error {
+	col := session.DB("monstache").C("meta")
+	metaId := fmt.Sprintf("%s.%s", namespace, id)
+	doc := make(map[string]interface{})
+	doc["routing"] = route
+	_, err := col.UpsertId(metaId, bson.M{"$set": doc})
+	return err
+}
+
+func GetRouting(session *mgo.Session, namespace, id string) (route string) {
+	col := session.DB("monstache").C("meta")
+	doc := make(map[string]interface{})
+	metaId := fmt.Sprintf("%s.%s", namespace, id)
+	col.FindId(metaId).One(doc)
+	if doc["routing"] != nil {
+		route = doc["routing"].(string)
+	}
+	col.RemoveId(metaId)
+	return
+}
+
+func DoDelete(mongo *mgo.Session, indexer *elastigo.BulkIndexer, op *gtm.Op) (indexed bool) {
+	objectId, indexType, routing := OpIdToString(op), IndexTypeMapping(op), ""
+	if mapEnvs != nil {
+		if env := mapEnvs[op.Namespace]; env != nil && env.Routing {
+			routing = GetRouting(mongo, op.Namespace, objectId)
+		}
+	}
+	indexer.Delete(indexType.Index, indexType.Type, "", routing, objectId)
 	indexed = true
 	return
 }
@@ -1078,12 +1148,12 @@ func main() {
 					errs <- err
 				}
 			} else if op.IsDelete() {
-				indexed = DoDelete(indexer, op)
+				indexed = DoDelete(mongo, indexer, op)
 			} else if op.Data != nil {
 				if ingestAttachment, err = DoFileContent(mongo, op, configuration); err != nil {
 					errs <- err
 				}
-				if indexed, err = DoIndex(indexer, elastic, op, ingestAttachment); err != nil {
+				if indexed, err = DoIndex(mongo, indexer, elastic, op, ingestAttachment); err != nil {
 					errs <- err
 				}
 			}
