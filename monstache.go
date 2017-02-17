@@ -44,7 +44,7 @@ var patchNamespaces map[string]bool
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
-const Version = "2.11.0"
+const Version = "2.11.1"
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -594,7 +594,7 @@ func (config *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.ClusterName, "cluster-name", "", "Name of the monstache process cluster")
 	flag.StringVar(&config.Worker, "worker", "", "The name of this worker in a multi-worker configuration")
 	flag.StringVar(&config.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
-	flag.StringVar(&config.NsRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
+	flag.StringVar(&config.NsExcludeRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
 	flag.Parse()
 	return config
 }
