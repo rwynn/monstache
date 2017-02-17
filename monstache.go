@@ -121,6 +121,8 @@ type configOptions struct {
 	IndexFiles               bool     `toml:"index-files"`
 	FileHighlighting         bool     `toml:"file-highlighting"`
 	EnablePatches            bool     `toml:"enable-patches"`
+	FailFast                 bool     `toml:"fail-fast"`
+	IndexOplogTime           bool     `toml:"index-oplog-time"`
 	MergePatchAttr           string   `toml:"merge-patch-attribute"`
 	ElasticMaxConns          int      `toml:"elasticsearch-max-conns"`
 	ElasticRetrySeconds      int      `toml:"elasticsearch-retry-seconds"`
@@ -376,7 +378,14 @@ func MapData(op *gtm.Op) error {
 	return nil
 }
 
-func PrepareDataForIndexing(data map[string]interface{}) {
+func PrepareDataForIndexing(config *configOptions, op *gtm.Op) {
+	data := op.Data
+	if config.IndexOplogTime {
+		secs := int64(op.Timestamp >> 32)
+		t := time.Unix(secs, 0).UTC()
+		data["_oplog_ts"] = op.Timestamp
+		data["_oplog_date"] = t.Format("2006/01/02 15:04:05")
+	}
 	delete(data, "_id")
 	delete(data, "_type")
 	delete(data, "_index")
@@ -589,6 +598,8 @@ func (config *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.IndexFiles, "index-files", false, "True to index gridfs files into elasticsearch. Requires the elasticsearch mapper-attachments (deprecated) or ingest-attachment plugin")
 	flag.BoolVar(&config.FileHighlighting, "file-highlighting", false, "True to enable the ability to highlight search times for a file query")
 	flag.BoolVar(&config.EnablePatches, "enable-patches", false, "True to include an json-patch field on updates")
+	flag.BoolVar(&config.FailFast, "fail-fast", false, "True to exit if a single _bulk request fails")
+	flag.BoolVar(&config.IndexOplogTime, "index-oplog-time", false, "True to add date/time information from the oplog to each document when indexing")
 	flag.StringVar(&config.MergePatchAttr, "merge-patch-attribute", "", "Attribute to store json-patch values under")
 	flag.StringVar(&config.ResumeName, "resume-name", "", "Name under which to load/store the resume state. Defaults to 'default'")
 	flag.StringVar(&config.ClusterName, "cluster-name", "", "Name of the monstache process cluster")
@@ -742,6 +753,12 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		}
 		if config.MergePatchAttr == "" {
 			config.MergePatchAttr = tomlConfig.MergePatchAttr
+		}
+		if !config.FailFast && tomlConfig.FailFast {
+			config.FailFast = true
+		}
+		if !config.IndexOplogTime && tomlConfig.IndexOplogTime {
+			config.IndexOplogTime = true
 		}
 		if config.Resume && config.ResumeName == "" {
 			config.ResumeName = tomlConfig.ResumeName
@@ -1016,7 +1033,7 @@ func AddPatch(config *configOptions, elastic *elastigo.Conn, op *gtm.Op,
 
 func DoIndexing(config *configOptions, mongo *mgo.Session, indexer *elastigo.BulkIndexer, elastic *elastigo.Conn, op *gtm.Op, ingestAttachment bool) (indexed bool, err error) {
 	meta := ParseIndexMeta(op.Data)
-	PrepareDataForIndexing(op.Data)
+	PrepareDataForIndexing(config, op)
 	objectId, indexType := OpIdToString(op), IndexTypeMapping(op)
 	if config.EnablePatches {
 		if patchNamespaces[op.Namespace] {
@@ -1348,6 +1365,9 @@ func main() {
 		case err = <-errs:
 			exitStatus = 1
 			log.Println(err)
+			if config.FailFast {
+				os.Exit(exitStatus)
+			}
 		case indexErr := <-indexer.ErrorChannel:
 			if indexErr.Buf != nil {
 				errs <- fmt.Errorf("%s. Failed Request Body : %s", indexErr.Err, indexErr.Buf)
