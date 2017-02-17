@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	elastigo "github.com/mattbaird/elastigo/lib"
+	elastigo "github.com/rwynn/elastigo/lib"
 	"gopkg.in/mgo.v2"
 	"testing"
 	"time"
