@@ -76,6 +76,7 @@ type indexingMeta struct {
 
 type mongoDialSettings struct {
 	Timeout int
+	Ssl     bool
 }
 
 type mongoSessionSettings struct {
@@ -841,15 +842,18 @@ func (config *configOptions) SetDefaults() *configOptions {
 }
 
 func (config *configOptions) DialMongo() (*mgo.Session, error) {
-	if config.MongoPemFile != "" {
-		certs := x509.NewCertPool()
-		if ca, err := ioutil.ReadFile(config.MongoPemFile); err == nil {
-			certs.AppendCertsFromPEM(ca)
-		} else {
-			return nil, err
+	ssl := config.MongoDialSettings.Ssl || config.MongoPemFile != ""
+	if ssl {
+		tlsConfig := &tls.Config{}
+		if config.MongoPemFile != "" {
+			certs := x509.NewCertPool()
+			if ca, err := ioutil.ReadFile(config.MongoPemFile); err == nil {
+				certs.AppendCertsFromPEM(ca)
+			} else {
+				return nil, err
+			}
+			tlsConfig.RootCAs = certs
 		}
-		tlsConfig := &tls.Config{RootCAs: certs}
-
 		// Check to see if we don't need to validate the PEM
 		if config.MongoValidatePemFile == false {
 			// Turn off validation
@@ -1154,7 +1158,9 @@ func main() {
 	log.SetPrefix("ERROR ")
 	enabled := true
 	config := &configOptions{
-		GtmSettings: GtmDefaultSettings(),
+		MongoDialSettings:    mongoDialSettings{Timeout: -1},
+		MongoSessionSettings: mongoSessionSettings{SocketTimeout: -1, SyncTimeout: -1},
+		GtmSettings:          GtmDefaultSettings(),
 	}
 	config.ParseCommandLineFlags()
 	if config.Version {
