@@ -935,6 +935,7 @@ func TraceRequest(method, url, body string) {
 func DoDrop(mongo *mgo.Session, elastic *elastigo.Conn, op *gtm.Op, config *configOptions) (indexed bool, err error) {
 	if db, drop := op.IsDropDatabase(); drop {
 		if config.DroppedDatabases {
+			time.Sleep(time.Duration(5) * time.Second)
 			if err = DeleteIndexes(elastic, db, config); err == nil {
 				indexed = true
 				if e := DropDBMeta(mongo, db); e != nil {
@@ -946,6 +947,7 @@ func DoDrop(mongo *mgo.Session, elastic *elastigo.Conn, op *gtm.Op, config *conf
 		}
 	} else if col, drop := op.IsDropCollection(); drop {
 		if config.DroppedCollections {
+			time.Sleep(time.Duration(5) * time.Second)
 			if err = DeleteIndex(elastic, op.GetDatabase()+"."+col, config); err == nil {
 				indexed = true
 				if e := DropCollectionMeta(mongo, op.GetDatabase()+"."+col); e != nil {
@@ -1149,8 +1151,8 @@ func GtmDefaultSettings() gtmSettings {
 		ChannelSize:    gtmChannelSizeDefault,
 		BufferSize:     32,
 		BufferDuration: "750ms",
-		WorkerCount:    8,
-		Ordering:       int(gtm.Document),
+		WorkerCount:    1,
+		Ordering:       int(gtm.Oplog),
 	}
 }
 
@@ -1180,6 +1182,7 @@ func main() {
 	if err != nil {
 		log.Panicf("Unable to connect to mongodb using URL %s: %s", config.MongoUrl, err)
 	}
+	mongo.SetMode(mgo.Primary, true)
 	defer mongo.Close()
 	if config.Resume && config.ResumeWriteUnsafe {
 		if config.ClusterName == "" {
@@ -1386,6 +1389,7 @@ func main() {
 			}
 			ingestAttachment, indexed := false, false
 			if op.IsDrop() {
+				indexer.Flush()
 				if indexed, err = DoDrop(mongo, elastic, op, config); err != nil {
 					errs <- err
 				}
