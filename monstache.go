@@ -44,7 +44,7 @@ var patchNamespaces map[string]bool
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
-const Version = "2.11.2"
+const Version = "2.12.0"
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -88,8 +88,6 @@ type gtmSettings struct {
 	ChannelSize    int    `toml:"channel-size"`
 	BufferSize     int    `toml:"buffer-size"`
 	BufferDuration string `toml:"buffer-duration"`
-	WorkerCount    int    `toml:"worker-count"`
-	Ordering       int
 }
 
 type configOptions struct {
@@ -932,10 +930,15 @@ func TraceRequest(method, url, body string) {
 	}
 }
 
-func DoDrop(mongo *mgo.Session, elastic *elastigo.Conn, op *gtm.Op, config *configOptions) (indexed bool, err error) {
+func DoDrop(mongo *mgo.Session, elastic *elastigo.Conn, op *gtm.Op, config *configOptions, pending bool) (indexed bool, err error) {
+	// introduce a wait on a drop table or collection if a pending bulk request
+	// is in progress since that request may contain documents that need to be dropped
+	wait := time.Duration(config.ElasticRetrySeconds+5) * time.Second
 	if db, drop := op.IsDropDatabase(); drop {
 		if config.DroppedDatabases {
-			time.Sleep(time.Duration(5) * time.Second)
+			if pending {
+				time.Sleep(wait)
+			}
 			if err = DeleteIndexes(elastic, db, config); err == nil {
 				indexed = true
 				if e := DropDBMeta(mongo, db); e != nil {
@@ -947,7 +950,9 @@ func DoDrop(mongo *mgo.Session, elastic *elastigo.Conn, op *gtm.Op, config *conf
 		}
 	} else if col, drop := op.IsDropCollection(); drop {
 		if config.DroppedCollections {
-			time.Sleep(time.Duration(5) * time.Second)
+			if pending {
+				time.Sleep(wait)
+			}
 			if err = DeleteIndex(elastic, op.GetDatabase()+"."+col, config); err == nil {
 				indexed = true
 				if e := DropCollectionMeta(mongo, op.GetDatabase()+"."+col); e != nil {
@@ -1151,8 +1156,6 @@ func GtmDefaultSettings() gtmSettings {
 		ChannelSize:    gtmChannelSizeDefault,
 		BufferSize:     32,
 		BufferDuration: "750ms",
-		WorkerCount:    1,
-		Ordering:       int(gtm.Oplog),
 	}
 }
 
@@ -1340,8 +1343,8 @@ func main() {
 		OpLogCollectionName: oplogCollectionName,
 		CursorTimeout:       cursorTimeout,
 		ChannelSize:         config.GtmSettings.ChannelSize,
-		Ordering:            gtm.OrderingGuarantee(config.GtmSettings.Ordering),
-		WorkerCount:         config.GtmSettings.WorkerCount,
+		Ordering:            gtm.Oplog,
+		WorkerCount:         1,
 		BufferDuration:      gtmBufferDuration,
 		BufferSize:          config.GtmSettings.BufferSize,
 	})
@@ -1389,8 +1392,9 @@ func main() {
 			}
 			ingestAttachment, indexed := false, false
 			if op.IsDrop() {
+				pending := indexer.PendingDocuments() > 0
 				indexer.Flush()
-				if indexed, err = DoDrop(mongo, elastic, op, config); err != nil {
+				if indexed, err = DoDrop(mongo, elastic, op, config, pending); err != nil {
 					errs <- err
 				}
 			} else if op.IsDelete() {
