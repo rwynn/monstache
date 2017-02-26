@@ -836,6 +836,27 @@ func (config *configOptions) SetDefaults() *configOptions {
 	if config.ElasticMaxSeconds == 0 {
 		config.ElasticMaxSeconds = 2
 	}
+	if config.MongoUrl != "" {
+		// if ssl=true is set on the connection string, remove the option
+		// from the connection string and enable TLS because the mgo
+		// driver does not support the option in the connection string
+		const queryDelim string = "?"
+		host_query := strings.SplitN(config.MongoUrl, queryDelim, 2)
+		if len(host_query) == 2 {
+			host, query := host_query[0], host_query[1]
+			r := regexp.MustCompile(`ssl=true&?|&ssl=true$`)
+			qstr := r.ReplaceAllString(query, "")
+			if qstr != query {
+				// ssl detected
+				config.MongoDialSettings.Ssl = true
+				if qstr == "" {
+					config.MongoUrl = host
+				} else {
+					config.MongoUrl = strings.Join([]string{host, qstr}, queryDelim)
+				}
+			}
+		}
+	}
 	return config
 }
 
@@ -1254,7 +1275,7 @@ func main() {
 		after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
 			ts := gtm.LastOpTimestamp(session, options)
 			if config.Replay {
-				ts = 0
+				ts = bson.MongoTimestamp(0)
 			} else if config.ResumeFromTimestamp != 0 {
 				ts = bson.MongoTimestamp(config.ResumeFromTimestamp)
 			} else {
@@ -1269,7 +1290,7 @@ func main() {
 		}
 	} else if config.Replay {
 		after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
-			return 0
+			return bson.MongoTimestamp(0)
 		}
 	}
 

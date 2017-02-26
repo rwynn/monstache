@@ -35,7 +35,7 @@ func init() {
 func DropTestDB(t *testing.T, session *mgo.Session) {
 	db := session.DB("test")
 	if err := db.DropDatabase(); err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 }
 
@@ -46,10 +46,45 @@ func ValidateDocResponse(t *testing.T, doc map[string]string, resp elastigo.Base
 	var src map[string]interface{}
 	err := json.Unmarshal(*resp.Source, &src)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	if src["data"].(string) != doc["data"] {
 		t.Fatalf("elasticsearch data %s does not match mongo data %s", src["data"], doc["data"])
+	}
+}
+
+func TestParseSecureMongoUrl(t *testing.T) {
+	c := &configOptions{MongoUrl: "mongo://host:47/db?a=b&ssl=true&c=d"}
+	c.SetDefaults()
+	if c.MongoUrl != "mongo://host:47/db?a=b&c=d" {
+		t.Fatalf("ssl param not removed from url")
+	}
+	if c.MongoDialSettings.Ssl == false {
+		t.Fatalf("ssl not enabled")
+	}
+	c = &configOptions{MongoUrl: "mongo://host:47/db?a=b&c=d&ssl=true"}
+	c.SetDefaults()
+	if c.MongoUrl != "mongo://host:47/db?a=b&c=d" {
+		t.Fatalf("ssl param not removed from url")
+	}
+	if c.MongoDialSettings.Ssl == false {
+		t.Fatalf("ssl not enabled")
+	}
+	c = &configOptions{MongoUrl: "mongo://host:47/db?ssl=true"}
+	c.SetDefaults()
+	if c.MongoUrl != "mongo://host:47/db" {
+		t.Fatalf("ssl param not removed from url")
+	}
+	if c.MongoDialSettings.Ssl == false {
+		t.Fatalf("ssl not enabled")
+	}
+	c = &configOptions{MongoUrl: "mongo://host:47/db?ssl=true&a=b"}
+	c.SetDefaults()
+	if c.MongoUrl != "mongo://host:47/db?a=b" {
+		t.Fatalf("ssl param not removed from url")
+	}
+	if c.MongoDialSettings.Ssl == false {
+		t.Fatalf("ssl not enabled")
 	}
 }
 
@@ -57,7 +92,7 @@ func TestInsert(t *testing.T) {
 	elastic := elastigo.NewConn()
 	session, err := mgo.Dial("localhost")
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer session.Close()
 	DropTestDB(t, session)
@@ -70,10 +105,10 @@ func TestInsert(t *testing.T) {
 		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
-			t.Error(err)
+			t.Fatal(err)
 		}
 	} else {
-		t.Error(err)
+		t.Fatal(err)
 	}
 }
 
@@ -81,7 +116,7 @@ func TestUpdate(t *testing.T) {
 	elastic := elastigo.NewConn()
 	session, err := mgo.Dial("localhost")
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer session.Close()
 	DropTestDB(t, session)
@@ -94,20 +129,20 @@ func TestUpdate(t *testing.T) {
 		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
-			t.Error(err)
+			t.Fatal(err)
 		}
 		doc["data"] = "updated"
 		if err = col.UpdateId("1", doc); err != nil {
-			t.Error(err)
+			t.Fatal(err)
 		}
 		time.Sleep(time.Duration(delay) * time.Second)
 		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
-			t.Error(err)
+			t.Fatal(err)
 		}
 	} else {
-		t.Error(err)
+		t.Fatal(err)
 	}
 }
 
@@ -115,7 +150,7 @@ func TestDelete(t *testing.T) {
 	elastic := elastigo.NewConn()
 	session, err := mgo.Dial("localhost")
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer session.Close()
 	DropTestDB(t, session)
@@ -128,10 +163,10 @@ func TestDelete(t *testing.T) {
 		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
-			t.Error(err)
+			t.Fatal(err)
 		}
 		if err = col.RemoveId("1"); err != nil {
-			t.Error(err)
+			t.Fatal(err)
 		}
 		time.Sleep(time.Duration(delay) * time.Second)
 		_, err := elastic.Get("test.test", "test", "1", nil)
@@ -139,7 +174,7 @@ func TestDelete(t *testing.T) {
 			t.Fatal("elasticsearch record not deleted")
 		}
 	} else {
-		t.Error(err)
+		t.Fatal(err)
 	}
 }
 
@@ -147,7 +182,7 @@ func TestDropDatabase(t *testing.T) {
 	elastic := elastigo.NewConn()
 	session, err := mgo.Dial("localhost")
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer session.Close()
 	DropTestDB(t, session)
@@ -160,22 +195,22 @@ func TestDropDatabase(t *testing.T) {
 		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
-			t.Error(err)
+			t.Fatal(err)
 		}
 		db := session.DB("test")
 		if err = db.DropDatabase(); err != nil {
-			t.Error(err)
+			t.Fatal(err)
 		}
 		time.Sleep(time.Duration(delay) * time.Second)
 		exists, err := elastic.IndicesExists("test.test")
 		if err != nil {
-			t.Error(err)
+			t.Fatal(err)
 		}
 		if exists {
 			t.Fatal("elasticsearch index not deleted")
 		}
 	} else {
-		t.Error(err)
+		t.Fatal(err)
 	}
 }
 
@@ -183,7 +218,7 @@ func TestDropCollection(t *testing.T) {
 	elastic := elastigo.NewConn()
 	session, err := mgo.Dial("localhost")
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	defer session.Close()
 	DropTestDB(t, session)
@@ -196,20 +231,20 @@ func TestDropCollection(t *testing.T) {
 		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
-			t.Error(err)
+			t.Fatal(err)
 		}
 		if err = col.DropCollection(); err != nil {
-			t.Error(err)
+			t.Fatal(err)
 		}
 		time.Sleep(time.Duration(delay) * time.Second)
 		exists, err := elastic.IndicesExists("test.test")
 		if err != nil {
-			t.Error(err)
+			t.Fatal(err)
 		}
 		if exists {
 			t.Fatal("elasticsearch index not deleted")
 		}
 	} else {
-		t.Error(err)
+		t.Fatal(err)
 	}
 }
