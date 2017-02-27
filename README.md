@@ -5,7 +5,7 @@ a go daemon which syncs mongodb to elasticsearch in near realtime
 
 ### Install ###
 
-You can download monstache binaries for Linux from the [Releases](https://github.com/rwynn/monstache/releases) page.
+You can download monstache binaries from the [Releases](https://github.com/rwynn/monstache/releases) page.
 
 Or you can build monstache from source using go get
 
