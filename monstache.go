@@ -954,7 +954,7 @@ func TraceRequest(method, url, body string) {
 func DoDrop(mongo *mgo.Session, elastic *elastigo.Conn, op *gtm.Op, config *configOptions, pending bool) (indexed bool, err error) {
 	// introduce a wait on a drop table or collection if a pending bulk request
 	// is in progress since that request may contain documents that need to be dropped
-	wait := time.Duration(config.ElasticRetrySeconds+5) * time.Second
+	wait := time.Duration(config.ElasticRetrySeconds+3) * time.Second
 	if db, drop := op.IsDropDatabase(); drop {
 		if config.DroppedDatabases {
 			if pending {
@@ -1075,6 +1075,11 @@ func DoIndexing(config *configOptions, mongo *mgo.Session, indexer *elastigo.Bul
 		}
 	}
 	if ingestAttachment {
+		if indexer.PendingDocuments() > 0 {
+			indexer.Flush()
+			wait := time.Duration(config.ElasticRetrySeconds+3) * time.Second
+			time.Sleep(wait)
+		}
 		if err = IngestAttachment(elastic, indexType.Index, indexType.Type, objectId, op.Data, meta); err == nil {
 			indexed = true
 		}
