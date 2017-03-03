@@ -44,7 +44,7 @@ var patchNamespaces map[string]bool
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
-const Version = "2.12.0"
+const Version = "2.13.0"
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -122,6 +122,7 @@ type configOptions struct {
 	EnablePatches            bool     `toml:"enable-patches"`
 	FailFast                 bool     `toml:"fail-fast"`
 	IndexOplogTime           bool     `toml:"index-oplog-time"`
+	ExitAfterDirectReads     bool     `toml:"exit-after-direct-reads"`
 	MergePatchAttr           string   `toml:"merge-patch-attribute"`
 	ElasticMaxConns          int      `toml:"elasticsearch-max-conns"`
 	ElasticRetrySeconds      int      `toml:"elasticsearch-retry-seconds"`
@@ -138,6 +139,8 @@ type configOptions struct {
 	PatchNamespaces          []string `toml:"patch-namespaces"`
 	Workers                  []string
 	Worker                   string
+	DirectReadNs             []string `toml:"direct-read-namespaces"`
+	DirectReadLimit          int      `toml:"direct-read-limit"`
 }
 
 func (this *configOptions) ParseElasticSearchVersion(number string) (err error) {
@@ -548,15 +551,15 @@ func IsEnabledProcessId(session *mgo.Session, config *configOptions) bool {
 	return false
 }
 
-func ResumeWork(session *mgo.Session, config *configOptions) {
+func ResumeWork(ctx *gtm.OpCtx, session *mgo.Session, config *configOptions) {
 	col := session.DB("monstache").C("monstache")
 	doc := make(map[string]interface{})
 	col.FindId(config.ResumeName).One(doc)
 	if doc["ts"] != nil {
 		ts := doc["ts"].(bson.MongoTimestamp)
-		gtm.Since(ts)
+		ctx.Since(ts)
 	}
-	gtm.Resume()
+	ctx.Resume()
 }
 
 func SaveTimestamp(session *mgo.Session, op *gtm.Op, resumeName string) error {
@@ -599,6 +602,8 @@ func (config *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.EnablePatches, "enable-patches", false, "True to include an json-patch field on updates")
 	flag.BoolVar(&config.FailFast, "fail-fast", false, "True to exit if a single _bulk request fails")
 	flag.BoolVar(&config.IndexOplogTime, "index-oplog-time", false, "True to add date/time information from the oplog to each document when indexing")
+	flag.BoolVar(&config.ExitAfterDirectReads, "exit-after-direct-reads", false, "True to exit the program after reading directly from the configured namespaces")
+	flag.IntVar(&config.DirectReadLimit, "direct-read-limit", 0, "Maximum number of documents to fetch in each direct read query")
 	flag.StringVar(&config.MergePatchAttr, "merge-patch-attribute", "", "Attribute to store json-patch values under")
 	flag.StringVar(&config.ResumeName, "resume-name", "", "Name under which to load/store the resume state. Defaults to 'default'")
 	flag.StringVar(&config.ClusterName, "cluster-name", "", "Name of the monstache process cluster")
@@ -717,6 +722,9 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		if config.MaxFileSize == 0 {
 			config.MaxFileSize = tomlConfig.MaxFileSize
 		}
+		if config.DirectReadLimit == 0 {
+			config.DirectReadLimit = tomlConfig.DirectReadLimit
+		}
 		if config.DroppedDatabases && !tomlConfig.DroppedDatabases {
 			config.DroppedDatabases = false
 		}
@@ -759,6 +767,9 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		if !config.IndexOplogTime && tomlConfig.IndexOplogTime {
 			config.IndexOplogTime = true
 		}
+		if !config.ExitAfterDirectReads && tomlConfig.ExitAfterDirectReads {
+			config.ExitAfterDirectReads = true
+		}
 		if config.Resume && config.ResumeName == "" {
 			config.ResumeName = tomlConfig.ResumeName
 		}
@@ -787,6 +798,7 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		config.MongoDialSettings = tomlConfig.MongoDialSettings
 		config.MongoSessionSettings = tomlConfig.MongoSessionSettings
 		config.GtmSettings = tomlConfig.GtmSettings
+		config.DirectReadNs = tomlConfig.DirectReadNs
 		tomlConfig.LoadScripts()
 		tomlConfig.LoadIndexTypes()
 	}
@@ -1013,6 +1025,9 @@ func AddPatch(config *configOptions, elastic *elastigo.Conn, op *gtm.Op,
 	objectId string, indexType *indexTypeMapping, meta *indexingMeta) (err error) {
 	var merges []interface{}
 	var toJson []byte
+	if op.Timestamp == 0 {
+		return nil
+	}
 	if op.IsUpdate() {
 		var params = make(map[string]interface{})
 		if meta.Routing != "" {
@@ -1051,13 +1066,15 @@ func AddPatch(config *configOptions, elastic *elastigo.Conn, op *gtm.Op,
 			}
 		}
 	} else {
-		if toJson, err = json.Marshal(op.Data); err == nil {
-			merge := make(map[string]interface{})
-			merge["v"] = 1
-			merge["ts"] = op.Timestamp >> 32
-			merge["p"] = string(toJson)
-			merges = append(merges, merge)
-			op.Data[config.MergePatchAttr] = merges
+		if _, found := op.Data[config.MergePatchAttr]; !found {
+			if toJson, err = json.Marshal(op.Data); err == nil {
+				merge := make(map[string]interface{})
+				merge["v"] = 1
+				merge["ts"] = op.Timestamp >> 32
+				merge["p"] = string(toJson)
+				merges = append(merges, merge)
+				op.Data[config.MergePatchAttr] = merges
+			}
 		}
 	}
 	return
@@ -1134,7 +1151,7 @@ func SetIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta
 	doc["routing"] = meta.Routing
 	doc["index"] = meta.Index
 	doc["type"] = meta.Type
-	doc["db"] = strings.SplitN(namespace, ".", 2)
+	doc["db"] = strings.SplitN(namespace, ".", 2)[0]
 	doc["namespace"] = namespace
 	_, err := col.UpsertId(metaId, bson.M{"$set": doc})
 	return err
@@ -1264,16 +1281,10 @@ func main() {
 	indexer.Start()
 	defer indexer.Stop()
 
-	go func(mongo *mgo.Session, indexer *elastigo.BulkIndexer, config *configOptions) {
+	go func() {
 		<-sigs
-		if config.ClusterName != "" {
-			ResetClusterState(mongo, config)
-		}
-		mongo.Close()
-		indexer.Flush()
-		indexer.Stop()
 		done <- true
-	}(mongo, indexer, config)
+	}()
 
 	var after gtm.TimestampGenerator = nil
 	if config.Resume {
@@ -1351,18 +1362,15 @@ func main() {
 		if err != nil {
 			log.Panicf("Unable to determine enabled cluster process: %s", err)
 		}
-		if enabled {
-			infoLog.Printf("Starting work for cluster %s", config.ClusterName)
-		} else {
-			infoLog.Printf("Pausing work for cluster %s", config.ClusterName)
-			gtm.Pause()
+		if !enabled {
+			config.DirectReadNs = []string{}
 		}
 	}
 	gtmBufferDuration, err := time.ParseDuration(config.GtmSettings.BufferDuration)
 	if err != nil {
-		log.Panicf("Unable to parse gtm buffer duration %s", config.GtmSettings.BufferDuration)
+		log.Panicf("Unable to parse gtm buffer duration %s: %s", config.GtmSettings.BufferDuration, err)
 	}
-	ops, errs := gtm.Tail(mongo, &gtm.Options{
+	gtmCtx := gtm.Start(mongo, &gtm.Options{
 		After:               after,
 		Filter:              filter,
 		OpLogDatabaseName:   oplogDatabaseName,
@@ -1373,34 +1381,59 @@ func main() {
 		WorkerCount:         1,
 		BufferDuration:      gtmBufferDuration,
 		BufferSize:          config.GtmSettings.BufferSize,
+		DirectReadNs:        config.DirectReadNs,
+		DirectReadLimit:     config.DirectReadLimit,
 	})
+	if config.ClusterName != "" {
+		if enabled {
+			infoLog.Printf("Starting work for cluster %s", config.ClusterName)
+		} else {
+			infoLog.Printf("Pausing work for cluster %s", config.ClusterName)
+			gtmCtx.Pause()
+		}
+	}
 	heartBeat := time.NewTicker(10 * time.Second)
 	if config.ClusterName == "" {
 		heartBeat.Stop()
 	}
 	exitStatus := 0
+	if len(config.DirectReadNs) > 0 {
+		go func(c *gtm.OpCtx, config *configOptions) {
+			c.DirectReadWg.Wait()
+			if config.ExitAfterDirectReads {
+				c.Stop()
+				done <- true
+			}
+		}(gtmCtx, config)
+	}
 	for {
 		select {
 		case <-done:
+			indexer.Flush()
+			indexer.Stop()
+			if config.ClusterName != "" {
+				ResetClusterState(mongo, config)
+			}
+			mongo.Close()
 			os.Exit(exitStatus)
 		case <-heartBeat.C:
 			if enabled {
 				enabled = IsEnabledProcessId(mongo, config)
 				if !enabled {
 					infoLog.Printf("Pausing work for cluster %s", config.ClusterName)
-					gtm.Pause()
+					gtmCtx.Pause()
 				}
 			} else {
 				if enabled, err = IsEnabledProcess(mongo, config); err == nil {
 					if enabled {
 						infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
-						ResumeWork(mongo, config)
+						ResumeWork(gtmCtx, mongo, config)
 					}
 				} else {
-					errs <- err
+					gtmCtx.ErrC <- err
 				}
 			}
-		case err = <-errs:
+		case err = <-gtmCtx.ErrC:
 			exitStatus = 1
 			log.Println(err)
 			if config.FailFast {
@@ -1408,11 +1441,11 @@ func main() {
 			}
 		case indexErr := <-indexer.ErrorChannel:
 			if indexErr.Buf != nil {
-				errs <- fmt.Errorf("%s. Failed Request Body : %s", indexErr.Err, indexErr.Buf)
+				gtmCtx.ErrC <- fmt.Errorf("%s. Failed Request Body : %s", indexErr.Err, indexErr.Buf)
 			} else {
-				errs <- indexErr.Err
+				gtmCtx.ErrC <- indexErr.Err
 			}
-		case op := <-ops:
+		case op := <-gtmCtx.OpC:
 			if !enabled {
 				break
 			}
@@ -1421,21 +1454,21 @@ func main() {
 				pending := indexer.PendingDocuments() > 0
 				indexer.Flush()
 				if indexed, err = DoDrop(mongo, elastic, op, config, pending); err != nil {
-					errs <- err
+					gtmCtx.ErrC <- err
 				}
 			} else if op.IsDelete() {
 				indexed = DoDelete(mongo, indexer, op)
 			} else if op.Data != nil {
 				if ingestAttachment, err = DoFileContent(mongo, op, config); err != nil {
-					errs <- err
+					gtmCtx.ErrC <- err
 				}
 				if indexed, err = DoIndex(config, mongo, indexer, elastic, op, ingestAttachment); err != nil {
-					errs <- err
+					gtmCtx.ErrC <- err
 				}
 			}
 			if indexed {
 				if err = DoResume(mongo, op, config); err != nil {
-					errs <- err
+					gtmCtx.ErrC <- err
 				}
 			}
 		}
