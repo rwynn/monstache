@@ -17,6 +17,7 @@ import (
 	elastigo "github.com/rwynn/elastigo/lib"
 	"github.com/rwynn/gtm"
 	"github.com/rwynn/gtm/consistent"
+	"github.com/rwynn/monstache/monstachemap"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"plugin"
 	"regexp"
 	"strconv"
 	"strings"
@@ -36,6 +38,7 @@ import (
 var gridByteBuffer bytes.Buffer
 var infoLog *log.Logger = log.New(os.Stdout, "INFO ", log.Flags())
 
+var mapperPlugin func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error)
 var mapEnvs map[string]*executionEnv
 var mapIndexTypes map[string]*indexTypeMapping
 var fileNamespaces map[string]bool
@@ -44,11 +47,11 @@ var patchNamespaces map[string]bool
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
-const Version = "2.13.0"
+const Version = "2.14.0"
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
-const gtmChannelSizeDefault int = 100
+const gtmChannelSizeDefault int = 512
 
 type executionEnv struct {
 	Vm      *otto.Otto
@@ -141,9 +144,11 @@ type configOptions struct {
 	Worker                   string
 	DirectReadNs             []string `toml:"direct-read-namespaces"`
 	DirectReadLimit          int      `toml:"direct-read-limit"`
+	DirectReadersPerCol      int      `toml:"direct-readers-per-col"`
+	MapperPluginPath         string   `toml:"mapper-plugin-path"`
 }
 
-func (this *configOptions) ParseElasticSearchVersion(number string) (err error) {
+func (this *configOptions) ParseElasticsearchVersion(number string) (err error) {
 	if number == "" {
 		err = errors.New("Elasticsearch version cannot be blank")
 	} else {
@@ -160,7 +165,7 @@ func (this *configOptions) ParseElasticSearchVersion(number string) (err error) 
 	return
 }
 
-func TestElasticSearchConn(conn *elastigo.Conn, config *configOptions) (err error) {
+func TestElasticsearchConn(conn *elastigo.Conn, config *configOptions) (err error) {
 	var result map[string]interface{}
 	body, err := conn.DoCommand("GET", "/", nil, nil)
 	if err != nil {
@@ -176,7 +181,7 @@ func TestElasticSearchConn(conn *elastigo.Conn, config *configOptions) (err erro
 			if config.Verbose {
 				infoLog.Printf("Successfully connected to elasticsearch version %s", number)
 			}
-			err = config.ParseElasticSearchVersion(number)
+			err = config.ParseElasticsearchVersion(number)
 		}
 	}
 	return
@@ -350,7 +355,7 @@ func OpIdToString(op *gtm.Op) string {
 	return opIdStr
 }
 
-func MapData(op *gtm.Op) error {
+func MapDataJavascript(op *gtm.Op) error {
 	if mapEnvs == nil {
 		return nil
 	}
@@ -378,6 +383,51 @@ func MapData(op *gtm.Op) error {
 		}
 	}
 	return nil
+}
+
+func MapDataGolang(op *gtm.Op) error {
+	input := &monstachemap.MapperPluginInput{
+		Document:   op.Data,
+		Namespace:  op.Namespace,
+		Database:   op.GetDatabase(),
+		Collection: op.GetCollection(),
+		Operation:  op.Operation,
+	}
+	output, err := mapperPlugin(input)
+	if err != nil {
+		return err
+	}
+	if output != nil {
+		if output.Drop {
+			op.Data = nil
+		} else {
+			if output.Passthrough == false {
+				op.Data = output.Document
+			}
+			var meta map[string]interface{}
+			if output.Index != "" {
+				meta["index"] = output.Index
+			}
+			if output.Type != "" {
+				meta["type"] = output.Type
+			}
+			if output.Routing != "" {
+				meta["routing"] = output.Routing
+			}
+			if len(meta) > 0 {
+				op.Data["_meta_monstache"] = meta
+			}
+		}
+	}
+	return nil
+}
+
+func MapData(config *configOptions, op *gtm.Op) error {
+	if config.MapperPluginPath != "" {
+		return MapDataGolang(op)
+	} else {
+		return MapDataJavascript(op)
+	}
 }
 
 func PrepareDataForIndexing(config *configOptions, op *gtm.Op) {
@@ -578,15 +628,15 @@ func (config *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.MongoOpLogCollectionName, "mongo-oplog-collection-name", "", "Override the collection name which contains the mongodb oplog")
 	flag.StringVar(&config.MongoCursorTimeout, "mongo-cursor-timeout", "", "Override the duration before a cursor timeout occurs when tailing the oplog")
 	flag.StringVar(&config.ElasticVersion, "elasticsearch-version", "", "Specify elasticsearch version directly instead of getting it from the server")
-	flag.StringVar(&config.ElasticUrl, "elasticsearch-url", "", "ElasticSearch connection URL")
+	flag.StringVar(&config.ElasticUrl, "elasticsearch-url", "", "Elasticsearch connection URL")
 	flag.StringVar(&config.ElasticPemFile, "elasticsearch-pem-file", "", "Path to a PEM file for secure connections to elasticsearch")
-	flag.BoolVar(&config.ElasticValidatePemFile, "elasticsearch-validate-pem-file", true, "Set to boolean false to not validate the ElasticSearch PEM file")
-	flag.IntVar(&config.ElasticMaxConns, "elasticsearch-max-conns", 0, "ElasticSearch max connections")
-	flag.IntVar(&config.ElasticRetrySeconds, "elasticsearch-retry-seconds", 0, "Number of seconds before retrying ElasticSearch requests")
-	flag.IntVar(&config.ElasticMaxDocs, "elasticsearch-max-docs", 0, "Number of docs to hold before flushing to ElasticSearch")
-	flag.IntVar(&config.ElasticMaxBytes, "elasticsearch-max-bytes", 0, "Number of bytes to hold before flushing to ElasticSearch")
-	flag.IntVar(&config.ElasticMaxSeconds, "elasticsearch-max-seconds", 0, "Number of seconds before flushing to ElasticSearch")
-	flag.Int64Var(&config.MaxFileSize, "max-file-size", 0, "GridFs file content exceeding this limit in bytes will not be indexed in ElasticSearch")
+	flag.BoolVar(&config.ElasticValidatePemFile, "elasticsearch-validate-pem-file", true, "Set to boolean false to not validate the Elasticsearch PEM file")
+	flag.IntVar(&config.ElasticMaxConns, "elasticsearch-max-conns", 0, "Elasticsearch max connections")
+	flag.IntVar(&config.ElasticRetrySeconds, "elasticsearch-retry-seconds", 0, "Number of seconds before retrying Elasticsearch requests")
+	flag.IntVar(&config.ElasticMaxDocs, "elasticsearch-max-docs", 0, "Number of docs to hold before flushing to Elasticsearch")
+	flag.IntVar(&config.ElasticMaxBytes, "elasticsearch-max-bytes", 0, "Number of bytes to hold before flushing to Elasticsearch")
+	flag.IntVar(&config.ElasticMaxSeconds, "elasticsearch-max-seconds", 0, "Number of seconds before flushing to Elasticsearch")
+	flag.Int64Var(&config.MaxFileSize, "max-file-size", 0, "GridFs file content exceeding this limit in bytes will not be indexed in Elasticsearch")
 	flag.StringVar(&config.ConfigFile, "f", "", "Location of configuration file")
 	flag.BoolVar(&config.DroppedDatabases, "dropped-databases", true, "True to delete indexes from dropped databases")
 	flag.BoolVar(&config.DroppedCollections, "dropped-collections", true, "True to delete indexes from dropped collections")
@@ -604,10 +654,12 @@ func (config *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.IndexOplogTime, "index-oplog-time", false, "True to add date/time information from the oplog to each document when indexing")
 	flag.BoolVar(&config.ExitAfterDirectReads, "exit-after-direct-reads", false, "True to exit the program after reading directly from the configured namespaces")
 	flag.IntVar(&config.DirectReadLimit, "direct-read-limit", 0, "Maximum number of documents to fetch in each direct read query")
+	flag.IntVar(&config.DirectReadersPerCol, "direct-readers-per-col", 0, "Number of goroutines directly reading a single collection")
 	flag.StringVar(&config.MergePatchAttr, "merge-patch-attribute", "", "Attribute to store json-patch values under")
 	flag.StringVar(&config.ResumeName, "resume-name", "", "Name under which to load/store the resume state. Defaults to 'default'")
 	flag.StringVar(&config.ClusterName, "cluster-name", "", "Name of the monstache process cluster")
 	flag.StringVar(&config.Worker, "worker", "", "The name of this worker in a multi-worker configuration")
+	flag.StringVar(&config.MapperPluginPath, "mapper-plugin-path", "", "The path to a .so file to load as a document mapper plugin")
 	flag.StringVar(&config.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
 	flag.StringVar(&config.NsExcludeRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
 	flag.Parse()
@@ -660,6 +712,26 @@ func (config *configOptions) LoadScripts() {
 			}
 		}
 	}
+}
+
+func (config *configOptions) LoadPlugins() *configOptions {
+	if config.MapperPluginPath != "" {
+		p, err := plugin.Open(config.MapperPluginPath)
+		if err != nil {
+			log.Panicf("Unable to load mapper plugin %s: %s", config.MapperPluginPath, err)
+		}
+		mapper, err := p.Lookup("Map")
+		if err != nil {
+			log.Panicf("Unable to find symbol 'Map' in mapper plugin: %s", err)
+		}
+		switch mapper.(type) {
+		case func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error):
+			mapperPlugin = mapper.(func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error))
+		default:
+			log.Panicf("Plugin 'Map' function must be typed %T", mapperPlugin)
+		}
+	}
+	return config
 }
 
 func (config *configOptions) LoadConfigFile() *configOptions {
@@ -725,6 +797,9 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		if config.DirectReadLimit == 0 {
 			config.DirectReadLimit = tomlConfig.DirectReadLimit
 		}
+		if config.DirectReadersPerCol == 0 {
+			config.DirectReadersPerCol = tomlConfig.DirectReadersPerCol
+		}
 		if config.DroppedDatabases && !tomlConfig.DroppedDatabases {
 			config.DroppedDatabases = false
 		}
@@ -788,6 +863,9 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		}
 		if config.Worker == "" {
 			config.Worker = tomlConfig.Worker
+		}
+		if config.MapperPluginPath == "" {
+			config.MapperPluginPath = tomlConfig.MapperPluginPath
 		}
 		if config.EnablePatches {
 			config.PatchNamespaces = tomlConfig.PatchNamespaces
@@ -1016,7 +1094,9 @@ func DoFileContent(mongo *mgo.Session, op *gtm.Op, config *configOptions) (inges
 
 func DoResume(mongo *mgo.Session, op *gtm.Op, config *configOptions) (err error) {
 	if config.Resume {
-		err = SaveTimestamp(mongo, op, config.ResumeName)
+		if op.Timestamp != 0 {
+			err = SaveTimestamp(mongo, op, config.ResumeName)
+		}
 	}
 	return
 }
@@ -1114,7 +1194,7 @@ func DoIndexing(config *configOptions, mongo *mgo.Session, indexer *elastigo.Bul
 }
 
 func DoIndex(config *configOptions, mongo *mgo.Session, indexer *elastigo.BulkIndexer, elastic *elastigo.Conn, op *gtm.Op, ingestAttachment bool) (indexed bool, err error) {
-	if err = MapData(op); err == nil {
+	if err = MapData(config, op); err == nil {
 		if op.Data != nil {
 			indexed, err = DoIndexing(config, mongo, indexer, elastic, op, ingestAttachment)
 		} else if op.IsUpdate() {
@@ -1215,7 +1295,7 @@ func main() {
 		fmt.Println(Version)
 		os.Exit(0)
 	}
-	config.LoadConfigFile().SetDefaults()
+	config.LoadConfigFile().LoadPlugins().SetDefaults()
 
 	sigs := make(chan os.Signal, 1)
 	done := make(chan bool, 1)
@@ -1257,7 +1337,7 @@ func main() {
 		elastic.Gzip = true
 	}
 	if config.ElasticVersion == "" {
-		if err := TestElasticSearchConn(elastic, config); err != nil {
+		if err := TestElasticsearchConn(elastic, config); err != nil {
 			host := elastic.Domain
 			if len(config.ElasticHosts) > 0 {
 				host = config.ElasticHosts[0]
@@ -1266,7 +1346,7 @@ func main() {
 				elastic.Protocol, host, elastic.Port, err)
 		}
 	} else {
-		if err := config.ParseElasticSearchVersion(config.ElasticVersion); err != nil {
+		if err := config.ParseElasticsearchVersion(config.ElasticVersion); err != nil {
 			log.Panicf("Elasticsearch version must conform to major.minor.fix: %s", err)
 		}
 	}
@@ -1383,6 +1463,7 @@ func main() {
 		BufferSize:          config.GtmSettings.BufferSize,
 		DirectReadNs:        config.DirectReadNs,
 		DirectReadLimit:     config.DirectReadLimit,
+		DirectReadersPerCol: config.DirectReadersPerCol,
 	})
 	if config.ClusterName != "" {
 		if enabled {
@@ -1417,6 +1498,9 @@ func main() {
 			mongo.Close()
 			os.Exit(exitStatus)
 		case <-heartBeat.C:
+			if config.ClusterName == "" {
+				break
+			}
 			if enabled {
 				enabled = IsEnabledProcessId(mongo, config)
 				if !enabled {
