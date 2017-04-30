@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -14,12 +13,14 @@ import (
 	"github.com/evanphx/json-patch"
 	"github.com/robertkrimen/otto"
 	_ "github.com/robertkrimen/otto/underscore"
-	elastigo "github.com/rwynn/elastigo/lib"
 	"github.com/rwynn/gtm"
 	"github.com/rwynn/gtm/consistent"
 	"github.com/rwynn/monstache/monstachemap"
+	"golang.org/x/net/context"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
+	"gopkg.in/natefinch/lumberjack.v2"
+	elastic "gopkg.in/olivere/elastic.v5"
 	"io"
 	"io/ioutil"
 	"log"
@@ -37,6 +38,9 @@ import (
 
 var gridByteBuffer bytes.Buffer
 var infoLog *log.Logger = log.New(os.Stdout, "INFO ", log.Flags())
+var statsLog *log.Logger = log.New(os.Stdout, "STATS ", log.Flags())
+var traceLog *log.Logger = log.New(os.Stdout, "TRACE ", log.Flags())
+var errorLog *log.Logger = log.New(os.Stderr, "ERROR ", log.Flags())
 
 var mapperPlugin func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error)
 var mapEnvs map[string]*executionEnv
@@ -46,11 +50,14 @@ var patchNamespaces map[string]bool
 
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
+var lastTimestamp bson.MongoTimestamp
 
-const Version = "2.14.0"
+const Version = "3.0.0"
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
+const elasticMaxDocsDefault int = 1000
+const directReadLimitDefault int = 1000
 const gtmChannelSizeDefault int = 512
 
 type executionEnv struct {
@@ -69,6 +76,13 @@ type indexTypeMapping struct {
 	Namespace string
 	Index     string
 	Type      string
+}
+
+type logFiles struct {
+	Info  string
+	Error string
+	Trace string
+	Stats string
 }
 
 type indexingMeta struct {
@@ -103,7 +117,10 @@ type configOptions struct {
 	MongoDialSettings        mongoDialSettings    `toml:"mongo-dial-settings"`
 	MongoSessionSettings     mongoSessionSettings `toml:"mongo-session-settings"`
 	GtmSettings              gtmSettings          `toml:"gtm-settings"`
-	ElasticUrl               string               `toml:"elasticsearch-url"`
+	Logs                     logFiles             `toml:"logs"`
+	ElasticUrls              []string             `toml:"elasticsearch-urls"`
+	ElasticUser              string               `toml:"elasticsearch-user"`
+	ElasticPassword          string               `toml:"elasticsearch-password"`
 	ElasticPemFile           string               `toml:"elasticsearch-pem-file"`
 	ElasticValidatePemFile   bool                 `toml:"elasticsearch-validate-pem-file`
 	ElasticVersion           string               `toml:"elasticsearch-version"`
@@ -112,27 +129,28 @@ type configOptions struct {
 	NsExcludeRegex           string               `toml:"namespace-exclude-regex"`
 	ClusterName              string               `toml:"cluster-name"`
 	Version                  bool
+	Stats                    bool
+	StatsDuration            string `toml:"stats-duration"`
 	Gzip                     bool
 	Verbose                  bool
 	Resume                   bool
 	ResumeWriteUnsafe        bool  `toml:"resume-write-unsafe"`
 	ResumeFromTimestamp      int64 `toml:"resume-from-timestamp"`
 	Replay                   bool
-	DroppedDatabases         bool     `toml:"dropped-databases"`
-	DroppedCollections       bool     `toml:"dropped-collections"`
-	IndexFiles               bool     `toml:"index-files"`
-	FileHighlighting         bool     `toml:"file-highlighting"`
-	EnablePatches            bool     `toml:"enable-patches"`
-	FailFast                 bool     `toml:"fail-fast"`
-	IndexOplogTime           bool     `toml:"index-oplog-time"`
-	ExitAfterDirectReads     bool     `toml:"exit-after-direct-reads"`
-	MergePatchAttr           string   `toml:"merge-patch-attribute"`
-	ElasticMaxConns          int      `toml:"elasticsearch-max-conns"`
-	ElasticRetrySeconds      int      `toml:"elasticsearch-retry-seconds"`
-	ElasticMaxDocs           int      `toml:"elasticsearch-max-docs"`
-	ElasticMaxBytes          int      `toml:"elasticsearch-max-bytes"`
-	ElasticMaxSeconds        int      `toml:"elasticsearch-max-seconds"`
-	ElasticHosts             []string `toml:"elasticsearch-hosts"`
+	DroppedDatabases         bool   `toml:"dropped-databases"`
+	DroppedCollections       bool   `toml:"dropped-collections"`
+	IndexFiles               bool   `toml:"index-files"`
+	FileHighlighting         bool   `toml:"file-highlighting"`
+	EnablePatches            bool   `toml:"enable-patches"`
+	FailFast                 bool   `toml:"fail-fast"`
+	IndexOplogTime           bool   `toml:"index-oplog-time"`
+	ExitAfterDirectReads     bool   `toml:"exit-after-direct-reads"`
+	MergePatchAttr           string `toml:"merge-patch-attribute"`
+	ElasticMaxConns          int    `toml:"elasticsearch-max-conns"`
+	ElasticRetry             bool   `toml:"elasticsearch-retry"`
+	ElasticMaxDocs           int    `toml:"elasticsearch-max-docs"`
+	ElasticMaxBytes          int    `toml:"elasticsearch-max-bytes"`
+	ElasticMaxSeconds        int    `toml:"elasticsearch-max-seconds"`
 	ElasticMajorVersion      int
 	MaxFileSize              int64 `toml:"max-file-size"`
 	ConfigFile               string
@@ -165,24 +183,62 @@ func (this *configOptions) ParseElasticsearchVersion(number string) (err error) 
 	return
 }
 
-func TestElasticsearchConn(conn *elastigo.Conn, config *configOptions) (err error) {
-	var result map[string]interface{}
-	body, err := conn.DoCommand("GET", "/", nil, nil)
-	if err != nil {
-		return
+func (this *configOptions) NewBulkProcessor(client *elastic.Client, mongo *mgo.Session) (bulk *elastic.BulkProcessor, err error) {
+	bulkService := client.BulkProcessor().Name("monstache")
+	bulkService.Workers(this.ElasticMaxConns)
+	bulkService.Stats(true)
+	if this.ElasticMaxDocs != 0 {
+		bulkService.BulkActions(this.ElasticMaxDocs)
 	}
-	err = json.Unmarshal(body, &result)
+	if this.ElasticMaxBytes != 0 {
+		bulkService.BulkSize(this.ElasticMaxBytes)
+	}
+	bulkService.FlushInterval(time.Duration(this.ElasticMaxSeconds) * time.Second)
+	bulkService.After(CreateAfterBulk(mongo, this))
+	return bulkService.Do(context.Background())
+}
+
+func (this *configOptions) NewElasticClient() (client *elastic.Client, err error) {
+	var clientOptions []elastic.ClientOptionFunc
+	var httpClient *http.Client
+	clientOptions = append(clientOptions, elastic.SetErrorLog(errorLog))
+	clientOptions = append(clientOptions, elastic.SetSniff(false))
+	if len(this.ElasticUrls) > 0 {
+		clientOptions = append(clientOptions, elastic.SetURL(this.ElasticUrls...))
+	} else {
+		this.ElasticUrls = append(this.ElasticUrls, elastic.DefaultURL)
+	}
+	if this.Verbose {
+		clientOptions = append(clientOptions, elastic.SetTraceLog(traceLog))
+	}
+	if this.Gzip {
+		clientOptions = append(clientOptions, elastic.SetGzip(true))
+	}
+	if this.ElasticUser != "" {
+		clientOptions = append(clientOptions, elastic.SetBasicAuth(this.ElasticUser, this.ElasticPassword))
+	}
+	if this.ElasticRetry {
+		d1, d2 := time.Duration(200)*time.Millisecond, time.Duration(5)*time.Second
+		retrier := elastic.NewBackoffRetrier(elastic.NewExponentialBackoff(d1, d2))
+		clientOptions = append(clientOptions, elastic.SetRetrier(retrier))
+	}
+	httpClient, err = this.NewHttpClient()
+	if err != nil {
+		return client, err
+	}
+	clientOptions = append(clientOptions, elastic.SetHttpClient(httpClient))
+	return elastic.NewClient(clientOptions...)
+}
+
+func (this *configOptions) TestElasticsearchConn(client *elastic.Client) (err error) {
+	var number string
+	url := this.ElasticUrls[0]
+	number, err = client.ElasticsearchVersion(url)
 	if err == nil {
-		version := result["version"].(map[string]interface{})
-		if version == nil {
-			err = errors.New("Unable to determine elasticsearch version")
-		} else {
-			number := version["number"].(string)
-			if config.Verbose {
-				infoLog.Printf("Successfully connected to elasticsearch version %s", number)
-			}
-			err = config.ParseElasticsearchVersion(number)
+		if this.Verbose {
+			infoLog.Printf("Successfully connected to elasticsearch version %s", number)
 		}
+		err = this.ParseElasticsearchVersion(number)
 	}
 	return
 }
@@ -202,53 +258,40 @@ func NormalizeEsId(id string) (normal string) {
 	return
 }
 
-func DeleteIndexes(conn *elastigo.Conn, db string, config *configOptions) (err error) {
+func DeleteIndexes(client *elastic.Client, db string, config *configOptions) (err error) {
+	ctx := context.Background()
 	for ns, m := range mapIndexTypes {
 		parts := strings.SplitN(ns, ".", 2)
 		if parts[0] == db {
-			if _, err = conn.DeleteIndex(m.Index + "*"); err != nil {
+			if _, err = client.DeleteIndex(m.Index + "*").Do(ctx); err != nil {
 				return
 			}
 		}
 	}
-	_, err = conn.DeleteIndex(NormalizeIndexName(db) + "*")
+	_, err = client.DeleteIndex(NormalizeIndexName(db) + "*").Do(ctx)
 	return
 }
 
-func DeleteIndex(conn *elastigo.Conn, namespace string, config *configOptions) (err error) {
+func DeleteIndex(client *elastic.Client, namespace string, config *configOptions) (err error) {
+	ctx := context.Background()
 	esIndex := NormalizeIndexName(namespace)
 	if m := mapIndexTypes[namespace]; m != nil {
 		esIndex = m.Index
 	}
-	_, err = conn.DeleteIndex(esIndex)
+	_, err = client.DeleteIndex(esIndex).Do(ctx)
 	return err
 }
 
-func IngestAttachment(conn *elastigo.Conn, esIndex string, esType string, esId string, data map[string]interface{}, meta *indexingMeta) (err error) {
-	var body []byte
-	args := map[string]interface{}{
-		"pipeline": "attachment",
-	}
-	if meta.Routing != "" {
-		args["routing"] = meta.Routing
-	}
-	body, err = json.Marshal(data)
-	if err == nil {
-		_, err = conn.DoCommand("PUT", fmt.Sprintf("/%s/%s/%s", esIndex, esType, esId), args, string(body))
-	}
-	return err
-}
-
-func EnsureFileMapping(conn *elastigo.Conn, namespace string, config *configOptions) (err error) {
+func EnsureFileMapping(client *elastic.Client, namespace string, config *configOptions) (err error) {
 	if config.ElasticMajorVersion < 5 {
-		return EnsureFileMappingMapperAttachment(conn, namespace, config)
+		return EnsureFileMappingMapperAttachment(client, namespace, config)
 	} else {
-		return EnsureFileMappingIngestAttachment(conn, namespace, config)
+		return EnsureFileMappingIngestAttachment(client, namespace, config)
 	}
 }
 
-func EnsureFileMappingIngestAttachment(conn *elastigo.Conn, namespace string, config *configOptions) (err error) {
-	var body []byte
+func EnsureFileMappingIngestAttachment(client *elastic.Client, namespace string, config *configOptions) (err error) {
+	ctx := context.Background()
 	pipeline := map[string]interface{}{
 		"description": "Extract file information",
 		"processors": [1]map[string]interface{}{
@@ -259,15 +302,12 @@ func EnsureFileMappingIngestAttachment(conn *elastigo.Conn, namespace string, co
 			},
 		},
 	}
-	body, err = json.Marshal(pipeline)
-	if err == nil {
-		_, err = conn.DoCommand("PUT", "/_ingest/pipeline/attachment", nil, string(body))
-	}
+	_, err = client.IngestPutPipeline("attachment").BodyJson(pipeline).Do(ctx)
 	return err
 }
 
-func EnsureFileMappingMapperAttachment(conn *elastigo.Conn, namespace string, config *configOptions) (err error) {
-	var body []byte
+func EnsureFileMappingMapperAttachment(conn *elastic.Client, namespace string, config *configOptions) (err error) {
+	ctx := context.Background()
 	parts := strings.SplitN(namespace, ".", 2)
 	esIndex, esType := NormalizeIndexName(namespace), NormalizeTypeName(parts[1])
 	if m := mapIndexTypes[namespace]; m != nil {
@@ -296,18 +336,11 @@ func EnsureFileMappingMapperAttachment(conn *elastigo.Conn, namespace string, co
 			},
 		}
 	}
-	if exists, _ := conn.ExistsIndex(esIndex, "", nil); exists {
-		body, err = json.Marshal(types)
-		if err != nil {
-			return err
-		}
-		_, err = conn.DoCommand("PUT", fmt.Sprintf("/%s/%s/_mapping", esIndex, esType), nil, string(body))
+	var exists bool
+	if exists, err = conn.IndexExists(esIndex).Do(ctx); exists {
+		_, err = conn.PutMapping().Index(esIndex).Type(esType).BodyJson(types).Do(ctx)
 	} else {
-		body, err = json.Marshal(mappings)
-		if err != nil {
-			return err
-		}
-		_, err = conn.DoCommand("PUT", fmt.Sprintf("/%s", esIndex), nil, string(body))
+		_, err = conn.CreateIndex(esIndex).BodyJson(mappings).Do(ctx)
 	}
 	return err
 }
@@ -477,11 +510,11 @@ func ParseIndexMeta(data map[string]interface{}) (meta *indexingMeta) {
 						meta.Type = fmt.Sprintf("%v", t)
 					}
 				default:
-					log.Println("invalid indexing metadata")
+					errorLog.Println("invalid indexing metadata")
 				}
 			}
 		default:
-			log.Println("invalid indexing metadata")
+			errorLog.Println("invalid indexing metadata")
 		}
 	}
 	return meta
@@ -588,7 +621,7 @@ func IsEnabledProcessId(session *mgo.Session, config *configOptions) bool {
 		host := doc["host"].(string)
 		hostname, err := os.Hostname()
 		if err != nil {
-			log.Println(err)
+			errorLog.Println(err)
 			return false
 		}
 		enabled := pid == os.Getpid() && host == hostname
@@ -612,10 +645,10 @@ func ResumeWork(ctx *gtm.OpCtx, session *mgo.Session, config *configOptions) {
 	ctx.Resume()
 }
 
-func SaveTimestamp(session *mgo.Session, op *gtm.Op, resumeName string) error {
+func SaveTimestamp(session *mgo.Session, ts bson.MongoTimestamp, resumeName string) error {
 	col := session.DB("monstache").C("monstache")
 	doc := make(map[string]interface{})
-	doc["ts"] = op.Timestamp
+	doc["ts"] = ts
 	_, err := col.UpsertId(resumeName, bson.M{"$set": doc})
 	return err
 }
@@ -628,11 +661,12 @@ func (config *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.MongoOpLogCollectionName, "mongo-oplog-collection-name", "", "Override the collection name which contains the mongodb oplog")
 	flag.StringVar(&config.MongoCursorTimeout, "mongo-cursor-timeout", "", "Override the duration before a cursor timeout occurs when tailing the oplog")
 	flag.StringVar(&config.ElasticVersion, "elasticsearch-version", "", "Specify elasticsearch version directly instead of getting it from the server")
-	flag.StringVar(&config.ElasticUrl, "elasticsearch-url", "", "Elasticsearch connection URL")
+	flag.StringVar(&config.ElasticUser, "elasticsearch-user", "", "The elasticsearch user name for basic auth")
+	flag.StringVar(&config.ElasticPassword, "elasticsearch-password", "", "The elasticsearch password for basic auth")
 	flag.StringVar(&config.ElasticPemFile, "elasticsearch-pem-file", "", "Path to a PEM file for secure connections to elasticsearch")
 	flag.BoolVar(&config.ElasticValidatePemFile, "elasticsearch-validate-pem-file", true, "Set to boolean false to not validate the Elasticsearch PEM file")
 	flag.IntVar(&config.ElasticMaxConns, "elasticsearch-max-conns", 0, "Elasticsearch max connections")
-	flag.IntVar(&config.ElasticRetrySeconds, "elasticsearch-retry-seconds", 0, "Number of seconds before retrying Elasticsearch requests")
+	flag.BoolVar(&config.ElasticRetry, "elasticsearch-retry", false, "True to retry failed request to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxDocs, "elasticsearch-max-docs", 0, "Number of docs to hold before flushing to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxBytes, "elasticsearch-max-bytes", 0, "Number of bytes to hold before flushing to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxSeconds, "elasticsearch-max-seconds", 0, "Number of seconds before flushing to Elasticsearch")
@@ -643,6 +677,8 @@ func (config *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.Version, "v", false, "True to print the version number")
 	flag.BoolVar(&config.Gzip, "gzip", false, "True to use gzip for requests to elasticsearch")
 	flag.BoolVar(&config.Verbose, "verbose", false, "True to output verbose messages")
+	flag.BoolVar(&config.Stats, "stats", false, "True to print out statistics")
+	flag.StringVar(&config.StatsDuration, "stats-duration", "", "The duration after which stats are logged")
 	flag.BoolVar(&config.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
 	flag.Int64Var(&config.ResumeFromTimestamp, "resume-from-timestamp", 0, "Timestamp to resume syncing from")
 	flag.BoolVar(&config.ResumeWriteUnsafe, "resume-write-unsafe", false, "True to speedup writes of the last timestamp synched for resuming at the cost of error checking")
@@ -718,17 +754,17 @@ func (config *configOptions) LoadPlugins() *configOptions {
 	if config.MapperPluginPath != "" {
 		p, err := plugin.Open(config.MapperPluginPath)
 		if err != nil {
-			log.Panicf("Unable to load mapper plugin %s: %s", config.MapperPluginPath, err)
+			errorLog.Panicf("Unable to load mapper plugin %s: %s", config.MapperPluginPath, err)
 		}
 		mapper, err := p.Lookup("Map")
 		if err != nil {
-			log.Panicf("Unable to find symbol 'Map' in mapper plugin: %s", err)
+			errorLog.Panicf("Unable to find symbol 'Map' in mapper plugin: %s", err)
 		}
 		switch mapper.(type) {
 		case func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error):
 			mapperPlugin = mapper.(func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error))
 		default:
-			log.Panicf("Plugin 'Map' function must be typed %T", mapperPlugin)
+			errorLog.Panicf("Plugin 'Map' function must be typed %T", mapperPlugin)
 		}
 	}
 	return config
@@ -764,14 +800,17 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		if config.MongoCursorTimeout == "" {
 			config.MongoCursorTimeout = tomlConfig.MongoCursorTimeout
 		}
+		if config.ElasticUser == "" {
+			config.ElasticUser = tomlConfig.ElasticUser
+		}
+		if config.ElasticPassword == "" {
+			config.ElasticPassword = tomlConfig.ElasticPassword
+		}
 		if config.ElasticPemFile == "" {
 			config.ElasticPemFile = tomlConfig.ElasticPemFile
 		}
 		if config.ElasticValidatePemFile && !tomlConfig.ElasticValidatePemFile {
 			config.ElasticValidatePemFile = false
-		}
-		if config.ElasticUrl == "" {
-			config.ElasticUrl = tomlConfig.ElasticUrl
 		}
 		if config.ElasticVersion == "" {
 			config.ElasticVersion = tomlConfig.ElasticVersion
@@ -779,8 +818,8 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		if config.ElasticMaxConns == 0 {
 			config.ElasticMaxConns = tomlConfig.ElasticMaxConns
 		}
-		if config.ElasticRetrySeconds == 0 {
-			config.ElasticRetrySeconds = tomlConfig.ElasticRetrySeconds
+		if !config.ElasticRetry && tomlConfig.ElasticRetry {
+			config.ElasticRetry = true
 		}
 		if config.ElasticMaxDocs == 0 {
 			config.ElasticMaxDocs = tomlConfig.ElasticMaxDocs
@@ -811,6 +850,12 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		}
 		if !config.Verbose && tomlConfig.Verbose {
 			config.Verbose = true
+		}
+		if !config.Stats && tomlConfig.Stats {
+			config.Stats = true
+		}
+		if config.StatsDuration == "" {
+			config.StatsDuration = tomlConfig.StatsDuration
 		}
 		if !config.IndexFiles && tomlConfig.IndexFiles {
 			config.IndexFiles = true
@@ -871,16 +916,42 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 			config.PatchNamespaces = tomlConfig.PatchNamespaces
 			config.LoadPatchNamespaces()
 		}
+		config.ElasticUrls = tomlConfig.ElasticUrls
 		config.Workers = tomlConfig.Workers
-		config.ElasticHosts = tomlConfig.ElasticHosts
 		config.MongoDialSettings = tomlConfig.MongoDialSettings
 		config.MongoSessionSettings = tomlConfig.MongoSessionSettings
 		config.GtmSettings = tomlConfig.GtmSettings
 		config.DirectReadNs = tomlConfig.DirectReadNs
+		tomlConfig.SetupLogging()
 		tomlConfig.LoadScripts()
 		tomlConfig.LoadIndexTypes()
 	}
 	return config
+}
+
+func (config *configOptions) NewLogger(path string) *lumberjack.Logger {
+	return &lumberjack.Logger{
+		Filename:   path,
+		MaxSize:    500, // megabytes
+		MaxBackups: 5,
+		MaxAge:     28, //days
+	}
+}
+
+func (config *configOptions) SetupLogging() {
+	logs := config.Logs
+	if logs.Info != "" {
+		infoLog.SetOutput(config.NewLogger(logs.Info))
+	}
+	if logs.Error != "" {
+		errorLog.SetOutput(config.NewLogger(logs.Error))
+	}
+	if logs.Trace != "" {
+		traceLog.SetOutput(config.NewLogger(logs.Trace))
+	}
+	if logs.Stats != "" {
+		statsLog.SetOutput(config.NewLogger(logs.Stats))
+	}
 }
 
 func (config *configOptions) LoadPatchNamespaces() *configOptions {
@@ -924,7 +995,13 @@ func (config *configOptions) SetDefaults() *configOptions {
 		config.MergePatchAttr = "json-merge-patches"
 	}
 	if config.ElasticMaxSeconds == 0 {
-		config.ElasticMaxSeconds = 2
+		config.ElasticMaxSeconds = 1
+	}
+	if config.ElasticMaxDocs == 0 {
+		config.ElasticMaxDocs = elasticMaxDocsDefault
+	}
+	if config.DirectReadLimit == 0 {
+		config.DirectReadLimit = directReadLimitDefault
 	}
 	if config.MongoUrl != "" {
 		// if ssl=true is set on the connection string, remove the option
@@ -979,7 +1056,7 @@ func (config *configOptions) DialMongo() (*mgo.Session, error) {
 			dialInfo.DialServer = func(addr *mgo.ServerAddr) (net.Conn, error) {
 				conn, err := tls.Dial("tcp", addr.String(), tlsConfig)
 				if err != nil {
-					log.Printf("Unable to dial mongodb: %s", err)
+					errorLog.Printf("Unable to dial mongodb: %s", err)
 				}
 				return conn, err
 			}
@@ -1000,78 +1077,49 @@ func (config *configOptions) DialMongo() (*mgo.Session, error) {
 	}
 }
 
-func (config *configOptions) ConfigHttpTransport() error {
+func (config *configOptions) NewHttpClient() (client *http.Client, err error) {
+	tlsConfig := &tls.Config{}
 	if config.ElasticPemFile != "" {
+		var ca []byte
 		certs := x509.NewCertPool()
-		if ca, err := ioutil.ReadFile(config.ElasticPemFile); err == nil {
+		if ca, err = ioutil.ReadFile(config.ElasticPemFile); err == nil {
 			certs.AppendCertsFromPEM(ca)
+			tlsConfig.RootCAs = certs
 		} else {
-			return err
-		}
-		tlsConfig := &tls.Config{RootCAs: certs}
-		// Check to see if we don't need to validate the PEM
-		if config.ElasticValidatePemFile == false {
-			// Turn off validation
-			tlsConfig.InsecureSkipVerify = true
-		}
-		http.DefaultTransport.(*http.Transport).TLSClientConfig = tlsConfig
-	}
-	return nil
-}
-
-func TraceRequest(method, url, body string) {
-	infoLog.Printf("%s request sent to %s", method, url)
-	if body != "" {
-		ba := []byte(body)
-		if len(ba) > 1 && ba[0] == 0x1f && ba[1] == 0x8b {
-			buff := bytes.NewBuffer(ba)
-			reader, err := gzip.NewReader(buff)
-			if err != nil {
-				return
-			}
-			defer reader.Close()
-			if unzipped, err := ioutil.ReadAll(reader); err == nil {
-				infoLog.Printf("request body: %s", unzipped)
-			} else {
-				log.Printf("unable to unzip request: %s", err)
-			}
-		} else {
-			infoLog.Printf("request body: %s", body)
+			return client, err
 		}
 	}
+	if config.ElasticValidatePemFile == false {
+		// Turn off validation
+		tlsConfig.InsecureSkipVerify = true
+	}
+	transport := &http.Transport{
+		TLSHandshakeTimeout: 5 * time.Second,
+		TLSClientConfig:     tlsConfig,
+	}
+	client = &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: transport,
+	}
+	return client, err
 }
 
-func DoDrop(mongo *mgo.Session, elastic *elastigo.Conn, op *gtm.Op, config *configOptions, pending bool) (indexed bool, err error) {
-	// introduce a wait on a drop table or collection if a pending bulk request
-	// is in progress since that request may contain documents that need to be dropped
-	wait := time.Duration(config.ElasticRetrySeconds+3) * time.Second
+func DoDrop(mongo *mgo.Session, elastic *elastic.Client, op *gtm.Op, config *configOptions) (err error) {
 	if db, drop := op.IsDropDatabase(); drop {
 		if config.DroppedDatabases {
-			if pending {
-				time.Sleep(wait)
-			}
 			if err = DeleteIndexes(elastic, db, config); err == nil {
-				indexed = true
 				if e := DropDBMeta(mongo, db); e != nil {
-					log.Printf("unable to delete meta for db: %s", e)
+					errorLog.Printf("unable to delete meta for db: %s", e)
 				}
 			}
-		} else {
-			indexed = true
 		}
 	} else if col, drop := op.IsDropCollection(); drop {
 		if config.DroppedCollections {
-			if pending {
-				time.Sleep(wait)
-			}
 			if err = DeleteIndex(elastic, op.GetDatabase()+"."+col, config); err == nil {
-				indexed = true
 				if e := DropCollectionMeta(mongo, op.GetDatabase()+"."+col); e != nil {
-					log.Printf("unable to delete meta for collection: %s", e)
+					errorLog.Printf("unable to delete meta for collection: %s", e)
 				}
 			}
-		} else {
-			indexed = true
 		}
 	}
 	return
@@ -1092,16 +1140,16 @@ func DoFileContent(mongo *mgo.Session, op *gtm.Op, config *configOptions) (inges
 	return
 }
 
-func DoResume(mongo *mgo.Session, op *gtm.Op, config *configOptions) (err error) {
+func DoResume(mongo *mgo.Session, ts bson.MongoTimestamp, config *configOptions) (err error) {
 	if config.Resume {
-		if op.Timestamp != 0 {
-			err = SaveTimestamp(mongo, op, config.ResumeName)
+		if ts > 0 {
+			err = SaveTimestamp(mongo, ts, config.ResumeName)
 		}
 	}
 	return
 }
 
-func AddPatch(config *configOptions, elastic *elastigo.Conn, op *gtm.Op,
+func AddPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 	objectId string, indexType *indexTypeMapping, meta *indexingMeta) (err error) {
 	var merges []interface{}
 	var toJson []byte
@@ -1109,12 +1157,13 @@ func AddPatch(config *configOptions, elastic *elastigo.Conn, op *gtm.Op,
 		return nil
 	}
 	if op.IsUpdate() {
-		var params = make(map[string]interface{})
+		ctx := context.Background()
+		service := client.Get().Index(indexType.Index).Type(indexType.Type).Id(objectId)
 		if meta.Routing != "" {
-			params["routing"] = meta.Routing
+			service.Routing(meta.Routing)
 		}
-		var resp elastigo.BaseResponse
-		if resp, err = elastic.Get(indexType.Index, indexType.Type, objectId, params); err == nil {
+		var resp *elastic.GetResult
+		if resp, err = service.Do(ctx); err == nil {
 			if resp.Found {
 				var src map[string]interface{}
 				if err = json.Unmarshal(*resp.Source, &src); err == nil {
@@ -1144,6 +1193,7 @@ func AddPatch(config *configOptions, elastic *elastigo.Conn, op *gtm.Op,
 			} else {
 				err = errors.New("last document revision not found")
 			}
+
 		}
 	} else {
 		if _, found := op.Data[config.MergePatchAttr]; !found {
@@ -1160,47 +1210,41 @@ func AddPatch(config *configOptions, elastic *elastigo.Conn, op *gtm.Op,
 	return
 }
 
-func DoIndexing(config *configOptions, mongo *mgo.Session, indexer *elastigo.BulkIndexer, elastic *elastigo.Conn, op *gtm.Op, ingestAttachment bool) (indexed bool, err error) {
+func DoIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, ingestAttachment bool) (err error) {
 	meta := ParseIndexMeta(op.Data)
 	PrepareDataForIndexing(config, op)
 	objectId, indexType := OpIdToString(op), IndexTypeMapping(op)
 	if config.EnablePatches {
 		if patchNamespaces[op.Namespace] {
-			if e := AddPatch(config, elastic, op, objectId, indexType, meta); e != nil {
-				log.Printf("unable to save json-patch info: %s", e)
+			if e := AddPatch(config, client, op, objectId, indexType, meta); e != nil {
+				errorLog.Printf("unable to save json-patch info: %s", e)
 			}
 		}
 	}
-	if ingestAttachment {
-		if indexer.PendingDocuments() > 0 {
-			indexer.Flush()
-			wait := time.Duration(config.ElasticRetrySeconds+3) * time.Second
-			time.Sleep(wait)
-		}
-		if err = IngestAttachment(elastic, indexType.Index, indexType.Type, objectId, op.Data, meta); err == nil {
-			indexed = true
-		}
-	} else {
-		if err = indexer.Index(indexType.Index, indexType.Type, objectId, "", meta.Routing, "", nil, op.Data); err == nil {
-			indexed = true
-		}
+	req := elastic.NewBulkIndexRequest().Index(indexType.Index).Type(indexType.Type)
+	req.Id(objectId)
+	req.Doc(op.Data)
+	if meta.Routing != "" {
+		req.Routing(meta.Routing)
 	}
+	if ingestAttachment {
+		req.Pipeline("attachment")
+	}
+	bulk.Add(req)
 	if meta.Empty() == false {
 		if e := SetIndexMeta(mongo, op.Namespace, objectId, meta); e != nil {
-			log.Printf("unable to save routing info: %s", e)
+			errorLog.Printf("unable to save routing info: %s", e)
 		}
 	}
 	return
 }
 
-func DoIndex(config *configOptions, mongo *mgo.Session, indexer *elastigo.BulkIndexer, elastic *elastigo.Conn, op *gtm.Op, ingestAttachment bool) (indexed bool, err error) {
+func DoIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, ingestAttachment bool) (err error) {
 	if err = MapData(config, op); err == nil {
 		if op.Data != nil {
-			indexed, err = DoIndexing(config, mongo, indexer, elastic, op, ingestAttachment)
+			err = DoIndexing(config, mongo, bulk, client, op, ingestAttachment)
 		} else if op.IsUpdate() {
-			indexed = DoDelete(mongo, indexer, op)
-		} else {
-			indexed = true
+			DoDelete(mongo, bulk, op)
 		}
 	}
 	return
@@ -1256,7 +1300,7 @@ func GetIndexMeta(session *mgo.Session, namespace, id string) (meta *indexingMet
 	return
 }
 
-func DoDelete(mongo *mgo.Session, indexer *elastigo.BulkIndexer, op *gtm.Op) (indexed bool) {
+func DoDelete(mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
 	objectId, indexType, meta := OpIdToString(op), IndexTypeMapping(op), &indexingMeta{}
 	if mapEnvs != nil {
 		if env := mapEnvs[op.Namespace]; env != nil && env.Routing {
@@ -1269,8 +1313,12 @@ func DoDelete(mongo *mgo.Session, indexer *elastigo.BulkIndexer, op *gtm.Op) (in
 	if meta.Type != "" {
 		indexType.Type = meta.Type
 	}
-	indexer.Delete(indexType.Index, indexType.Type, "", meta.Routing, objectId)
-	indexed = true
+	req := elastic.NewBulkDeleteRequest().Index(indexType.Index).Type(indexType.Type)
+	if meta.Routing != "" {
+		req.Routing(meta.Routing)
+	}
+	req.Id(objectId)
+	bulk.Add(req)
 	return
 }
 
@@ -1282,8 +1330,18 @@ func GtmDefaultSettings() gtmSettings {
 	}
 }
 
+func CreateAfterBulk(mongo *mgo.Session, config *configOptions) elastic.BulkAfterFunc {
+	return func(executionId int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
+		if err != nil || lastTimestamp == 0 {
+			return
+		}
+		if err = DoResume(mongo, lastTimestamp, config); err != nil {
+			errorLog.Printf("Unable to save timestamp: %s", err)
+		}
+	}
+}
+
 func main() {
-	log.SetPrefix("ERROR ")
 	enabled := true
 	config := &configOptions{
 		MongoDialSettings:    mongoDialSettings{Timeout: -1},
@@ -1301,12 +1359,9 @@ func main() {
 	done := make(chan bool, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
 
-	if err := config.ConfigHttpTransport(); err != nil {
-		log.Panicf("Unable to configure HTTP transport: %s", err)
-	}
 	mongo, err := config.DialMongo()
 	if err != nil {
-		log.Panicf("Unable to connect to mongodb using URL %s: %s", config.MongoUrl, err)
+		errorLog.Panicf("Unable to connect to mongodb using URL %s: %s", config.MongoUrl, err)
 	}
 	mongo.SetMode(mgo.Primary, true)
 	defer mongo.Close()
@@ -1323,43 +1378,26 @@ func main() {
 		timeOut := time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Second
 		mongo.SetSyncTimeout(timeOut)
 	}
-	elastic := elastigo.NewConn()
-	if config.ElasticUrl != "" {
-		elastic.SetFromUrl(config.ElasticUrl)
-	}
-	if config.ElasticHosts != nil {
-		elastic.SetHosts(config.ElasticHosts)
-	}
-	if config.Verbose {
-		elastic.RequestTracer = TraceRequest
-	}
-	if config.Gzip {
-		elastic.Gzip = true
+
+	elastic, err := config.NewElasticClient()
+	if err != nil {
+		errorLog.Panicf("Unable to create elasticsearch client: %s", err)
 	}
 	if config.ElasticVersion == "" {
-		if err := TestElasticsearchConn(elastic, config); err != nil {
-			host := elastic.Domain
-			if len(config.ElasticHosts) > 0 {
-				host = config.ElasticHosts[0]
-			}
-			log.Panicf("Unable to validate connection to elasticsearch using %s://%s:%s: %s",
-				elastic.Protocol, host, elastic.Port, err)
+		if err := config.TestElasticsearchConn(elastic); err != nil {
+			errorLog.Panicf("Unable to validate connection to elasticsearch using client %s: %s",
+				elastic, err)
 		}
 	} else {
 		if err := config.ParseElasticsearchVersion(config.ElasticVersion); err != nil {
-			log.Panicf("Elasticsearch version must conform to major.minor.fix: %s", err)
+			errorLog.Panicf("Elasticsearch version must conform to major.minor.fix: %s", err)
 		}
 	}
-	indexer := elastic.NewBulkIndexerErrors(config.ElasticMaxConns, config.ElasticRetrySeconds)
-	if config.ElasticMaxDocs != 0 {
-		indexer.BulkMaxDocs = config.ElasticMaxDocs
+	bulk, err := config.NewBulkProcessor(elastic, mongo)
+	if err != nil {
+		errorLog.Panicf("Unable to start bulk processor: %s", err)
 	}
-	if config.ElasticMaxBytes != 0 {
-		indexer.BulkMaxBuffer = config.ElasticMaxBytes
-	}
-	indexer.BufferDelayMax = time.Duration(config.ElasticMaxSeconds) * time.Second
-	indexer.Start()
-	defer indexer.Stop()
+	defer bulk.Stop()
 
 	go func() {
 		<-sigs
@@ -1392,7 +1430,7 @@ func main() {
 
 	if config.IndexFiles {
 		if len(config.FileNamespaces) == 0 {
-			log.Fatalln("File indexing is ON but no file namespaces are configured")
+			errorLog.Fatalln("File indexing is ON but no file namespaces are configured")
 		}
 		for _, namespace := range config.FileNamespaces {
 			if err := EnsureFileMapping(elastic, namespace, config); err != nil {
@@ -1436,11 +1474,11 @@ func main() {
 		if err = EnsureClusterTTL(mongo); err == nil {
 			infoLog.Printf("Joined cluster %s", config.ClusterName)
 		} else {
-			log.Panicf("Unable to enable cluster mode: %s", err)
+			errorLog.Panicf("Unable to enable cluster mode: %s", err)
 		}
 		enabled, err = IsEnabledProcess(mongo, config)
 		if err != nil {
-			log.Panicf("Unable to determine enabled cluster process: %s", err)
+			errorLog.Panicf("Unable to determine enabled cluster process: %s", err)
 		}
 		if !enabled {
 			config.DirectReadNs = []string{}
@@ -1448,7 +1486,7 @@ func main() {
 	}
 	gtmBufferDuration, err := time.ParseDuration(config.GtmSettings.BufferDuration)
 	if err != nil {
-		log.Panicf("Unable to parse gtm buffer duration %s: %s", config.GtmSettings.BufferDuration, err)
+		errorLog.Panicf("Unable to parse gtm buffer duration %s: %s", config.GtmSettings.BufferDuration, err)
 	}
 	gtmCtx := gtm.Start(mongo, &gtm.Options{
 		After:               after,
@@ -1477,6 +1515,17 @@ func main() {
 	if config.ClusterName == "" {
 		heartBeat.Stop()
 	}
+	statsTimeout := time.Duration(30) * time.Second
+	if config.StatsDuration != "" {
+		statsTimeout, err = time.ParseDuration(config.StatsDuration)
+		if err != nil {
+			errorLog.Panicf("Unable to parse stats duration: %s", err)
+		}
+	}
+	printStats := time.NewTicker(statsTimeout)
+	if config.Stats == false {
+		printStats.Stop()
+	}
 	exitStatus := 0
 	if len(config.DirectReadNs) > 0 {
 		go func(c *gtm.OpCtx, config *configOptions) {
@@ -1490,8 +1539,8 @@ func main() {
 	for {
 		select {
 		case <-done:
-			indexer.Flush()
-			indexer.Stop()
+			bulk.Flush()
+			bulk.Stop()
 			if config.ClusterName != "" {
 				ResetClusterState(mongo, config)
 			}
@@ -1506,52 +1555,54 @@ func main() {
 				if !enabled {
 					infoLog.Printf("Pausing work for cluster %s", config.ClusterName)
 					gtmCtx.Pause()
+					bulk.Stop()
 				}
 			} else {
 				if enabled, err = IsEnabledProcess(mongo, config); err == nil {
 					if enabled {
 						infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
+						bulk.Start(context.Background())
 						ResumeWork(gtmCtx, mongo, config)
 					}
 				} else {
 					gtmCtx.ErrC <- err
 				}
 			}
+		case <-printStats.C:
+			if !enabled {
+				break
+			}
+			stats, err := json.Marshal(bulk.Stats())
+			if err != nil {
+				errorLog.Printf("Unable to log statistics: %s", err)
+			} else {
+				statsLog.Println(string(stats))
+			}
 		case err = <-gtmCtx.ErrC:
 			exitStatus = 1
-			log.Println(err)
+			lastTimestamp = 0
+			errorLog.Println(err)
 			if config.FailFast {
 				os.Exit(exitStatus)
-			}
-		case indexErr := <-indexer.ErrorChannel:
-			if indexErr.Buf != nil {
-				gtmCtx.ErrC <- fmt.Errorf("%s. Failed Request Body : %s", indexErr.Err, indexErr.Buf)
-			} else {
-				gtmCtx.ErrC <- indexErr.Err
 			}
 		case op := <-gtmCtx.OpC:
 			if !enabled {
 				break
 			}
-			ingestAttachment, indexed := false, false
+			lastTimestamp = op.Timestamp
 			if op.IsDrop() {
-				pending := indexer.PendingDocuments() > 0
-				indexer.Flush()
-				if indexed, err = DoDrop(mongo, elastic, op, config, pending); err != nil {
+				bulk.Flush()
+				if err = DoDrop(mongo, elastic, op, config); err != nil {
 					gtmCtx.ErrC <- err
 				}
 			} else if op.IsDelete() {
-				indexed = DoDelete(mongo, indexer, op)
+				DoDelete(mongo, bulk, op)
 			} else if op.Data != nil {
+				ingestAttachment := false
 				if ingestAttachment, err = DoFileContent(mongo, op, config); err != nil {
 					gtmCtx.ErrC <- err
 				}
-				if indexed, err = DoIndex(config, mongo, indexer, elastic, op, ingestAttachment); err != nil {
-					gtmCtx.ErrC <- err
-				}
-			}
-			if indexed {
-				if err = DoResume(mongo, op, config); err != nil {
+				if err = DoIndex(config, mongo, bulk, elastic, op, ingestAttachment); err != nil {
 					gtmCtx.ErrC <- err
 				}
 			}

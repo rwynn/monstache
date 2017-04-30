@@ -3,8 +3,9 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	elastigo "github.com/rwynn/elastigo/lib"
+	"golang.org/x/net/context"
 	"gopkg.in/mgo.v2"
+	elastic "gopkg.in/olivere/elastic.v5"
 	"testing"
 	"time"
 )
@@ -28,7 +29,7 @@ go test -v -delay 10
 var delay int
 
 func init() {
-	flag.IntVar(&delay, "delay", 5, "Delay between operations in seconds")
+	flag.IntVar(&delay, "delay", 3, "Delay between operations in seconds")
 	flag.Parse()
 }
 
@@ -39,7 +40,7 @@ func DropTestDB(t *testing.T, session *mgo.Session) {
 	}
 }
 
-func ValidateDocResponse(t *testing.T, doc map[string]string, resp elastigo.BaseResponse) {
+func ValidateDocResponse(t *testing.T, doc map[string]string, resp *elastic.GetResult) {
 	if resp.Id != doc["_id"] {
 		t.Fatalf("elasticsearch id %s does not match mongo id %s", resp.Id, doc["_id"])
 	}
@@ -89,7 +90,10 @@ func TestParseSecureMongoUrl(t *testing.T) {
 }
 
 func TestInsert(t *testing.T) {
-	elastic := elastigo.NewConn()
+	client, err := elastic.NewClient()
+	if err != nil {
+		t.Fatal(err)
+	}
 	session, err := mgo.Dial("localhost")
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +106,7 @@ func TestInsert(t *testing.T) {
 	doc["data"] = "data"
 	if err = col.Insert(doc); err == nil {
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
+		if resp, err := client.Get().Index("test.test").Type("test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)
@@ -113,7 +117,10 @@ func TestInsert(t *testing.T) {
 }
 
 func TestUpdate(t *testing.T) {
-	elastic := elastigo.NewConn()
+	client, err := elastic.NewClient()
+	if err != nil {
+		t.Fatal(err)
+	}
 	session, err := mgo.Dial("localhost")
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +133,7 @@ func TestUpdate(t *testing.T) {
 	doc["data"] = "data"
 	if err = col.Insert(doc); err == nil {
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
+		if resp, err := client.Get().Index("test.test").Type("test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)
@@ -136,7 +143,7 @@ func TestUpdate(t *testing.T) {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
+		if resp, err := client.Get().Index("test.test").Type("test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)
@@ -147,7 +154,10 @@ func TestUpdate(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	elastic := elastigo.NewConn()
+	client, err := elastic.NewClient()
+	if err != nil {
+		t.Fatal(err)
+	}
 	session, err := mgo.Dial("localhost")
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +170,7 @@ func TestDelete(t *testing.T) {
 	doc["data"] = "data"
 	if err = col.Insert(doc); err == nil {
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
+		if resp, err := client.Get().Index("test.test").Type("test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)
@@ -169,9 +179,9 @@ func TestDelete(t *testing.T) {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Duration(delay) * time.Second)
-		_, err := elastic.Get("test.test", "test", "1", nil)
-		if err != elastigo.RecordNotFound {
-			t.Fatal("elasticsearch record not deleted")
+		_, err := client.Get().Index("test.test").Type("test").Id("1").Do(context.Background())
+		if !elastic.IsNotFound(err) {
+			t.Fatal("clientsearch record not deleted")
 		}
 	} else {
 		t.Fatal(err)
@@ -179,7 +189,10 @@ func TestDelete(t *testing.T) {
 }
 
 func TestDropDatabase(t *testing.T) {
-	elastic := elastigo.NewConn()
+	client, err := elastic.NewClient()
+	if err != nil {
+		t.Fatal(err)
+	}
 	session, err := mgo.Dial("localhost")
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +205,7 @@ func TestDropDatabase(t *testing.T) {
 	doc["data"] = "data"
 	if err = col.Insert(doc); err == nil {
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
+		if resp, err := client.Get().Index("test.test").Type("test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)
@@ -202,12 +215,12 @@ func TestDropDatabase(t *testing.T) {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Duration(delay) * time.Second)
-		exists, err := elastic.IndicesExists("test.test")
+		exists, err := client.IndexExists("test.test").Do(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if exists {
-			t.Fatal("elasticsearch index not deleted")
+			t.Fatal("clientsearch index not deleted")
 		}
 	} else {
 		t.Fatal(err)
@@ -215,7 +228,10 @@ func TestDropDatabase(t *testing.T) {
 }
 
 func TestDropCollection(t *testing.T) {
-	elastic := elastigo.NewConn()
+	client, err := elastic.NewClient()
+	if err != nil {
+		t.Fatal(err)
+	}
 	session, err := mgo.Dial("localhost")
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +244,7 @@ func TestDropCollection(t *testing.T) {
 	doc["data"] = "data"
 	if err = col.Insert(doc); err == nil {
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := elastic.Get("test.test", "test", "1", nil); err == nil {
+		if resp, err := client.Get().Index("test.test").Type("test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)
@@ -237,12 +253,12 @@ func TestDropCollection(t *testing.T) {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Duration(delay) * time.Second)
-		exists, err := elastic.IndicesExists("test.test")
+		exists, err := client.IndexExists("test.test").Do(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if exists {
-			t.Fatal("elasticsearch index not deleted")
+			t.Fatal("clientsearch index not deleted")
 		}
 	} else {
 		t.Fatal(err)
