@@ -52,10 +52,11 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var lastTimestamp bson.MongoTimestamp
 
-const Version = "3.0.1"
+const Version = "3.0.2"
 const mongoUrlDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
+const elasticClientTimeoutDefault int = 60
 const elasticMaxDocsDefault int = 1000
 const directReadLimitDefault int = 1000
 const gtmChannelSizeDefault int = 512
@@ -151,6 +152,7 @@ type configOptions struct {
 	ElasticMaxDocs           int    `toml:"elasticsearch-max-docs"`
 	ElasticMaxBytes          int    `toml:"elasticsearch-max-bytes"`
 	ElasticMaxSeconds        int    `toml:"elasticsearch-max-seconds"`
+	ElasticClientTimeout     int    `toml:"elasticsearch-client-timeout"`
 	ElasticMajorVersion      int
 	MaxFileSize              int64 `toml:"max-file-size"`
 	ConfigFile               string
@@ -670,6 +672,7 @@ func (config *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.IntVar(&config.ElasticMaxDocs, "elasticsearch-max-docs", 0, "Number of docs to hold before flushing to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxBytes, "elasticsearch-max-bytes", 0, "Number of bytes to hold before flushing to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxSeconds, "elasticsearch-max-seconds", 0, "Number of seconds before flushing to Elasticsearch")
+	flag.IntVar(&config.ElasticClientTimeout, "elasticsearch-client-timeout", 0, "Number of seconds before a request to Elasticsearch is timed out")
 	flag.Int64Var(&config.MaxFileSize, "max-file-size", 0, "GridFs file content exceeding this limit in bytes will not be indexed in Elasticsearch")
 	flag.StringVar(&config.ConfigFile, "f", "", "Location of configuration file")
 	flag.BoolVar(&config.DroppedDatabases, "dropped-databases", true, "True to delete indexes from dropped databases")
@@ -829,6 +832,9 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		}
 		if config.ElasticMaxSeconds == 0 {
 			config.ElasticMaxSeconds = tomlConfig.ElasticMaxSeconds
+		}
+		if config.ElasticClientTimeout == 0 {
+			config.ElasticClientTimeout = tomlConfig.ElasticClientTimeout
 		}
 		if config.MaxFileSize == 0 {
 			config.MaxFileSize = tomlConfig.MaxFileSize
@@ -991,6 +997,9 @@ func (config *configOptions) SetDefaults() *configOptions {
 	if config.ElasticMaxConns == 0 {
 		config.ElasticMaxConns = elasticMaxConnsDefault
 	}
+	if config.ElasticClientTimeout == 0 {
+		config.ElasticClientTimeout = elasticClientTimeoutDefault
+	}
 	if config.MergePatchAttr == "" {
 		config.MergePatchAttr = "json-merge-patches"
 	}
@@ -1094,11 +1103,11 @@ func (config *configOptions) NewHttpClient() (client *http.Client, err error) {
 		tlsConfig.InsecureSkipVerify = true
 	}
 	transport := &http.Transport{
-		TLSHandshakeTimeout: 5 * time.Second,
+		TLSHandshakeTimeout: time.Duration(30) * time.Second,
 		TLSClientConfig:     tlsConfig,
 	}
 	client = &http.Client{
-		Timeout:   10 * time.Second,
+		Timeout:   time.Duration(config.ElasticClientTimeout) * time.Second,
 		Transport: transport,
 	}
 	return client, err
