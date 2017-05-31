@@ -1478,6 +1478,7 @@ func main() {
 	}
 
 	var filter gtm.OpFilter = nil
+	var directReadFilter gtm.OpFilter = nil
 	filterChain := []gtm.OpFilter{NotMonstache, NotSystem, NotChunks}
 	if config.NsRegex != "" {
 		filterChain = append(filterChain, FilterWithRegex(config.NsRegex))
@@ -1491,6 +1492,7 @@ func main() {
 			panic(err)
 		}
 		filterChain = append(filterChain, workerFilter)
+		directReadFilter = workerFilter
 	} else if config.Workers != nil {
 		panic("workers configured but this worker is undefined. worker must be set to one of the workers.")
 	}
@@ -1537,6 +1539,7 @@ func main() {
 		DirectReadNs:        config.DirectReadNs,
 		DirectReadLimit:     config.DirectReadLimit,
 		DirectReadersPerCol: config.DirectReadersPerCol,
+		DirectReadFilter:    directReadFilter,
 	})
 	if config.ClusterName != "" {
 		if enabled {
