@@ -61,6 +61,8 @@ const elasticMaxDocsDefault int = 1000
 const directReadLimitDefault int = 1000
 const gtmChannelSizeDefault int = 512
 
+type stringargs []string
+
 type executionEnv struct {
 	Vm      *otto.Otto
 	Script  string
@@ -119,7 +121,7 @@ type configOptions struct {
 	MongoSessionSettings     mongoSessionSettings `toml:"mongo-session-settings"`
 	GtmSettings              gtmSettings          `toml:"gtm-settings"`
 	Logs                     logFiles             `toml:"logs"`
-	ElasticUrls              []string             `toml:"elasticsearch-urls"`
+	ElasticUrls              stringargs           `toml:"elasticsearch-urls"`
 	ElasticUser              string               `toml:"elasticsearch-user"`
 	ElasticPassword          string               `toml:"elasticsearch-password"`
 	ElasticPemFile           string               `toml:"elasticsearch-pem-file"`
@@ -158,14 +160,23 @@ type configOptions struct {
 	ConfigFile               string
 	Script                   []javascript
 	Mapping                  []indexTypeMapping
-	FileNamespaces           []string `toml:"file-namespaces"`
-	PatchNamespaces          []string `toml:"patch-namespaces"`
-	Workers                  []string
+	FileNamespaces           stringargs `toml:"file-namespaces"`
+	PatchNamespaces          stringargs `toml:"patch-namespaces"`
+	Workers                  stringargs
 	Worker                   string
-	DirectReadNs             []string `toml:"direct-read-namespaces"`
-	DirectReadLimit          int      `toml:"direct-read-limit"`
-	DirectReadersPerCol      int      `toml:"direct-readers-per-col"`
-	MapperPluginPath         string   `toml:"mapper-plugin-path"`
+	DirectReadNs             stringargs `toml:"direct-read-namespaces"`
+	DirectReadLimit          int        `toml:"direct-read-limit"`
+	DirectReadersPerCol      int        `toml:"direct-readers-per-col"`
+	MapperPluginPath         string     `toml:"mapper-plugin-path"`
+}
+
+func (this *stringargs) String() string {
+	return fmt.Sprintf("%s", *this)
+}
+
+func (this *stringargs) Set(value string) error {
+	*this = append(*this, value)
+	return nil
 }
 
 func (this *configOptions) ParseElasticsearchVersion(number string) (err error) {
@@ -701,6 +712,11 @@ func (config *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.MapperPluginPath, "mapper-plugin-path", "", "The path to a .so file to load as a document mapper plugin")
 	flag.StringVar(&config.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
 	flag.StringVar(&config.NsExcludeRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
+	flag.Var(&config.DirectReadNs, "direct-read-namespace", "A list of direct read namespaces")
+	flag.Var(&config.ElasticUrls, "elasticsearch-url", "A list of Elasticsearch URLs")
+	flag.Var(&config.FileNamespaces, "file-namespace", "A list of file namespaces")
+	flag.Var(&config.PatchNamespaces, "patch-namespace", "A list of patch namespaces")
+	flag.Var(&config.Workers, "workers", "A list of worker names")
 	flag.Parse()
 	return config
 }
@@ -909,7 +925,9 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 			config.NsExcludeRegex = tomlConfig.NsExcludeRegex
 		}
 		if config.IndexFiles {
-			config.FileNamespaces = tomlConfig.FileNamespaces
+			if len(config.FileNamespaces) == 0 {
+				config.FileNamespaces = tomlConfig.FileNamespaces
+			}
 			config.LoadGridFsConfig()
 		}
 		if config.Worker == "" {
@@ -919,15 +937,23 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 			config.MapperPluginPath = tomlConfig.MapperPluginPath
 		}
 		if config.EnablePatches {
-			config.PatchNamespaces = tomlConfig.PatchNamespaces
+			if len(config.PatchNamespaces) == 0 {
+				config.PatchNamespaces = tomlConfig.PatchNamespaces
+			}
 			config.LoadPatchNamespaces()
 		}
-		config.ElasticUrls = tomlConfig.ElasticUrls
-		config.Workers = tomlConfig.Workers
+		if len(config.DirectReadNs) == 0 {
+			config.DirectReadNs = tomlConfig.DirectReadNs
+		}
+		if len(config.ElasticUrls) == 0 {
+			config.ElasticUrls = tomlConfig.ElasticUrls
+		}
+		if len(config.Workers) == 0 {
+			config.Workers = tomlConfig.Workers
+		}
 		config.MongoDialSettings = tomlConfig.MongoDialSettings
 		config.MongoSessionSettings = tomlConfig.MongoSessionSettings
 		config.GtmSettings = tomlConfig.GtmSettings
-		config.DirectReadNs = tomlConfig.DirectReadNs
 		tomlConfig.SetupLogging()
 		tomlConfig.LoadScripts()
 		tomlConfig.LoadIndexTypes()
@@ -1490,7 +1516,7 @@ func main() {
 			errorLog.Panicf("Unable to determine enabled cluster process: %s", err)
 		}
 		if !enabled {
-			config.DirectReadNs = []string{}
+			config.DirectReadNs = stringargs{}
 		}
 	}
 	gtmBufferDuration, err := time.ParseDuration(config.GtmSettings.BufferDuration)
