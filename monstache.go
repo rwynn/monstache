@@ -231,7 +231,7 @@ func (this *configOptions) NewElasticClient() (client *elastic.Client, err error
 		clientOptions = append(clientOptions, elastic.SetBasicAuth(this.ElasticUser, this.ElasticPassword))
 	}
 	if this.ElasticRetry {
-		d1, d2 := time.Duration(200)*time.Millisecond, time.Duration(5)*time.Second
+		d1, d2 := time.Duration(50)*time.Millisecond, time.Duration(20)*time.Second
 		retrier := elastic.NewBackoffRetrier(elastic.NewExponentialBackoff(d1, d2))
 		clientOptions = append(clientOptions, elastic.SetRetrier(retrier))
 	}
