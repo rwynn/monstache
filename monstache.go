@@ -1624,7 +1624,9 @@ func main() {
 			if !enabled {
 				break
 			}
-			lastTimestamp = op.Timestamp
+			if op.IsSourceOplog() {
+				lastTimestamp = op.Timestamp
+			}
 			if op.IsDrop() {
 				bulk.Flush()
 				if err = DoDrop(mongo, elastic, op, config); err != nil {
