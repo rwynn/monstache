@@ -58,7 +58,6 @@ const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
 const elasticClientTimeoutDefault int = 60
 const elasticMaxDocsDefault int = 1000
-const directReadLimitDefault int = 1000
 const gtmChannelSizeDefault int = 512
 
 type stringargs []string
@@ -1034,9 +1033,6 @@ func (config *configOptions) SetDefaults() *configOptions {
 	}
 	if config.ElasticMaxDocs == 0 {
 		config.ElasticMaxDocs = elasticMaxDocsDefault
-	}
-	if config.DirectReadLimit == 0 {
-		config.DirectReadLimit = directReadLimitDefault
 	}
 	if config.MongoUrl != "" {
 		// if ssl=true is set on the connection string, remove the option
