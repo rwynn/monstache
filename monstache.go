@@ -124,7 +124,7 @@ type configOptions struct {
 	ElasticUser              string               `toml:"elasticsearch-user"`
 	ElasticPassword          string               `toml:"elasticsearch-password"`
 	ElasticPemFile           string               `toml:"elasticsearch-pem-file"`
-	ElasticValidatePemFile   bool                 `toml:"elasticsearch-validate-pem-file`
+	ElasticValidatePemFile   bool                 `toml:"elasticsearch-validate-pem-file"`
 	ElasticVersion           string               `toml:"elasticsearch-version"`
 	ResumeName               string               `toml:"resume-name"`
 	NsRegex                  string               `toml:"namespace-regex"`
