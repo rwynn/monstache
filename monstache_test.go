@@ -54,6 +54,25 @@ func ValidateDocResponse(t *testing.T, doc map[string]string, resp *elastic.GetR
 	}
 }
 
+func TestSetElasticClientScheme(t *testing.T) {
+	c := &configOptions{
+		ElasticUrls: []string { "https://example.com:9200" },
+	}
+	if c.NeedsSecureScheme() == false {
+		t.Fatalf("secure scheme should be required")
+	}
+	c = &configOptions{
+		ElasticUrls: []string { "http://example.com:9200" },
+	}
+	if c.NeedsSecureScheme() {
+		t.Fatalf("secure scheme should not be required")
+	}
+	c = &configOptions{}
+	if c.NeedsSecureScheme() {
+		t.Fatalf("secure scheme should not be required")
+	}
+}
+
 func TestParseSecureMongoUrl(t *testing.T) {
 	c := &configOptions{MongoUrl: "mongo://host:47/db?a=b&ssl=true&c=d"}
 	c.SetDefaults()

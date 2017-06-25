@@ -211,11 +211,26 @@ func (this *configOptions) NewBulkProcessor(client *elastic.Client, mongo *mgo.S
 	return bulkService.Do(context.Background())
 }
 
+func (this *configOptions) NeedsSecureScheme() bool {
+	if len(this.ElasticUrls) > 0 {
+		for _, url := range this.ElasticUrls {
+			if strings.HasPrefix(url, "https") {
+				return true
+			}
+		}
+	}
+	return false
+
+}
+
 func (this *configOptions) NewElasticClient() (client *elastic.Client, err error) {
 	var clientOptions []elastic.ClientOptionFunc
 	var httpClient *http.Client
 	clientOptions = append(clientOptions, elastic.SetErrorLog(errorLog))
 	clientOptions = append(clientOptions, elastic.SetSniff(false))
+	if this.NeedsSecureScheme() {
+		clientOptions = append(clientOptions, elastic.SetScheme("https"))
+	}
 	if len(this.ElasticUrls) > 0 {
 		clientOptions = append(clientOptions, elastic.SetURL(this.ElasticUrls...))
 	} else {
@@ -1574,7 +1589,6 @@ func main() {
 		go func(c *gtm.OpCtx, config *configOptions) {
 			c.DirectReadWg.Wait()
 			if config.ExitAfterDirectReads {
-				c.Stop()
 				done <- true
 			}
 		}(gtmCtx, config)
