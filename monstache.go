@@ -130,8 +130,10 @@ type configOptions struct {
 	NsRegex                  string               `toml:"namespace-regex"`
 	NsExcludeRegex           string               `toml:"namespace-exclude-regex"`
 	ClusterName              string               `toml:"cluster-name"`
+	Print                    bool                 `toml:"print-config"`
 	Version                  bool
 	Stats                    bool
+	IndexStats               bool   `toml:"index-stats"`
 	StatsDuration            string `toml:"stats-duration"`
 	Gzip                     bool
 	Verbose                  bool
@@ -208,6 +210,14 @@ func (this *configOptions) NewBulkProcessor(client *elastic.Client, mongo *mgo.S
 	}
 	bulkService.FlushInterval(time.Duration(this.ElasticMaxSeconds) * time.Second)
 	bulkService.After(CreateAfterBulk(mongo, this))
+	return bulkService.Do(context.Background())
+}
+
+func (this *configOptions) NewStatsBulkProcessor(client *elastic.Client) (bulk *elastic.BulkProcessor, err error) {
+	bulkService := client.BulkProcessor().Name("monstache-stats")
+	bulkService.Workers(1)
+	bulkService.Stats(false)
+	bulkService.BulkActions(1)
 	return bulkService.Do(context.Background())
 }
 
@@ -682,6 +692,7 @@ func SaveTimestamp(session *mgo.Session, ts bson.MongoTimestamp, resumeName stri
 }
 
 func (config *configOptions) ParseCommandLineFlags() *configOptions {
+	flag.BoolVar(&config.Print, "print-config", false, "Print the configuration and then exit")
 	flag.StringVar(&config.MongoUrl, "mongo-url", "", "MongoDB connection URL")
 	flag.StringVar(&config.MongoPemFile, "mongo-pem-file", "", "Path to a PEM file for secure connections to MongoDB")
 	flag.BoolVar(&config.MongoValidatePemFile, "mongo-validate-pem-file", true, "Set to boolean false to not validate the MongoDB PEM file")
@@ -707,6 +718,7 @@ func (config *configOptions) ParseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.Gzip, "gzip", false, "True to use gzip for requests to elasticsearch")
 	flag.BoolVar(&config.Verbose, "verbose", false, "True to output verbose messages")
 	flag.BoolVar(&config.Stats, "stats", false, "True to print out statistics")
+	flag.BoolVar(&config.IndexStats, "index-stats", false, "True to index stats in elasticsearch")
 	flag.StringVar(&config.StatsDuration, "stats-duration", "", "The duration after which stats are logged")
 	flag.BoolVar(&config.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
 	flag.Int64Var(&config.ResumeFromTimestamp, "resume-from-timestamp", 0, "Timestamp to resume syncing from")
@@ -895,6 +907,9 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		if !config.Stats && tomlConfig.Stats {
 			config.Stats = true
 		}
+		if !config.IndexStats && tomlConfig.IndexStats {
+			config.IndexStats = true
+		}
 		if config.StatsDuration == "" {
 			config.StatsDuration = tomlConfig.StatsDuration
 		}
@@ -973,6 +988,7 @@ func (config *configOptions) LoadConfigFile() *configOptions {
 		config.MongoDialSettings = tomlConfig.MongoDialSettings
 		config.MongoSessionSettings = tomlConfig.MongoSessionSettings
 		config.GtmSettings = tomlConfig.GtmSettings
+		config.Logs = tomlConfig.Logs
 		tomlConfig.SetupLogging()
 		tomlConfig.LoadScripts()
 		tomlConfig.LoadIndexTypes()
@@ -1019,6 +1035,15 @@ func (config *configOptions) LoadGridFsConfig() *configOptions {
 		fileNamespaces[namespace] = true
 	}
 	return config
+}
+
+func (config *configOptions) Dump() {
+	json, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		errorLog.Printf("Unable to print configuration: %s", err)
+	} else {
+		infoLog.Println(string(json))
+	}
 }
 
 func (config *configOptions) SetDefaults() *configOptions {
@@ -1304,6 +1329,23 @@ func DoIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 	return
 }
 
+func DoIndexStats(bulkStats *elastic.BulkProcessor, stats elastic.BulkProcessorStats) (err error) {
+	var hostname string
+	doc := make(map[string]interface{})
+	t := time.Now().UTC()
+	doc["Timestamp"] = t.Format("2006-01-02T15:04:05")
+	hostname, err = os.Hostname()
+	if err == nil {
+		doc["Host"] = hostname
+	}
+	doc["Pid"] = os.Getpid()
+	doc["Stats"] = stats
+	req := elastic.NewBulkIndexRequest().Index("monstache.stats").Type("stats")
+	req.Doc(doc)
+	bulkStats.Add(req)
+	return
+}
+
 func DropDBMeta(session *mgo.Session, db string) (err error) {
 	col := session.DB("monstache").C("meta")
 	q := bson.M{"db": db}
@@ -1407,7 +1449,12 @@ func main() {
 		fmt.Println(Version)
 		os.Exit(0)
 	}
-	config.LoadConfigFile().LoadPlugins().SetDefaults()
+	config.LoadConfigFile().SetDefaults()
+	if config.Print {
+		config.Dump()
+		os.Exit(0)
+	}
+	config.LoadPlugins()
 
 	sigs := make(chan os.Signal, 1)
 	done := make(chan bool, 1)
@@ -1433,25 +1480,33 @@ func main() {
 		mongo.SetSyncTimeout(timeOut)
 	}
 
-	elastic, err := config.NewElasticClient()
+	elasticClient, err := config.NewElasticClient()
 	if err != nil {
 		errorLog.Panicf("Unable to create elasticsearch client: %s", err)
 	}
 	if config.ElasticVersion == "" {
-		if err := config.TestElasticsearchConn(elastic); err != nil {
+		if err := config.TestElasticsearchConn(elasticClient); err != nil {
 			errorLog.Panicf("Unable to validate connection to elasticsearch using client %s: %s",
-				elastic, err)
+				elasticClient, err)
 		}
 	} else {
 		if err := config.ParseElasticsearchVersion(config.ElasticVersion); err != nil {
 			errorLog.Panicf("Elasticsearch version must conform to major.minor.fix: %s", err)
 		}
 	}
-	bulk, err := config.NewBulkProcessor(elastic, mongo)
+	bulk, err := config.NewBulkProcessor(elasticClient, mongo)
 	if err != nil {
 		errorLog.Panicf("Unable to start bulk processor: %s", err)
 	}
 	defer bulk.Stop()
+	var bulkStats *elastic.BulkProcessor
+	if config.IndexStats {
+		bulkStats, err = config.NewStatsBulkProcessor(elasticClient)
+		if err != nil {
+			errorLog.Panicf("Unable to start stats bulk processor: %s", err)
+		}
+		defer bulkStats.Stop()
+	}
 
 	go func() {
 		<-sigs
@@ -1487,7 +1542,7 @@ func main() {
 			errorLog.Fatalln("File indexing is ON but no file namespaces are configured")
 		}
 		for _, namespace := range config.FileNamespaces {
-			if err := EnsureFileMapping(elastic, namespace, config); err != nil {
+			if err := EnsureFileMapping(elasticClient, namespace, config); err != nil {
 				panic(err)
 			}
 			if config.ElasticMajorVersion >= 5 {
@@ -1598,6 +1653,10 @@ func main() {
 		case <-done:
 			bulk.Flush()
 			bulk.Stop()
+			if bulkStats != nil {
+				bulkStats.Flush()
+				bulkStats.Stop()
+			}
 			if config.ClusterName != "" {
 				ResetClusterState(mongo, config)
 			}
@@ -1629,11 +1688,17 @@ func main() {
 			if !enabled {
 				break
 			}
-			stats, err := json.Marshal(bulk.Stats())
-			if err != nil {
-				errorLog.Printf("Unable to log statistics: %s", err)
+			if config.IndexStats {
+				if err := DoIndexStats(bulkStats, bulk.Stats()); err != nil {
+					errorLog.Printf("Error indexing statistics: %s", err)
+				}
 			} else {
-				statsLog.Println(string(stats))
+				stats, err := json.Marshal(bulk.Stats())
+				if err != nil {
+					errorLog.Printf("Unable to log statistics: %s", err)
+				} else {
+					statsLog.Println(string(stats))
+				}
 			}
 		case err = <-gtmCtx.ErrC:
 			exitStatus = 1
@@ -1651,7 +1716,7 @@ func main() {
 			}
 			if op.IsDrop() {
 				bulk.Flush()
-				if err = DoDrop(mongo, elastic, op, config); err != nil {
+				if err = DoDrop(mongo, elasticClient, op, config); err != nil {
 					gtmCtx.ErrC <- err
 				}
 			} else if op.IsDelete() {
@@ -1661,7 +1726,7 @@ func main() {
 				if ingestAttachment, err = DoFileContent(mongo, op, config); err != nil {
 					gtmCtx.ErrC <- err
 				}
-				if err = DoIndex(config, mongo, bulk, elastic, op, ingestAttachment); err != nil {
+				if err = DoIndex(config, mongo, bulk, elasticClient, op, ingestAttachment); err != nil {
 					gtmCtx.ErrC <- err
 				}
 			}
