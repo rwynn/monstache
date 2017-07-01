@@ -1340,7 +1340,8 @@ func DoIndexStats(bulkStats *elastic.BulkProcessor, stats elastic.BulkProcessorS
 	}
 	doc["Pid"] = os.Getpid()
 	doc["Stats"] = stats
-	req := elastic.NewBulkIndexRequest().Index("monstache.stats").Type("stats")
+	index := t.Format("monstache.stats.2006-01-02")
+	req := elastic.NewBulkIndexRequest().Index(index).Type("stats")
 	req.Doc(doc)
 	bulkStats.Add(req)
 	return
