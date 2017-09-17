@@ -9,6 +9,7 @@ package monstachemap
 // plugins can be compiled using go build -buildmode=plugin -o myplugin.so myplugin.go
 // to enable the plugin start with monstache -mapper-plugin-path /path/to/myplugin.so
 
+// MapperPluginInput is the input to the Map function
 type MapperPluginInput struct {
 	Document   map[string]interface{} // the original document from MongoDB
 	Database   string                 // the origin database in MongoDB
@@ -17,6 +18,7 @@ type MapperPluginInput struct {
 	Operation  string                 // "i" for a insert or "u" for update
 }
 
+// MapperPluginOutput is the output of the Map function
 type MapperPluginOutput struct {
 	Document    map[string]interface{} // an updated document to index into Elasticsearch
 	Index       string                 // the name of the index to use
