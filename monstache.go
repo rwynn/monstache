@@ -54,7 +54,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var lastTimestamp bson.MongoTimestamp
 
-const version = "3.2.0-a1"
+const version = "3.2.0-a2"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -1480,11 +1480,13 @@ func notifySd(config *configOptions) {
 		return
 	}
 	for {
-		infoLog.Println("Sending systemd WATCHDOG=1")
+		if config.Verbose {
+			infoLog.Println("Sending systemd WATCHDOG=1")
+		}
 		sent, err = daemon.SdNotify(false, "WATCHDOG=1")
 		if sent {
 			if config.Verbose {
-				infoLog.Println("WATCHDOG=1 succesfully sent to systemd")
+				infoLog.Println("WATCHDOG=1 successfully sent to systemd")
 			}
 		} else {
 			notifySdFailed(config, err)
