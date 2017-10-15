@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/BurntSushi/toml"
+	"github.com/coreos/go-systemd/daemon"
 	"github.com/evanphx/json-patch"
 	"github.com/robertkrimen/otto"
 	_ "github.com/robertkrimen/otto/underscore"
@@ -53,7 +54,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var lastTimestamp bson.MongoTimestamp
 
-const version = "3.1.2"
+const version = "3.2.0-a1"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -1439,6 +1440,60 @@ func createAfterBulk(mongo *mgo.Session, config *configOptions) elastic.BulkAfte
 	}
 }
 
+func notifySdFailed(config *configOptions, err error) {
+	if err != nil {
+		errorLog.Printf("Systemd notification failed: %s", err)
+	} else {
+		if config.Verbose {
+			infoLog.Println("Systemd notification not supported (i.e. NOTIFY_SOCKET is unset)")
+		}
+	}
+}
+
+func watchdogSdFailed(config *configOptions, err error) {
+	if err != nil {
+		errorLog.Printf("Error determining systemd WATCHDOG interval: %s", err)
+	} else {
+		if config.Verbose {
+			infoLog.Println("Systemd WATCHDOG not enabled")
+		}
+	}
+}
+
+func notifySd(config *configOptions) {
+	var interval time.Duration
+	if config.Verbose {
+		infoLog.Println("Sending systemd READY=1")
+	}
+	sent, err := daemon.SdNotify(false, "READY=1")
+	if sent {
+		if config.Verbose {
+			infoLog.Println("READY=1 successfully sent to systemd")
+		}
+	} else {
+		notifySdFailed(config, err)
+		return
+	}
+	interval, err = daemon.SdWatchdogEnabled(false)
+	if err != nil || interval == 0 {
+		watchdogSdFailed(config, err)
+		return
+	}
+	for {
+		infoLog.Println("Sending systemd WATCHDOG=1")
+		sent, err = daemon.SdNotify(false, "WATCHDOG=1")
+		if sent {
+			if config.Verbose {
+				infoLog.Println("WATCHDOG=1 succesfully sent to systemd")
+			}
+		} else {
+			notifySdFailed(config, err)
+			return
+		}
+		time.Sleep(interval / 2)
+	}
+}
+
 func main() {
 	enabled := true
 	config := &configOptions{
@@ -1650,6 +1705,7 @@ func main() {
 			}
 		}(gtmCtx, config)
 	}
+	go notifySd(config)
 	for {
 		select {
 		case <-done:
