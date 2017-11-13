@@ -54,7 +54,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var lastTimestamp bson.MongoTimestamp
 
-const version = "3.2.0"
+const version = "3.3.0"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -109,6 +109,14 @@ type gtmSettings struct {
 	ChannelSize    int    `toml:"channel-size"`
 	BufferSize     int    `toml:"buffer-size"`
 	BufferDuration string `toml:"buffer-duration"`
+}
+
+type httpServerCtx struct {
+	httpServer *http.Server
+	bulk       *elastic.BulkProcessor
+	config     *configOptions
+	shutdown   bool
+	started    time.Time
 }
 
 type configOptions struct {
@@ -172,6 +180,8 @@ type configOptions struct {
 	DirectReadBatchSize      int        `toml:"direct-read-batch-size"`
 	DirectReadersPerCol      int        `toml:"direct-readers-per-col"`
 	MapperPluginPath         string     `toml:"mapper-plugin-path"`
+	EnableHttpServer         bool       `toml:"enable-http-server"`
+	HttpServerAddr           string     `toml:"http-server-addr"`
 }
 
 func (args *stringargs) String() string {
@@ -744,6 +754,8 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.Var(&config.FileNamespaces, "file-namespace", "A list of file namespaces")
 	flag.Var(&config.PatchNamespaces, "patch-namespace", "A list of patch namespaces")
 	flag.Var(&config.Workers, "workers", "A list of worker names")
+	flag.BoolVar(&config.EnableHttpServer, "enable-http-server", false, "True to enable an internal http server")
+	flag.StringVar(&config.HttpServerAddr, "http-server-addr", "", "The address the internal http server listens on")
 	flag.Parse()
 	return config
 }
@@ -984,6 +996,12 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if len(config.Workers) == 0 {
 			config.Workers = tomlConfig.Workers
 		}
+		if !config.EnableHttpServer && tomlConfig.EnableHttpServer {
+			config.EnableHttpServer = true
+		}
+		if config.HttpServerAddr == "" {
+			config.HttpServerAddr = tomlConfig.HttpServerAddr
+		}
 		config.MongoDialSettings = tomlConfig.MongoDialSettings
 		config.MongoSessionSettings = tomlConfig.MongoSessionSettings
 		config.GtmSettings = tomlConfig.GtmSettings
@@ -1104,6 +1122,9 @@ func (config *configOptions) setDefaults() *configOptions {
 	}
 	if config.MongoURL != "" {
 		config.parseMongoURL()
+	}
+	if config.HttpServerAddr == "" {
+		config.HttpServerAddr = ":8080"
 	}
 	return config
 }
@@ -1460,6 +1481,53 @@ func watchdogSdFailed(config *configOptions, err error) {
 	}
 }
 
+func (ctx *httpServerCtx) serveHttp() {
+	ctx.started = time.Now()
+	s := ctx.httpServer
+	err := s.ListenAndServe()
+	if !ctx.shutdown {
+		errorLog.Panicf("Unable to serve http at address %s: %s", s.Addr, err)
+	}
+}
+
+func (ctx *httpServerCtx) buildServer() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/started", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		data := (time.Now().Sub(ctx.started)).String()
+		w.Write([]byte(data))
+	})
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/stats", func(w http.ResponseWriter, req *http.Request) {
+		stats, err := json.MarshalIndent(ctx.bulk.Stats(), "", "    ")
+		if err == nil {
+			w.WriteHeader(200)
+			w.Write(stats)
+		} else {
+			w.WriteHeader(500)
+			fmt.Fprintf(w, "Unable to print statistics: %s", err)
+		}
+	})
+	mux.HandleFunc("/config", func(w http.ResponseWriter, req *http.Request) {
+		stats, err := json.MarshalIndent(ctx.config, "", "    ")
+		if err == nil {
+			w.WriteHeader(200)
+			w.Write(stats)
+		} else {
+			w.WriteHeader(500)
+			fmt.Fprintf(w, "Unable to print config: %s", err)
+		}
+	})
+	s := &http.Server{
+		Addr:    ctx.config.HttpServerAddr,
+		Handler: mux,
+	}
+	ctx.httpServer = s
+}
+
 func notifySd(config *configOptions) {
 	var interval time.Duration
 	if config.Verbose {
@@ -1708,9 +1776,22 @@ func main() {
 		}(gtmCtx, config)
 	}
 	go notifySd(config)
+	var hsc *httpServerCtx
+	if config.EnableHttpServer {
+		hsc = &httpServerCtx{
+			bulk:   bulk,
+			config: config,
+		}
+		hsc.buildServer()
+		go hsc.serveHttp()
+	}
 	for {
 		select {
 		case <-done:
+			if hsc != nil {
+				hsc.shutdown = true
+				hsc.httpServer.Shutdown(context.Background())
+			}
 			bulk.Flush()
 			bulk.Stop()
 			if bulkStats != nil {
