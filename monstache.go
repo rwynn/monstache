@@ -1504,21 +1504,25 @@ func (ctx *httpServerCtx) buildServer() {
 		w.WriteHeader(200)
 		w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("/stats", func(w http.ResponseWriter, req *http.Request) {
-		stats, err := json.MarshalIndent(ctx.bulk.Stats(), "", "    ")
-		if err == nil {
-			w.WriteHeader(200)
-			w.Write(stats)
-		} else {
-			w.WriteHeader(500)
-			fmt.Fprintf(w, "Unable to print statistics: %s", err)
-		}
-	})
+	if ctx.config.Stats {
+		mux.HandleFunc("/stats", func(w http.ResponseWriter, req *http.Request) {
+			stats, err := json.MarshalIndent(ctx.bulk.Stats(), "", "    ")
+			if err == nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(200)
+				w.Write(stats)
+			} else {
+				w.WriteHeader(500)
+				fmt.Fprintf(w, "Unable to print statistics: %s", err)
+			}
+		})
+	}
 	mux.HandleFunc("/config", func(w http.ResponseWriter, req *http.Request) {
-		stats, err := json.MarshalIndent(ctx.config, "", "    ")
+		conf, err := json.MarshalIndent(ctx.config, "", "    ")
 		if err == nil {
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
-			w.Write(stats)
+			w.Write(conf)
 		} else {
 			w.WriteHeader(500)
 			fmt.Fprintf(w, "Unable to print config: %s", err)
