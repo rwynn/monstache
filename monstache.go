@@ -1482,8 +1482,11 @@ func watchdogSdFailed(config *configOptions, err error) {
 }
 
 func (ctx *httpServerCtx) serveHttp() {
-	ctx.started = time.Now()
 	s := ctx.httpServer
+	if ctx.config.Verbose {
+		infoLog.Printf("Starting http server at %s", s.Addr)
+	}
+	ctx.started = time.Now()
 	err := s.ListenAndServe()
 	if !ctx.shutdown {
 		errorLog.Panicf("Unable to serve http at address %s: %s", s.Addr, err)
@@ -1524,6 +1527,7 @@ func (ctx *httpServerCtx) buildServer() {
 	s := &http.Server{
 		Addr:    ctx.config.HttpServerAddr,
 		Handler: mux,
+		ErrorLog: errorLog,
 	}
 	ctx.httpServer = s
 }
