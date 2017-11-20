@@ -20,10 +20,16 @@ type MapperPluginInput struct {
 
 // MapperPluginOutput is the output of the Map function
 type MapperPluginOutput struct {
-	Document    map[string]interface{} // an updated document to index into Elasticsearch
-	Index       string                 // the name of the index to use
-	Type        string                 // the document type
-	Routing     string                 // the routing value to use
-	Drop        bool                   // set to true to indicate that the document should not be indexed
-	Passthrough bool                   // set to true to indicate the original document should be indexed unchanged
+	Document        map[string]interface{} // an updated document to index into Elasticsearch
+	Index           string                 // the name of the index to use
+	Type            string                 // the document type
+	Routing         string                 // the routing value to use
+	Drop            bool                   // set to true to indicate that the document should not be indexed
+	Passthrough     bool                   // set to true to indicate the original document should be indexed unchanged
+	Parent          string                 // the parent id to use
+	Version         int64                  // the version of the document
+	VersionType     string                 // the version type of the document (internal, external, external_gte)
+	TTL             string                 // the expiration time
+	Pipeline        string                 // the pipeline to index with
+	RetryOnConflict int                    // how many times to retry updates before failing
 }

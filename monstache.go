@@ -54,7 +54,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var lastTimestamp bson.MongoTimestamp
 
-const version = "3.3.0"
+const version = "3.3.1"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -90,9 +90,15 @@ type logFiles struct {
 }
 
 type indexingMeta struct {
-	Routing string
-	Index   string
-	Type    string
+	Routing         string
+	Index           string
+	Type            string
+	Parent          string
+	Version         int64
+	VersionType     string
+	TTL             string
+	Pipeline        string
+	RetryOnConflict int
 }
 
 type mongoDialSettings struct {
@@ -180,8 +186,8 @@ type configOptions struct {
 	DirectReadBatchSize      int        `toml:"direct-read-batch-size"`
 	DirectReadersPerCol      int        `toml:"direct-readers-per-col"`
 	MapperPluginPath         string     `toml:"mapper-plugin-path"`
-	EnableHttpServer         bool       `toml:"enable-http-server"`
-	HttpServerAddr           string     `toml:"http-server-addr"`
+	EnableHTTPServer         bool       `toml:"enable-http-server"`
+	HTTPServerAddr           string     `toml:"http-server-addr"`
 }
 
 func (args *stringargs) String() string {
@@ -437,12 +443,49 @@ func opIDToString(op *gtm.Op) string {
 	return opIDStr
 }
 
+func convertSliceJavascript(a []interface{}) []interface{} {
+	var avs []interface{}
+	for _, av := range a {
+		var avc interface{}
+		switch achild := av.(type) {
+		case map[string]interface{}:
+			avc = convertMapJavascript(achild)
+		case []interface{}:
+			avc = convertSliceJavascript(achild)
+		case bson.ObjectId:
+			avc = achild.Hex()
+		default:
+			avc = av
+		}
+		avs = append(avs, avc)
+	}
+	return avs
+}
+
+func convertMapJavascript(e map[string]interface{}) map[string]interface{} {
+	o := make(map[string]interface{})
+	for k, v := range e {
+		switch child := v.(type) {
+		case map[string]interface{}:
+			o[k] = convertMapJavascript(child)
+		case []interface{}:
+			o[k] = convertSliceJavascript(child)
+		case bson.ObjectId:
+			o[k] = child.Hex()
+		default:
+			o[k] = v
+		}
+	}
+	return o
+}
+
 func mapDataJavascript(op *gtm.Op) error {
 	if mapEnvs == nil {
 		return nil
 	}
 	if env := mapEnvs[op.Namespace]; env != nil {
-		val, err := env.VM.Call("module.exports", op.Data, op.Data)
+		arg := convertMapJavascript(op.Data)
+		val, err := env.VM.Call("module.exports", arg, arg)
 		if err != nil {
 			return err
 		}
@@ -496,6 +539,24 @@ func mapDataGolang(op *gtm.Op) error {
 			if output.Routing != "" {
 				meta["routing"] = output.Routing
 			}
+			if output.Parent != "" {
+				meta["parent"] = output.Parent
+			}
+			if output.Version != 0 {
+				meta["version"] = output.Version
+			}
+			if output.VersionType != "" {
+				meta["versionType"] = output.VersionType
+			}
+			if output.TTL != "" {
+				meta["ttl"] = output.TTL
+			}
+			if output.Pipeline != "" {
+				meta["pipeline"] = output.Pipeline
+			}
+			if output.RetryOnConflict != 0 {
+				meta["retryOnConflict"] = output.RetryOnConflict
+			}
 			if len(meta) > 0 {
 				op.Data["_meta_monstache"] = meta
 			}
@@ -533,30 +594,14 @@ func parseIndexMeta(data map[string]interface{}) (meta *indexingMeta) {
 		switch m.(type) {
 		case map[string]interface{}:
 			metaAttrs := m.(map[string]interface{})
-			if r, ok := metaAttrs["routing"]; ok {
-				meta.Routing = fmt.Sprintf("%v", r)
-			}
-			if i, ok := metaAttrs["index"]; ok {
-				meta.Index = fmt.Sprintf("%v", i)
-			}
-			if t, ok := metaAttrs["type"]; ok {
-				meta.Type = fmt.Sprintf("%v", t)
-			}
+			meta.load(metaAttrs)
 		case otto.Value:
 			ex, err := m.(otto.Value).Export()
 			if err == nil && ex != m {
 				switch ex.(type) {
 				case map[string]interface{}:
 					metaAttrs := ex.(map[string]interface{})
-					if r, ok := metaAttrs["routing"]; ok {
-						meta.Routing = fmt.Sprintf("%v", r)
-					}
-					if i, ok := metaAttrs["index"]; ok {
-						meta.Index = fmt.Sprintf("%v", i)
-					}
-					if t, ok := metaAttrs["type"]; ok {
-						meta.Type = fmt.Sprintf("%v", t)
-					}
+					meta.load(metaAttrs)
 				default:
 					errorLog.Println("invalid indexing metadata")
 				}
@@ -754,8 +799,8 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.Var(&config.FileNamespaces, "file-namespace", "A list of file namespaces")
 	flag.Var(&config.PatchNamespaces, "patch-namespace", "A list of patch namespaces")
 	flag.Var(&config.Workers, "workers", "A list of worker names")
-	flag.BoolVar(&config.EnableHttpServer, "enable-http-server", false, "True to enable an internal http server")
-	flag.StringVar(&config.HttpServerAddr, "http-server-addr", "", "The address the internal http server listens on")
+	flag.BoolVar(&config.EnableHTTPServer, "enable-http-server", false, "True to enable an internal http server")
+	flag.StringVar(&config.HTTPServerAddr, "http-server-addr", "", "The address the internal http server listens on")
 	flag.Parse()
 	return config
 }
@@ -996,11 +1041,11 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if len(config.Workers) == 0 {
 			config.Workers = tomlConfig.Workers
 		}
-		if !config.EnableHttpServer && tomlConfig.EnableHttpServer {
-			config.EnableHttpServer = true
+		if !config.EnableHTTPServer && tomlConfig.EnableHTTPServer {
+			config.EnableHTTPServer = true
 		}
-		if config.HttpServerAddr == "" {
-			config.HttpServerAddr = tomlConfig.HttpServerAddr
+		if config.HTTPServerAddr == "" {
+			config.HTTPServerAddr = tomlConfig.HTTPServerAddr
 		}
 		config.MongoDialSettings = tomlConfig.MongoDialSettings
 		config.MongoSessionSettings = tomlConfig.MongoSessionSettings
@@ -1123,8 +1168,8 @@ func (config *configOptions) setDefaults() *configOptions {
 	if config.MongoURL != "" {
 		config.parseMongoURL()
 	}
-	if config.HttpServerAddr == "" {
-		config.HttpServerAddr = ":8080"
+	if config.HTTPServerAddr == "" {
+		config.HTTPServerAddr = ":8080"
 	}
 	return config
 }
@@ -1260,9 +1305,21 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 	}
 	if op.IsUpdate() {
 		ctx := context.Background()
-		service := client.Get().Index(indexType.Index).Type(indexType.Type).Id(objectID)
+		service := client.Get()
+		service.Id(objectID)
+		service.Index(indexType.Index)
+		service.Type(indexType.Type)
+		if meta.Index != "" {
+			service.Index(meta.Index)
+		}
+		if meta.Type != "" {
+			service.Type(meta.Type)
+		}
 		if meta.Routing != "" {
 			service.Routing(meta.Routing)
+		}
+		if meta.Parent != "" {
+			service.Parent(meta.Parent)
 		}
 		var resp *elastic.GetResult
 		if resp, err = service.Do(ctx); err == nil {
@@ -1323,15 +1380,44 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 			}
 		}
 	}
-	req := elastic.NewBulkIndexRequest().Index(indexType.Index).Type(indexType.Type)
+	req := elastic.NewBulkIndexRequest()
+
 	req.Id(objectID)
+	req.Index(indexType.Index)
+	req.Type(indexType.Type)
 	req.Doc(op.Data)
+
+	if meta.Index != "" {
+		req.Index(meta.Index)
+	}
+	if meta.Type != "" {
+		req.Type(meta.Type)
+	}
 	if meta.Routing != "" {
 		req.Routing(meta.Routing)
+	}
+	if meta.Parent != "" {
+		req.Parent(meta.Parent)
+	}
+	if meta.Version != 0 {
+		req.Version(meta.Version)
+	}
+	if meta.VersionType != "" {
+		req.VersionType(meta.VersionType)
+	}
+	if meta.TTL != "" {
+		req.TTL(meta.TTL)
+	}
+	if meta.Pipeline != "" {
+		req.Pipeline(meta.Pipeline)
+	}
+	if meta.RetryOnConflict != 0 {
+		req.RetryOnConflict(meta.RetryOnConflict)
 	}
 	if ingestAttachment {
 		req.Pipeline("attachment")
 	}
+
 	bulk.Add(req)
 	if meta.Empty() == false {
 		if e := setIndexMeta(mongo, op.Namespace, objectID, meta); e != nil {
@@ -1384,8 +1470,49 @@ func dropCollectionMeta(session *mgo.Session, namespace string) (err error) {
 	return
 }
 
+func (meta *indexingMeta) load(metaAttrs map[string]interface{}) {
+	var v interface{}
+	var ok bool
+	var s string
+	if v, ok = metaAttrs["routing"]; ok {
+		meta.Routing = fmt.Sprintf("%v", v)
+	}
+	if v, ok = metaAttrs["index"]; ok {
+		meta.Index = fmt.Sprintf("%v", v)
+	}
+	if v, ok = metaAttrs["type"]; ok {
+		meta.Type = fmt.Sprintf("%v", v)
+	}
+	if v, ok = metaAttrs["parent"]; ok {
+		meta.Parent = fmt.Sprintf("%v", v)
+	}
+	if v, ok = metaAttrs["version"]; ok {
+		s = fmt.Sprintf("%v", v)
+		if version, err := strconv.ParseInt(s, 10, 64); err == nil {
+			meta.Version = version
+		}
+	}
+	if v, ok = metaAttrs["versionType"]; ok {
+		meta.VersionType = fmt.Sprintf("%v", v)
+	}
+	if v, ok = metaAttrs["ttl"]; ok {
+		meta.TTL = fmt.Sprintf("%v", v)
+	}
+	if v, ok = metaAttrs["pipeline"]; ok {
+		meta.Pipeline = fmt.Sprintf("%v", v)
+	}
+	if v, ok = metaAttrs["retryOnConflict"]; ok {
+		s = fmt.Sprintf("%v", v)
+		if roc, err := strconv.Atoi(s); err == nil {
+			meta.RetryOnConflict = roc
+		}
+	}
+}
+
 func (meta *indexingMeta) Empty() bool {
-	return meta.Routing == "" && meta.Index == "" && meta.Type == ""
+	return (meta.Routing == "" && meta.Index == "" && meta.Type == "" &&
+		meta.Parent == "" && meta.Version == 0 && meta.VersionType == "" &&
+		meta.TTL == "" && meta.Pipeline == "" && meta.RetryOnConflict == 0)
 }
 
 func setIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta) error {
@@ -1395,6 +1522,12 @@ func setIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta
 	doc["routing"] = meta.Routing
 	doc["index"] = meta.Index
 	doc["type"] = meta.Type
+	doc["parent"] = meta.Parent
+	doc["version"] = meta.Version
+	doc["versionType"] = meta.VersionType
+	doc["ttl"] = meta.TTL
+	doc["pipeline"] = meta.Pipeline
+	doc["retryOnConflict"] = meta.RetryOnConflict
 	doc["db"] = strings.SplitN(namespace, ".", 2)[0]
 	doc["namespace"] = namespace
 	_, err := col.UpsertId(metaID, bson.M{"$set": doc})
@@ -1416,6 +1549,34 @@ func getIndexMeta(session *mgo.Session, namespace, id string) (meta *indexingMet
 	if doc["type"] != nil {
 		meta.Type = doc["type"].(string)
 	}
+	if doc["parent"] != nil {
+		meta.Parent = doc["parent"].(string)
+	}
+	if doc["version"] != nil {
+		switch doc["version"].(type) {
+		case int:
+			meta.Version = int64(doc["version"].(int))
+		case int64:
+			meta.Version = doc["version"].(int64)
+		}
+	}
+	if doc["versionType"] != nil {
+		meta.VersionType = doc["versionType"].(string)
+	}
+	if doc["ttl"] != nil {
+		meta.TTL = doc["ttl"].(string)
+	}
+	if doc["pipeline"] != nil {
+		meta.Pipeline = doc["pipeline"].(string)
+	}
+	if doc["retryOnConflict"] != nil {
+		switch doc["retryOnConflict"].(type) {
+		case int:
+			meta.RetryOnConflict = doc["retryOnConflict"].(int)
+		case int64:
+			meta.RetryOnConflict = int(doc["retryOnConflict"].(int64))
+		}
+	}
 	col.RemoveId(metaID)
 	return
 }
@@ -1436,6 +1597,9 @@ func doDelete(mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
 	req := elastic.NewBulkDeleteRequest().Index(indexType.Index).Type(indexType.Type)
 	if meta.Routing != "" {
 		req.Routing(meta.Routing)
+	}
+	if meta.Parent != "" {
+		req.Parent(meta.Parent)
 	}
 	req.Id(objectID)
 	bulk.Add(req)
@@ -1529,8 +1693,8 @@ func (ctx *httpServerCtx) buildServer() {
 		}
 	})
 	s := &http.Server{
-		Addr:    ctx.config.HttpServerAddr,
-		Handler: mux,
+		Addr:     ctx.config.HTTPServerAddr,
+		Handler:  mux,
 		ErrorLog: errorLog,
 	}
 	ctx.httpServer = s
@@ -1785,7 +1949,7 @@ func main() {
 	}
 	go notifySd(config)
 	var hsc *httpServerCtx
-	if config.EnableHttpServer {
+	if config.EnableHTTPServer {
 		hsc = &httpServerCtx{
 			bulk:   bulk,
 			config: config,
