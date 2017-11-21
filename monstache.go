@@ -1588,20 +1588,22 @@ func doDelete(mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
 			meta = getIndexMeta(mongo, op.Namespace, objectID)
 		}
 	}
+	req := elastic.NewBulkDeleteRequest()
+	req.Id(objectID)
+	req.Index(indexType.Index)
+	req.Type(indexType.Type)
 	if meta.Index != "" {
-		indexType.Index = meta.Index
+		req.Index(meta.Index)
 	}
 	if meta.Type != "" {
-		indexType.Type = meta.Type
+		req.Type(meta.Type)
 	}
-	req := elastic.NewBulkDeleteRequest().Index(indexType.Index).Type(indexType.Type)
 	if meta.Routing != "" {
 		req.Routing(meta.Routing)
 	}
 	if meta.Parent != "" {
 		req.Parent(meta.Parent)
 	}
-	req.Id(objectID)
 	bulk.Add(req)
 	return
 }
