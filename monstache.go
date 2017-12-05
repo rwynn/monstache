@@ -54,7 +54,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var lastTimestamp bson.MongoTimestamp
 
-const version = "3.3.1"
+const version = "3.4.0"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -80,6 +80,25 @@ type indexTypeMapping struct {
 	Namespace string
 	Index     string
 	Type      string
+}
+
+type findConf struct {
+	vm      *otto.Otto
+	ns      string
+	name    string
+	session *mgo.Session
+	byId    bool
+	multi   bool
+}
+
+type findCall struct {
+	config *findConf
+	query  interface{}
+	db     string
+	col    string
+	limit  int
+	sort   []string
+	sel    map[string]int
 }
 
 type logFiles struct {
@@ -510,13 +529,14 @@ func mapDataJavascript(op *gtm.Op) error {
 	return nil
 }
 
-func mapDataGolang(op *gtm.Op) error {
+func mapDataGolang(session *mgo.Session, op *gtm.Op) error {
 	input := &monstachemap.MapperPluginInput{
 		Document:   op.Data,
 		Namespace:  op.Namespace,
 		Database:   op.GetDatabase(),
 		Collection: op.GetCollection(),
 		Operation:  op.Operation,
+		Session:    session,
 	}
 	output, err := mapperPlugin(input)
 	if err != nil {
@@ -565,9 +585,9 @@ func mapDataGolang(op *gtm.Op) error {
 	return nil
 }
 
-func mapData(config *configOptions, op *gtm.Op) error {
+func mapData(session *mgo.Session, config *configOptions, op *gtm.Op) error {
 	if config.MapperPluginPath != "" {
-		return mapDataGolang(op)
+		return mapDataGolang(session, op)
 	}
 	return mapDataJavascript(op)
 }
@@ -1428,7 +1448,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 }
 
 func doIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, ingestAttachment bool) (err error) {
-	if err = mapData(config, op); err == nil {
+	if err = mapData(mongo, config, op); err == nil {
 		if op.Data != nil {
 			err = doIndexing(config, mongo, bulk, client, op, ingestAttachment)
 		} else if op.IsUpdate() {
@@ -1579,6 +1599,262 @@ func getIndexMeta(session *mgo.Session, namespace, id string) (meta *indexingMet
 	}
 	col.RemoveId(metaID)
 	return
+}
+
+func loadBuiltinFunctions(s *mgo.Session) {
+	if mapEnvs == nil {
+		return
+	}
+	for ns, env := range mapEnvs {
+		var fa *findConf
+		fa = &findConf{
+			session: s,
+			name:    "findId",
+			vm:      env.VM,
+			ns:      ns,
+			byId:    true,
+		}
+		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
+			panic(err)
+		}
+		fa = &findConf{
+			session: s,
+			name:    "findOne",
+			vm:      env.VM,
+			ns:      ns,
+		}
+		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
+			panic(err)
+		}
+		fa = &findConf{
+			session: s,
+			name:    "find",
+			vm:      env.VM,
+			ns:      ns,
+			multi:   true,
+		}
+		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
+			panic(err)
+		}
+	}
+}
+
+func (fc *findCall) setDatabase(topts map[string]interface{}) (err error) {
+	if ov, ok := topts["database"]; ok {
+		if ovs, ok := ov.(string); ok {
+			fc.db = ovs
+		} else {
+			err = errors.New("invalid database option value")
+		}
+	}
+	return
+}
+
+func (fc *findCall) setCollection(topts map[string]interface{}) (err error) {
+	if ov, ok := topts["collection"]; ok {
+		if ovs, ok := ov.(string); ok {
+			fc.col = ovs
+		} else {
+			err = errors.New("invalid collection option value")
+		}
+	}
+	return
+}
+
+func (fc *findCall) setSelect(topts map[string]interface{}) (err error) {
+	if ov, ok := topts["select"]; ok {
+		if ovsel, ok := ov.(map[string]interface{}); ok {
+			for k, v := range ovsel {
+				if vi, ok := v.(int64); ok {
+					fc.sel[k] = int(vi)
+				}
+			}
+		} else {
+			err = errors.New("invalid select option value")
+		}
+	}
+	return
+}
+
+func (fc *findCall) setSort(topts map[string]interface{}) (err error) {
+	if ov, ok := topts["sort"]; ok {
+		if ovs, ok := ov.([]string); ok {
+			fc.sort = ovs
+		} else {
+			err = errors.New("invalid sort option value")
+		}
+	}
+	return
+}
+
+func (fc *findCall) setLimit(topts map[string]interface{}) (err error) {
+	if ov, ok := topts["limit"]; ok {
+		if ovl, ok := ov.(int64); ok {
+			fc.limit = int(ovl)
+		} else {
+			err = errors.New("invalid limit option value")
+		}
+	}
+	return
+}
+
+func (fc *findCall) setQuery(v otto.Value) (err error) {
+	var q interface{}
+	if q, err = v.Export(); err == nil {
+		fc.query = fc.restoreIds(q)
+	}
+	return
+}
+
+func (fc *findCall) setOptions(v otto.Value) (err error) {
+	var opts interface{}
+	if opts, err = v.Export(); err == nil {
+		switch topts := opts.(type) {
+		case map[string]interface{}:
+			if err = fc.setDatabase(topts); err != nil {
+				return
+			}
+			if err = fc.setCollection(topts); err != nil {
+				return
+			}
+			if err = fc.setSelect(topts); err != nil {
+				return
+			}
+			if fc.isMulti() {
+				if err = fc.setSort(topts); err != nil {
+					return
+				}
+				if err = fc.setLimit(topts); err != nil {
+					return
+				}
+			}
+		default:
+			err = errors.New("invalid options argument")
+			return
+		}
+	} else {
+		err = errors.New("invalid options argument")
+	}
+	return
+}
+
+func (fc *findCall) setDefaults() {
+	ns := strings.Split(fc.config.ns, ".")
+	fc.db = ns[0]
+	fc.col = ns[1]
+}
+
+func (fc *findCall) getCollection() *mgo.Collection {
+	return fc.config.session.DB(fc.db).C(fc.col)
+}
+
+func (fc *findCall) getVM() *otto.Otto {
+	return fc.config.vm
+}
+
+func (fc *findCall) getFunctionName() string {
+	return fc.config.name
+}
+
+func (fc *findCall) isMulti() bool {
+	return fc.config.multi
+}
+
+func (fc *findCall) logError(err error) {
+	errorLog.Printf("Error in function %s: %s\n", fc.getFunctionName(), err)
+}
+
+func (fc *findCall) restoreIds(v interface{}) (r interface{}) {
+	switch vt := v.(type) {
+	case string:
+		if bson.IsObjectIdHex(vt) {
+			r = bson.ObjectIdHex(vt)
+		} else {
+			r = v
+		}
+	case []interface{}:
+		var avs []interface{}
+		for _, av := range vt {
+			avs = append(avs, fc.restoreIds(av))
+		}
+		r = avs
+	case map[string]interface{}:
+		mvs := make(map[string]interface{})
+		for k, v := range vt {
+			mvs[k] = fc.restoreIds(v)
+		}
+		r = mvs
+	default:
+		r = v
+	}
+	return
+}
+
+func (fc *findCall) execute() (r otto.Value, err error) {
+	col := fc.getCollection()
+	if fc.isMulti() {
+		var docs []map[string]interface{}
+		mq := col.Find(fc.query)
+		if fc.limit > 0 {
+			mq.Limit(fc.limit)
+		}
+		if len(fc.sort) > 0 {
+			mq.Sort(fc.sort...)
+		}
+		if len(fc.sel) > 0 {
+			mq.Select(fc.sel)
+		}
+		if err = mq.All(&docs); err == nil {
+			r, err = fc.getVM().ToValue(docs)
+		}
+	} else {
+		doc := make(map[string]interface{})
+		if fc.config.byId {
+			if err = col.FindId(fc.query).One(doc); err == nil {
+				r, err = fc.getVM().ToValue(doc)
+			}
+		} else {
+			if err = col.Find(fc.query).One(doc); err == nil {
+				r, err = fc.getVM().ToValue(doc)
+			}
+		}
+	}
+	return
+}
+
+func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
+	return func(call otto.FunctionCall) (r otto.Value) {
+		var err error
+		fc := &findCall{
+			config: fa,
+			sel:    make(map[string]int),
+		}
+		fc.setDefaults()
+		args := call.ArgumentList
+		argLen := len(args)
+		r = otto.NullValue()
+		if argLen >= 1 {
+			if argLen >= 2 {
+				if err = fc.setOptions(call.Argument(1)); err != nil {
+					fc.logError(err)
+					return
+				}
+			}
+			if err = fc.setQuery(call.Argument(0)); err == nil {
+				var result otto.Value
+				if result, err = fc.execute(); err == nil {
+					r = result
+				} else {
+					fc.logError(err)
+				}
+			} else {
+				fc.logError(err)
+			}
+		} else {
+			fc.logError(errors.New("at least one argument is required"))
+		}
+		return
+	}
 }
 
 func doDelete(mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
@@ -1780,6 +2056,7 @@ func main() {
 		timeOut := time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Second
 		mongo.SetSyncTimeout(timeOut)
 	}
+	loadBuiltinFunctions(mongo)
 
 	elasticClient, err := config.newElasticClient()
 	if err != nil {

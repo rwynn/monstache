@@ -1,5 +1,7 @@
 package monstachemap
 
+import "gopkg.in/mgo.v2"
+
 // plugins must import this package
 // import "github.com/rwynn/monstache/monstachemap"
 
@@ -16,6 +18,7 @@ type MapperPluginInput struct {
 	Collection string                 // the origin collection in MongoDB
 	Namespace  string                 // the entire namespace for the original document
 	Operation  string                 // "i" for a insert or "u" for update
+	Session    *mgo.Session           // MongoDB session handle
 }
 
 // MapperPluginOutput is the output of the Map function
