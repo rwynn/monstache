@@ -54,7 +54,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var lastTimestamp bson.MongoTimestamp
 
-const version = "3.4.0"
+const version = "3.4.1"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -498,6 +498,41 @@ func convertMapJavascript(e map[string]interface{}) map[string]interface{} {
 	return o
 }
 
+func deepExportValue(a interface{}) (b interface{}) {
+	switch t := a.(type) {
+	case otto.Value:
+		ex, err := t.Export()
+		if err == nil {
+			b = deepExportValue(ex)
+		} else {
+			errorLog.Println(err)
+		}
+	case map[string]interface{}:
+		b = deepExportMap(t)
+	case []interface{}:
+		b = deepExportSlice(t)
+	default:
+		b = a
+	}
+	return
+}
+
+func deepExportSlice(a []interface{}) []interface{} {
+	var avs []interface{}
+	for _, av := range a {
+		avs = append(avs, deepExportValue(av))
+	}
+	return avs
+}
+
+func deepExportMap(e map[string]interface{}) map[string]interface{} {
+	o := make(map[string]interface{})
+	for k, v := range e {
+		o[k] = deepExportValue(v)
+	}
+	return o
+}
+
 func mapDataJavascript(op *gtm.Op) error {
 	if mapEnvs == nil {
 		return nil
@@ -515,7 +550,8 @@ func mapDataJavascript(op *gtm.Op) error {
 			} else if data == val {
 				return errors.New("exported function must return an object")
 			} else {
-				op.Data = data.(map[string]interface{})
+				dm := data.(map[string]interface{})
+				op.Data = deepExportMap(dm)
 			}
 		} else {
 			indexed, err := val.ToBoolean()
