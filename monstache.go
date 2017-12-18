@@ -54,7 +54,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var lastTimestamp bson.MongoTimestamp
 
-const version = "3.4.1"
+const version = "3.4.2"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -170,6 +170,7 @@ type configOptions struct {
 	Stats                    bool
 	IndexStats               bool   `toml:"index-stats"`
 	StatsDuration            string `toml:"stats-duration"`
+	StatsIndexFormat         string `toml:"stats-index-format"`
 	Gzip                     bool
 	Verbose                  bool
 	Resume                   bool
@@ -830,6 +831,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.Stats, "stats", false, "True to print out statistics")
 	flag.BoolVar(&config.IndexStats, "index-stats", false, "True to index stats in elasticsearch")
 	flag.StringVar(&config.StatsDuration, "stats-duration", "", "The duration after which stats are logged")
+	flag.StringVar(&config.StatsIndexFormat, "stats-index-format", "", "time.Time supported format to use for the stats index names")
 	flag.BoolVar(&config.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
 	flag.Int64Var(&config.ResumeFromTimestamp, "resume-from-timestamp", 0, "Timestamp to resume syncing from")
 	flag.BoolVar(&config.ResumeWriteUnsafe, "resume-write-unsafe", false, "True to speedup writes of the last timestamp synched for resuming at the cost of error checking")
@@ -1024,6 +1026,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.StatsDuration == "" {
 			config.StatsDuration = tomlConfig.StatsDuration
+		}
+		if config.StatsIndexFormat == "" {
+			config.StatsIndexFormat = tomlConfig.StatsIndexFormat
 		}
 		if !config.IndexFiles && tomlConfig.IndexFiles {
 			config.IndexFiles = true
@@ -1226,6 +1231,9 @@ func (config *configOptions) setDefaults() *configOptions {
 	}
 	if config.HTTPServerAddr == "" {
 		config.HTTPServerAddr = ":8080"
+	}
+	if config.StatsIndexFormat == "" {
+		config.StatsIndexFormat = "monstache.stats.2006-01-02"
 	}
 	return config
 }
@@ -1494,7 +1502,7 @@ func doIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 	return
 }
 
-func doIndexStats(bulkStats *elastic.BulkProcessor, stats elastic.BulkProcessorStats) (err error) {
+func doIndexStats(config *configOptions, bulkStats *elastic.BulkProcessor, stats elastic.BulkProcessorStats) (err error) {
 	var hostname string
 	doc := make(map[string]interface{})
 	t := time.Now().UTC()
@@ -1505,7 +1513,7 @@ func doIndexStats(bulkStats *elastic.BulkProcessor, stats elastic.BulkProcessorS
 	}
 	doc["Pid"] = os.Getpid()
 	doc["Stats"] = stats
-	index := t.Format("monstache.stats.2006-01-02")
+	index := t.Format(config.StatsIndexFormat)
 	req := elastic.NewBulkIndexRequest().Index(index).Type("stats")
 	req.Doc(doc)
 	bulkStats.Add(req)
@@ -2317,7 +2325,7 @@ func main() {
 				break
 			}
 			if config.IndexStats {
-				if err := doIndexStats(bulkStats, bulk.Stats()); err != nil {
+				if err := doIndexStats(config, bulkStats, bulk.Stats()); err != nil {
 					errorLog.Printf("Error indexing statistics: %s", err)
 				}
 			} else {
