@@ -54,7 +54,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var lastTimestamp bson.MongoTimestamp
 
-const version = "3.4.2"
+const version = "3.5.0"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -182,6 +182,7 @@ type configOptions struct {
 	IndexFiles               bool   `toml:"index-files"`
 	FileHighlighting         bool   `toml:"file-highlighting"`
 	EnablePatches            bool   `toml:"enable-patches"`
+	EnableShards             bool   `toml:"enable-shards"`
 	FailFast                 bool   `toml:"fail-fast"`
 	IndexOplogTime           bool   `toml:"index-oplog-time"`
 	ExitAfterDirectReads     bool   `toml:"exit-after-direct-reads"`
@@ -749,8 +750,7 @@ func isEnabledProcess(session *mgo.Session, config *configOptions) (bool, error)
 	if err == nil {
 		return true, nil
 	}
-	lastError := err.(*mgo.LastError)
-	if lastError.Code == 11000 {
+	if mgo.IsDup(err) {
 		return false, nil
 	}
 	return false, err
@@ -783,7 +783,7 @@ func isEnabledProcessID(session *mgo.Session, config *configOptions) bool {
 	return false
 }
 
-func resumeWork(ctx *gtm.OpCtx, session *mgo.Session, config *configOptions) {
+func resumeWork(ctx *gtm.OpCtxMulti, session *mgo.Session, config *configOptions) {
 	col := session.DB("monstache").C("monstache")
 	doc := make(map[string]interface{})
 	col.FindId(config.ResumeName).One(doc)
@@ -839,6 +839,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.IndexFiles, "index-files", false, "True to index gridfs files into elasticsearch. Requires the elasticsearch mapper-attachments (deprecated) or ingest-attachment plugin")
 	flag.BoolVar(&config.FileHighlighting, "file-highlighting", false, "True to enable the ability to highlight search times for a file query")
 	flag.BoolVar(&config.EnablePatches, "enable-patches", false, "True to include an json-patch field on updates")
+	flag.BoolVar(&config.EnableShards, "enable-shards", false, "True to discover and sync shards")
 	flag.BoolVar(&config.FailFast, "fail-fast", false, "True to exit if a single _bulk request fails")
 	flag.BoolVar(&config.IndexOplogTime, "index-oplog-time", false, "True to add date/time information from the oplog to each document when indexing")
 	flag.BoolVar(&config.ExitAfterDirectReads, "exit-after-direct-reads", false, "True to exit the program after reading directly from the configured namespaces")
@@ -1039,6 +1040,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if !config.EnablePatches && tomlConfig.EnablePatches {
 			config.EnablePatches = true
 		}
+		if !config.EnableShards && tomlConfig.EnableShards {
+			config.EnableShards = true
+		}
 		if !config.Replay && tomlConfig.Replay {
 			config.Replay = true
 		}
@@ -1236,6 +1240,23 @@ func (config *configOptions) setDefaults() *configOptions {
 		config.StatsIndexFormat = "monstache.stats.2006-01-02"
 	}
 	return config
+}
+
+func (config *configOptions) ConfigureMongo(session *mgo.Session) {
+	session.SetMode(mgo.Primary, true)
+	if config.Resume && config.ResumeWriteUnsafe {
+		if config.ClusterName == "" {
+			session.SetSafe(nil)
+		}
+	}
+	if config.MongoSessionSettings.SocketTimeout != -1 {
+		timeOut := time.Duration(config.MongoSessionSettings.SocketTimeout) * time.Second
+		session.SetSocketTimeout(timeOut)
+	}
+	if config.MongoSessionSettings.SyncTimeout != -1 {
+		timeOut := time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Second
+		session.SetSyncTimeout(timeOut)
+	}
 }
 
 func (config *configOptions) DialMongo() (*mgo.Session, error) {
@@ -2085,21 +2106,8 @@ func main() {
 	if err != nil {
 		errorLog.Panicf("Unable to connect to mongodb using URL %s: %s", config.MongoURL, err)
 	}
-	mongo.SetMode(mgo.Primary, true)
 	defer mongo.Close()
-	if config.Resume && config.ResumeWriteUnsafe {
-		if config.ClusterName == "" {
-			mongo.SetSafe(nil)
-		}
-	}
-	if config.MongoSessionSettings.SocketTimeout != -1 {
-		timeOut := time.Duration(config.MongoSessionSettings.SocketTimeout) * time.Second
-		mongo.SetSocketTimeout(timeOut)
-	}
-	if config.MongoSessionSettings.SyncTimeout != -1 {
-		timeOut := time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Second
-		mongo.SetSyncTimeout(timeOut)
-	}
+	config.ConfigureMongo(mongo)
 	loadBuiltinFunctions(mongo)
 
 	elasticClient, err := config.newElasticClient()
@@ -2221,7 +2229,26 @@ func main() {
 	if err != nil {
 		errorLog.Panicf("Unable to parse gtm buffer duration %s: %s", config.GtmSettings.BufferDuration, err)
 	}
-	gtmCtx := gtm.Start(mongo, &gtm.Options{
+	var mongos []*mgo.Session
+	mongos = append(mongos, mongo)
+	if config.EnableShards {
+		shardInfos := gtm.GetShards(mongo)
+		if len(shardInfos) == 0 {
+			errorLog.Println("Shards enabled but none found in config.shards collection")
+		}
+		for _, shardInfo := range shardInfos {
+			config.MongoURL = shardInfo.GetURL()
+			shard, err := config.DialMongo()
+			if err != nil {
+				errorLog.Panicf("Unable to connect to mongodb shard using URL %s: %s", config.MongoURL, err)
+			}
+			defer shard.Close()
+			config.ConfigureMongo(shard)
+			mongos = append(mongos, shard)
+		}
+	}
+
+	gtmCtx := gtm.StartMulti(mongos, &gtm.Options{
 		After:               after,
 		Filter:              filter,
 		OpLogDatabaseName:   oplogDatabaseName,
@@ -2263,7 +2290,7 @@ func main() {
 	}
 	exitStatus := 0
 	if len(config.DirectReadNs) > 0 {
-		go func(c *gtm.OpCtx, config *configOptions) {
+		go func(c *gtm.OpCtxMulti, config *configOptions) {
 			c.DirectReadWg.Wait()
 			if config.ExitAfterDirectReads {
 				done <- true
