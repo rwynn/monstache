@@ -2247,8 +2247,8 @@ func main() {
 			mongos = append(mongos, shard)
 		}
 	} else {
-        mongos = append(mongos, mongo)
-    }
+		mongos = append(mongos, mongo)
+	}
 
 	gtmCtx := gtm.StartMulti(mongos, &gtm.Options{
 		After:               after,
