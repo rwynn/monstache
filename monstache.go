@@ -240,7 +240,7 @@ func (config *configOptions) parseElasticsearchVersion(number string) (err error
 func (config *configOptions) newBulkProcessor(client *elastic.Client, mongo *mgo.Session) (bulk *elastic.BulkProcessor, err error) {
 	bulkService := client.BulkProcessor().Name("monstache")
 	bulkService.Workers(config.ElasticMaxConns)
-	bulkService.Stats(true)
+	bulkService.Stats(config.Stats)
 	if config.ElasticMaxDocs != 0 {
 		bulkService.BulkActions(config.ElasticMaxDocs)
 	}
@@ -2230,13 +2230,13 @@ func main() {
 		errorLog.Panicf("Unable to parse gtm buffer duration %s: %s", config.GtmSettings.BufferDuration, err)
 	}
 	var mongos []*mgo.Session
-	mongos = append(mongos, mongo)
 	if config.EnableShards {
 		shardInfos := gtm.GetShards(mongo)
 		if len(shardInfos) == 0 {
-			errorLog.Println("Shards enabled but none found in config.shards collection")
+			errorLog.Fatalln("Shards enabled but none found in config.shards collection")
 		}
 		for _, shardInfo := range shardInfos {
+			infoLog.Printf("Adding shard found at %s\n", shardInfo.GetURL())
 			config.MongoURL = shardInfo.GetURL()
 			shard, err := config.DialMongo()
 			if err != nil {
@@ -2246,7 +2246,9 @@ func main() {
 			config.ConfigureMongo(shard)
 			mongos = append(mongos, shard)
 		}
-	}
+	} else {
+        mongos = append(mongos, mongo)
+    }
 
 	gtmCtx := gtm.StartMulti(mongos, &gtm.Options{
 		After:               after,
