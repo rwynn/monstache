@@ -146,6 +146,7 @@ type httpServerCtx struct {
 
 type configOptions struct {
 	MongoURL                 string               `toml:"mongo-url"`
+	MongoConfigURL           string               `toml:"mongo-config-url"`
 	MongoPemFile             string               `toml:"mongo-pem-file"`
 	MongoValidatePemFile     bool                 `toml:"mongo-validate-pem-file"`
 	MongoOpLogDatabaseName   string               `toml:"mongo-oplog-database-name"`
@@ -182,7 +183,6 @@ type configOptions struct {
 	IndexFiles               bool   `toml:"index-files"`
 	FileHighlighting         bool   `toml:"file-highlighting"`
 	EnablePatches            bool   `toml:"enable-patches"`
-	EnableShards             bool   `toml:"enable-shards"`
 	FailFast                 bool   `toml:"fail-fast"`
 	IndexOplogTime           bool   `toml:"index-oplog-time"`
 	ExitAfterDirectReads     bool   `toml:"exit-after-direct-reads"`
@@ -708,6 +708,10 @@ func notChunks(op *gtm.Op) bool {
 	return !chunksRegex.MatchString(op.GetCollection())
 }
 
+func notConfig(op *gtm.Op) bool {
+	return op.GetDatabase() != "config"
+}
+
 func notSystem(op *gtm.Op) bool {
 	return !systemsRegex.MatchString(op.GetCollection())
 }
@@ -804,7 +808,8 @@ func saveTimestamp(session *mgo.Session, ts bson.MongoTimestamp, resumeName stri
 
 func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.Print, "print-config", false, "Print the configuration and then exit")
-	flag.StringVar(&config.MongoURL, "mongo-url", "", "MongoDB connection URL")
+	flag.StringVar(&config.MongoURL, "mongo-url", "", "MongoDB server or router server connection URL")
+	flag.StringVar(&config.MongoConfigURL, "mongo-config-url", "", "MongoDB config server connection URL")
 	flag.StringVar(&config.MongoPemFile, "mongo-pem-file", "", "Path to a PEM file for secure connections to MongoDB")
 	flag.BoolVar(&config.MongoValidatePemFile, "mongo-validate-pem-file", true, "Set to boolean false to not validate the MongoDB PEM file")
 	flag.StringVar(&config.MongoOpLogDatabaseName, "mongo-oplog-database-name", "", "Override the database name which contains the mongodb oplog")
@@ -839,7 +844,6 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.IndexFiles, "index-files", false, "True to index gridfs files into elasticsearch. Requires the elasticsearch mapper-attachments (deprecated) or ingest-attachment plugin")
 	flag.BoolVar(&config.FileHighlighting, "file-highlighting", false, "True to enable the ability to highlight search times for a file query")
 	flag.BoolVar(&config.EnablePatches, "enable-patches", false, "True to include an json-patch field on updates")
-	flag.BoolVar(&config.EnableShards, "enable-shards", false, "True to discover and sync shards")
 	flag.BoolVar(&config.FailFast, "fail-fast", false, "True to exit if a single _bulk request fails")
 	flag.BoolVar(&config.IndexOplogTime, "index-oplog-time", false, "True to add date/time information from the oplog to each document when indexing")
 	flag.BoolVar(&config.ExitAfterDirectReads, "exit-after-direct-reads", false, "True to exit the program after reading directly from the configured namespaces")
@@ -947,6 +951,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.MongoURL == "" {
 			config.MongoURL = tomlConfig.MongoURL
 		}
+		if config.MongoConfigURL == "" {
+			config.MongoConfigURL = tomlConfig.MongoConfigURL
+		}
 		if config.MongoPemFile == "" {
 			config.MongoPemFile = tomlConfig.MongoPemFile
 		}
@@ -1039,9 +1046,6 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if !config.EnablePatches && tomlConfig.EnablePatches {
 			config.EnablePatches = true
-		}
-		if !config.EnableShards && tomlConfig.EnableShards {
-			config.EnableShards = true
 		}
 		if !config.Replay && tomlConfig.Replay {
 			config.Replay = true
@@ -1178,9 +1182,10 @@ if ssl=true is set on the connection string, remove the option
 from the connection string and enable TLS because the mgo
 driver does not support the option in the connection string
 */
-func (config *configOptions) parseMongoURL() *configOptions {
+func (config *configOptions) parseMongoURL(inURL string) (outURL string) {
 	const queryDelim string = "?"
-	hostQuery := strings.SplitN(config.MongoURL, queryDelim, 2)
+	outURL = inURL
+	hostQuery := strings.SplitN(outURL, queryDelim, 2)
 	if len(hostQuery) == 2 {
 		host, query := hostQuery[0], hostQuery[1]
 		r := regexp.MustCompile(`ssl=true&?|&ssl=true$`)
@@ -1188,13 +1193,13 @@ func (config *configOptions) parseMongoURL() *configOptions {
 		if qstr != query {
 			config.MongoDialSettings.Ssl = true
 			if qstr == "" {
-				config.MongoURL = host
+				outURL = host
 			} else {
-				config.MongoURL = strings.Join([]string{host, qstr}, queryDelim)
+				outURL = strings.Join([]string{host, qstr}, queryDelim)
 			}
 		}
 	}
-	return config
+	return
 }
 
 func (config *configOptions) setDefaults() *configOptions {
@@ -1231,7 +1236,10 @@ func (config *configOptions) setDefaults() *configOptions {
 		config.ElasticMaxDocs = elasticMaxDocsDefault
 	}
 	if config.MongoURL != "" {
-		config.parseMongoURL()
+		config.MongoURL = config.parseMongoURL(config.MongoURL)
+	}
+	if config.MongoConfigURL != "" {
+		config.MongoConfigURL = config.parseMongoURL(config.MongoConfigURL)
 	}
 	if config.HTTPServerAddr == "" {
 		config.HTTPServerAddr = ":8080"
@@ -1242,7 +1250,16 @@ func (config *configOptions) setDefaults() *configOptions {
 	return config
 }
 
-func (config *configOptions) ConfigureMongo(session *mgo.Session) {
+func (config *configOptions) getAuthURL(inURL string) string {
+	cred := strings.SplitN(config.MongoConfigURL, "@", 2)
+	if len(cred) == 2 {
+		return cred[0] + "@" + inURL
+	} else {
+		return inURL
+	}
+}
+
+func (config *configOptions) configureMongo(session *mgo.Session) {
 	session.SetMode(mgo.Primary, true)
 	if config.Resume && config.ResumeWriteUnsafe {
 		if config.ClusterName == "" {
@@ -1259,7 +1276,7 @@ func (config *configOptions) ConfigureMongo(session *mgo.Session) {
 	}
 }
 
-func (config *configOptions) DialMongo() (*mgo.Session, error) {
+func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 	ssl := config.MongoDialSettings.Ssl || config.MongoPemFile != ""
 	if ssl {
 		tlsConfig := &tls.Config{}
@@ -1277,7 +1294,7 @@ func (config *configOptions) DialMongo() (*mgo.Session, error) {
 			// Turn off validation
 			tlsConfig.InsecureSkipVerify = true
 		}
-		dialInfo, err := mgo.ParseURL(config.MongoURL)
+		dialInfo, err := mgo.ParseURL(inURL)
 		if err != nil {
 			return nil, err
 		}
@@ -1300,10 +1317,10 @@ func (config *configOptions) DialMongo() (*mgo.Session, error) {
 		return session, err
 	}
 	if config.MongoDialSettings.Timeout != -1 {
-		return mgo.DialWithTimeout(config.MongoURL,
+		return mgo.DialWithTimeout(inURL,
 			time.Duration(config.MongoDialSettings.Timeout)*time.Second)
 	}
-	return mgo.Dial(config.MongoURL)
+	return mgo.Dial(inURL)
 }
 
 func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
@@ -2102,12 +2119,12 @@ func main() {
 	done := make(chan bool, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
 
-	mongo, err := config.DialMongo()
+	mongo, err := config.dialMongo(config.MongoURL)
 	if err != nil {
 		errorLog.Panicf("Unable to connect to mongodb using URL %s: %s", config.MongoURL, err)
 	}
 	defer mongo.Close()
-	config.ConfigureMongo(mongo)
+	config.configureMongo(mongo)
 	loadBuiltinFunctions(mongo)
 
 	elasticClient, err := config.newElasticClient()
@@ -2184,6 +2201,9 @@ func main() {
 	var filter gtm.OpFilter
 	var directReadFilter gtm.OpFilter
 	filterChain := []gtm.OpFilter{notMonstache, notSystem, notChunks}
+	if config.MongoConfigURL != "" {
+		filterChain = append(filterChain, notConfig)
+	}
 	if config.NsRegex != "" {
 		filterChain = append(filterChain, filterWithRegex(config.NsRegex))
 	}
@@ -2230,20 +2250,29 @@ func main() {
 		errorLog.Panicf("Unable to parse gtm buffer duration %s: %s", config.GtmSettings.BufferDuration, err)
 	}
 	var mongos []*mgo.Session
-	if config.EnableShards {
-		shardInfos := gtm.GetShards(mongo)
+	if config.MongoConfigURL != "" {
+		// if we have a config server URL then we are running in a sharded cluster
+		configSession, err := config.dialMongo(config.MongoConfigURL)
+		if err != nil {
+			errorLog.Panicf("Unable to connect to mongodb config server using URL %s: %s", config.MongoConfigURL, err)
+		}
+		config.configureMongo(configSession)
+		// get the list of shard servers
+		shardInfos := gtm.GetShards(configSession)
+		configSession.Close()
 		if len(shardInfos) == 0 {
 			errorLog.Fatalln("Shards enabled but none found in config.shards collection")
 		}
+		// add each shard server to the sync list
 		for _, shardInfo := range shardInfos {
 			infoLog.Printf("Adding shard found at %s\n", shardInfo.GetURL())
-			config.MongoURL = shardInfo.GetURL()
-			shard, err := config.DialMongo()
+			shardURL := config.getAuthURL(shardInfo.GetURL())
+			shard, err := config.dialMongo(shardURL)
 			if err != nil {
-				errorLog.Panicf("Unable to connect to mongodb shard using URL %s: %s", config.MongoURL, err)
+				errorLog.Panicf("Unable to connect to mongodb shard using URL %s: %s", shardURL, err)
 			}
 			defer shard.Close()
-			config.ConfigureMongo(shard)
+			config.configureMongo(shard)
 			mongos = append(mongos, shard)
 		}
 	} else {
