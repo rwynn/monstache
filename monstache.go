@@ -251,6 +251,9 @@ func (config *configOptions) newBulkProcessor(client *elastic.Client, mongo *mgo
 	if config.ElasticMaxBytes != 0 {
 		bulkService.BulkSize(config.ElasticMaxBytes)
 	}
+	if config.ElasticRetry == false {
+		bulkService.Backoff(&elastic.StopBackoff{})
+    }
 	bulkService.FlushInterval(time.Duration(config.ElasticMaxSeconds) * time.Second)
 	bulkService.After(createAfterBulk(mongo, config))
 	return bulkService.Do(context.Background())
