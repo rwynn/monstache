@@ -2216,8 +2216,7 @@ func main() {
 		}
 	}
 
-	var filter gtm.OpFilter
-	var directReadFilter gtm.OpFilter
+	var nsFilter, filter, directReadFilter gtm.OpFilter
 	filterChain := []gtm.OpFilter{notMonstache, notSystem, notChunks}
 	if config.isSharded() {
 		filterChain = append(filterChain, notConfig)
@@ -2233,12 +2232,12 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		filterChain = append(filterChain, workerFilter)
+		filter = workerFilter
 		directReadFilter = workerFilter
 	} else if config.Workers != nil {
 		panic("workers configured but this worker is undefined. worker must be set to one of the workers.")
 	}
-	filter = gtm.ChainOpFilters(filterChain...)
+	nsFilter = gtm.ChainOpFilters(filterChain...)
 	var oplogDatabaseName, oplogCollectionName, cursorTimeout *string
 	if config.MongoOpLogDatabaseName != "" {
 		oplogDatabaseName = &config.MongoOpLogDatabaseName
@@ -2300,6 +2299,7 @@ func main() {
 	gtmOpts := &gtm.Options{
 		After:               after,
 		Filter:              filter,
+		NamespaceFilter:     nsFilter,
 		OpLogDatabaseName:   oplogDatabaseName,
 		OpLogCollectionName: oplogCollectionName,
 		CursorTimeout:       cursorTimeout,
