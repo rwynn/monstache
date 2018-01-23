@@ -653,9 +653,13 @@ func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
 	delete(data, "_meta_monstache")
 }
 
-func parseIndexMeta(data map[string]interface{}) (meta *indexingMeta) {
+func parseIndexMeta(op *gtm.Op) (meta *indexingMeta) {
 	meta = &indexingMeta{}
-	if m, ok := data["_meta_monstache"]; ok {
+	if op.IsSourceOplog() {
+		meta.Version = int64(op.Timestamp)
+		meta.VersionType = "external"
+	}
+	if m, ok := op.Data["_meta_monstache"]; ok {
 		switch m.(type) {
 		case map[string]interface{}:
 			metaAttrs := m.(map[string]interface{})
@@ -1406,7 +1410,7 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 	objectID string, indexType *indexTypeMapping, meta *indexingMeta) (err error) {
 	var merges []interface{}
 	var toJSON []byte
-	if op.IsSourceOplog() == false {
+	if op.IsSourceDirect() {
 		return nil
 	}
 	if op.Timestamp == 0 {
@@ -1479,7 +1483,7 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 }
 
 func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, ingestAttachment bool) (err error) {
-	meta := parseIndexMeta(op.Data)
+	meta := parseIndexMeta(op)
 	prepareDataForIndexing(config, op)
 	objectID, indexType := opIDToString(op), mapIndexType(op)
 	if config.EnablePatches {
