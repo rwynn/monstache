@@ -54,7 +54,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var lastTimestamp bson.MongoTimestamp
 
-const version = "3.5.1"
+const version = "3.5.2"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -1936,6 +1936,8 @@ func doDelete(mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
 	req.Id(objectID)
 	req.Index(indexType.Index)
 	req.Type(indexType.Type)
+	req.Version(int64(op.Timestamp))
+	req.VersionType("external")
 	if meta.Index != "" {
 		req.Index(meta.Index)
 	}
