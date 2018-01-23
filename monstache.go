@@ -253,7 +253,7 @@ func (config *configOptions) newBulkProcessor(client *elastic.Client, mongo *mgo
 	}
 	if config.ElasticRetry == false {
 		bulkService.Backoff(&elastic.StopBackoff{})
-    }
+	}
 	bulkService.FlushInterval(time.Duration(config.ElasticMaxSeconds) * time.Second)
 	bulkService.After(createAfterBulk(mongo, config))
 	return bulkService.Do(context.Background())
@@ -1528,7 +1528,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 	}
 
 	bulk.Add(req)
-	if meta.Empty() == false {
+	if meta.shouldSave() {
 		if e := setIndexMeta(mongo, op.Namespace, objectID, meta); e != nil {
 			errorLog.Printf("unable to save routing info: %s", e)
 		}
@@ -1618,10 +1618,12 @@ func (meta *indexingMeta) load(metaAttrs map[string]interface{}) {
 	}
 }
 
-func (meta *indexingMeta) Empty() bool {
-	return (meta.Routing == "" && meta.Index == "" && meta.Type == "" &&
-		meta.Parent == "" && meta.Version == 0 && meta.VersionType == "" &&
-		meta.TTL == "" && meta.Pipeline == "" && meta.RetryOnConflict == 0)
+func (meta *indexingMeta) shouldSave() bool {
+	return (meta.Routing != "" ||
+		meta.Index != "" ||
+		meta.Type != "" ||
+		meta.Parent != "" ||
+		meta.Pipeline != "")
 }
 
 func setIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta) error {
@@ -1632,11 +1634,7 @@ func setIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta
 	doc["index"] = meta.Index
 	doc["type"] = meta.Type
 	doc["parent"] = meta.Parent
-	doc["version"] = meta.Version
-	doc["versionType"] = meta.VersionType
-	doc["ttl"] = meta.TTL
 	doc["pipeline"] = meta.Pipeline
-	doc["retryOnConflict"] = meta.RetryOnConflict
 	doc["db"] = strings.SplitN(namespace, ".", 2)[0]
 	doc["namespace"] = namespace
 	_, err := col.UpsertId(metaID, bson.M{"$set": doc})
@@ -1661,30 +1659,8 @@ func getIndexMeta(session *mgo.Session, namespace, id string) (meta *indexingMet
 	if doc["parent"] != nil {
 		meta.Parent = doc["parent"].(string)
 	}
-	if doc["version"] != nil {
-		switch doc["version"].(type) {
-		case int:
-			meta.Version = int64(doc["version"].(int))
-		case int64:
-			meta.Version = doc["version"].(int64)
-		}
-	}
-	if doc["versionType"] != nil {
-		meta.VersionType = doc["versionType"].(string)
-	}
-	if doc["ttl"] != nil {
-		meta.TTL = doc["ttl"].(string)
-	}
 	if doc["pipeline"] != nil {
 		meta.Pipeline = doc["pipeline"].(string)
-	}
-	if doc["retryOnConflict"] != nil {
-		switch doc["retryOnConflict"].(type) {
-		case int:
-			meta.RetryOnConflict = doc["retryOnConflict"].(int)
-		case int64:
-			meta.RetryOnConflict = int(doc["retryOnConflict"].(int64))
-		}
 	}
 	col.RemoveId(metaID)
 	return
