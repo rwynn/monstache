@@ -654,10 +654,9 @@ func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
 }
 
 func parseIndexMeta(op *gtm.Op) (meta *indexingMeta) {
-	meta = &indexingMeta{}
-	if op.IsSourceOplog() {
-		meta.Version = int64(op.Timestamp)
-		meta.VersionType = "external"
+	meta = &indexingMeta{
+		Version:     int64(op.Timestamp),
+		VersionType: "external",
 	}
 	if m, ok := op.Data["_meta_monstache"]; ok {
 		switch m.(type) {
