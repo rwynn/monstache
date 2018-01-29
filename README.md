@@ -1,34 +1,39 @@
 # monstache
-a go daemon which syncs mongodb to elasticsearch in near realtime
+a go daemon which syncs mongodb to elasticsearch in realtime
 
 <img src="https://raw.github.com/rwynn/monstache/master/images/monstache.png"/>
 
-### Install ###
+### Features
 
-You can download monstache binaries from the [Releases](https://github.com/rwynn/monstache/releases) page.
+- Single binary with a light footprint 
 
-Or you can build monstache from source using go get
+- Optionally filter the set of collections to sync
 
-	go get github.com/rwynn/monstache
+- Advanced support for sharded MongoDB clusters including auto-detection of new shards
 
-### Getting Started ###
+- Direct read mode to do a full sync of collections in addition to tailing the oplog
 
-Since monstache uses the mongodb oplog to tail events it is required that mongodb is configured to produce an oplog.
+- Transform and filter documents before indexing using Golang plugins or JavaScript
 
-This can be ensured by doing one of the following:
-+ Setting up [replica sets](http://docs.mongodb.org/manual/tutorial/deploy-replica-set/)
-+ Passing --master to the mongod process
-+ Setting the following in /etc/mongod.conf
+- Index the content of GridFS files
 
-	```
-	master = true
-	```
+- Support for hard and soft deletes in MongoDB
 
-You will also want to ensure that automatic index creation is not disabled in elasticsearch.yml.
+- Support for propogating database and collection drops
 
-monstache is not bi-directional.  It only syncs from mongodb to elasticsearch.
+- Optional custom document routing in Elasticsearch
 
-### Documentation ###
+- Stateful resume feature
+
+- Worker and Clustering modes for High Availability
+
+- Support for [rfc7396](https://tools.ietf.org/html/rfc7396) JSON merge patches
+
+- Systemd support
+
+- Optional http server to get access to liveness, stats, etc
+
+### Documentation
 
 See the [monstache site](https://rwynn.github.io/monstache-site/) for information on configuration and usage.
 
