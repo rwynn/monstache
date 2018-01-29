@@ -1,5 +1,5 @@
 # monstache
-a go daemon which syncs mongodb to elasticsearch in realtime
+a go daemon that syncs mongodb to elasticsearch in realtime
 
 <img src="https://raw.github.com/rwynn/monstache/master/images/monstache.png"/>
 
