@@ -1,6 +1,6 @@
 package monstachemap
 
-import "gopkg.in/mgo.v2"
+import "github.com/globalsign/mgo"
 
 // plugins must import this package
 // import "github.com/rwynn/monstache/monstachemap"

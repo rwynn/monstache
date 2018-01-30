@@ -13,14 +13,14 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/coreos/go-systemd/daemon"
 	"github.com/evanphx/json-patch"
+	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
 	"github.com/robertkrimen/otto"
 	_ "github.com/robertkrimen/otto/underscore"
 	"github.com/rwynn/gtm"
 	"github.com/rwynn/gtm/consistent"
 	"github.com/rwynn/monstache/monstachemap"
 	"golang.org/x/net/context"
-	"gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
 	"gopkg.in/natefinch/lumberjack.v2"
 	elastic "gopkg.in/olivere/elastic.v5"
 	"io"
@@ -54,7 +54,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var lastTimestamp bson.MongoTimestamp
 
-const version = "3.5.2"
+const version = "3.6.0rc1"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -92,13 +92,14 @@ type findConf struct {
 }
 
 type findCall struct {
-	config *findConf
-	query  interface{}
-	db     string
-	col    string
-	limit  int
-	sort   []string
-	sel    map[string]int
+	config  *findConf
+	session *mgo.Session
+	query   interface{}
+	db      string
+	col     string
+	limit   int
+	sort    []string
+	sel     map[string]int
 }
 
 type logFiles struct {
@@ -226,7 +227,7 @@ func (config *configOptions) isSharded() bool {
 
 func (config *configOptions) parseElasticsearchVersion(number string) (err error) {
 	if number == "" {
-		err = errors.New("elasticsearch version cannot be blank")
+		err = errors.New("Elasticsearch version cannot be blank")
 	} else {
 		versionParts := strings.Split(number, ".")
 		var majorVersion int
@@ -234,7 +235,7 @@ func (config *configOptions) parseElasticsearchVersion(number string) (err error
 		if err == nil {
 			config.ElasticMajorVersion = majorVersion
 			if majorVersion == 0 {
-				err = errors.New("invalid elasticsearch major version 0")
+				err = errors.New("Invalid Elasticsearch major version 0")
 			}
 		}
 	}
@@ -320,7 +321,7 @@ func (config *configOptions) testElasticsearchConn(client *elastic.Client) (err 
 	number, err = client.ElasticsearchVersion(url)
 	if err == nil {
 		if config.Verbose {
-			infoLog.Printf("Successfully connected to elasticsearch version %s", number)
+			infoLog.Printf("Successfully connected to Elasticsearch version %s", number)
 		}
 		err = config.parseElasticsearchVersion(number)
 	}
@@ -514,7 +515,7 @@ func deepExportValue(a interface{}) (b interface{}) {
 		if err == nil {
 			b = deepExportValue(ex)
 		} else {
-			errorLog.Println(err)
+			errorLog.Printf("Error exporting from javascript: %s", err)
 		}
 	case map[string]interface{}:
 		b = deepExportMap(t)
@@ -557,7 +558,7 @@ func mapDataJavascript(op *gtm.Op) error {
 			if err != nil {
 				return err
 			} else if data == val {
-				return errors.New("exported function must return an object")
+				return errors.New("Exported function must return an object")
 			} else {
 				dm := data.(map[string]interface{})
 				op.Data = deepExportMap(dm)
@@ -574,7 +575,9 @@ func mapDataJavascript(op *gtm.Op) error {
 	return nil
 }
 
-func mapDataGolang(session *mgo.Session, op *gtm.Op) error {
+func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
+	session := s.Copy()
+	defer session.Close()
 	input := &monstachemap.MapperPluginInput{
 		Document:   op.Data,
 		Namespace:  op.Namespace,
@@ -671,11 +674,11 @@ func parseIndexMeta(op *gtm.Op) (meta *indexingMeta) {
 					metaAttrs := ex.(map[string]interface{})
 					meta.load(metaAttrs)
 				default:
-					errorLog.Println("invalid indexing metadata")
+					errorLog.Println("Invalid indexing metadata")
 				}
 			}
 		default:
-			errorLog.Println("invalid indexing metadata")
+			errorLog.Println("Invalid indexing metadata")
 		}
 	}
 	return meta
@@ -695,7 +698,7 @@ func addFileContent(session *mgo.Session, op *gtm.Op, config *configOptions) (er
 	defer file.Close()
 	if config.MaxFileSize > 0 {
 		if file.Size() > config.MaxFileSize {
-			infoLog.Printf("file %s md5(%s) exceeds max file size. file content omitted.",
+			infoLog.Printf("File %s md5(%s) exceeds max file size. file content omitted.",
 				file.Name(), file.MD5())
 			return
 		}
@@ -749,7 +752,9 @@ func ensureClusterTTL(session *mgo.Session) error {
 	})
 }
 
-func isEnabledProcess(session *mgo.Session, config *configOptions) (bool, error) {
+func enableProcess(s *mgo.Session, config *configOptions) (bool, error) {
+	session := s.Copy()
+	defer session.Close()
 	col := session.DB("monstache").C("cluster")
 	doc := make(map[string]interface{})
 	doc["_id"] = config.ResumeName
@@ -775,26 +780,26 @@ func resetClusterState(session *mgo.Session, config *configOptions) error {
 	return col.RemoveId(config.ResumeName)
 }
 
-func isEnabledProcessID(session *mgo.Session, config *configOptions) bool {
+func ensureEnabled(s *mgo.Session, config *configOptions) (enabled bool, err error) {
+	session := s.Copy()
+	defer session.Close()
 	col := session.DB("monstache").C("cluster")
 	doc := make(map[string]interface{})
-	col.FindId(config.ResumeName).One(doc)
-	if doc["pid"] != nil && doc["host"] != nil {
-		pid := doc["pid"].(int)
-		host := doc["host"].(string)
-		hostname, err := os.Hostname()
-		if err != nil {
-			errorLog.Println(err)
-			return false
+	if err = col.FindId(config.ResumeName).One(doc); err == nil {
+		if doc["pid"] != nil && doc["host"] != nil {
+			var hostname string
+			pid := doc["pid"].(int)
+			host := doc["host"].(string)
+			if hostname, err = os.Hostname(); err == nil {
+				enabled = (pid == os.Getpid() && host == hostname)
+				if enabled {
+					err = col.UpdateId(config.ResumeName,
+						bson.M{"$set": bson.M{"expireAt": time.Now().UTC()}})
+				}
+			}
 		}
-		enabled := pid == os.Getpid() && host == hostname
-		if enabled {
-			col.UpdateId(config.ResumeName,
-				bson.M{"$set": bson.M{"expireAt": time.Now().UTC()}})
-		}
-		return enabled
 	}
-	return false
+	return
 }
 
 func resumeWork(ctx *gtm.OpCtxMulti, session *mgo.Session, config *configOptions) {
@@ -808,11 +813,18 @@ func resumeWork(ctx *gtm.OpCtxMulti, session *mgo.Session, config *configOptions
 	ctx.Resume()
 }
 
-func saveTimestamp(session *mgo.Session, ts bson.MongoTimestamp, resumeName string) error {
+func saveTimestamp(s *mgo.Session, ts bson.MongoTimestamp, config *configOptions) error {
+	session := s.Copy()
+	session.SetSocketTimeout(time.Duration(5) * time.Second)
+	session.SetSyncTimeout(time.Duration(5) * time.Second)
+	if config.ResumeWriteUnsafe {
+		session.SetSafe(nil)
+	}
+	defer session.Close()
 	col := session.DB("monstache").C("monstache")
 	doc := make(map[string]interface{})
 	doc["ts"] = ts
-	_, err := col.UpsertId(resumeName, bson.M{"$set": doc})
+	_, err := col.UpsertId(config.ResumeName, bson.M{"$set": doc})
 	return err
 }
 
@@ -889,7 +901,7 @@ func (config *configOptions) loadIndexTypes() {
 					Type:      normalizeTypeName(m.Type),
 				}
 			} else {
-				panic("mappings must specify namespace, index, and type attributes")
+				panic("Mappings must specify namespace, index, and type attributes")
 			}
 		}
 	}
@@ -920,7 +932,7 @@ func (config *configOptions) loadScripts() {
 				}
 				mapEnvs[s.Namespace] = env
 			} else {
-				panic("scripts must specify namespace and script attributes")
+				panic("Scripts must specify namespace and script attributes")
 			}
 		}
 	}
@@ -1271,11 +1283,6 @@ func (config *configOptions) getAuthURL(inURL string) string {
 
 func (config *configOptions) configureMongo(session *mgo.Session) {
 	session.SetMode(mgo.Primary, true)
-	if config.Resume && config.ResumeWriteUnsafe {
-		if config.ClusterName == "" {
-			session.SetSafe(nil)
-		}
-	}
 	if config.MongoSessionSettings.SocketTimeout != -1 {
 		timeOut := time.Duration(config.MongoSessionSettings.SocketTimeout) * time.Second
 		session.SetSocketTimeout(timeOut)
@@ -1365,7 +1372,7 @@ func doDrop(mongo *mgo.Session, elastic *elastic.Client, op *gtm.Op, config *con
 		if config.DroppedDatabases {
 			if err = deleteIndexes(elastic, db, config); err == nil {
 				if e := dropDBMeta(mongo, db); e != nil {
-					errorLog.Printf("unable to delete meta for db: %s", e)
+					errorLog.Printf("Unable to delete metadata for db: %s", e)
 				}
 			}
 		}
@@ -1373,7 +1380,7 @@ func doDrop(mongo *mgo.Session, elastic *elastic.Client, op *gtm.Op, config *con
 		if config.DroppedCollections {
 			if err = deleteIndex(elastic, op.GetDatabase()+"."+col, config); err == nil {
 				if e := dropCollectionMeta(mongo, op.GetDatabase()+"."+col); e != nil {
-					errorLog.Printf("unable to delete meta for collection: %s", e)
+					errorLog.Printf("Unable to delete metadata for collection: %s", e)
 				}
 			}
 		}
@@ -1399,7 +1406,7 @@ func doFileContent(mongo *mgo.Session, op *gtm.Op, config *configOptions) (inges
 func doResume(mongo *mgo.Session, ts bson.MongoTimestamp, config *configOptions) (err error) {
 	if config.Resume {
 		if ts > 0 {
-			err = saveTimestamp(mongo, ts, config.ResumeName)
+			err = saveTimestamp(mongo, ts, config)
 		}
 	}
 	return
@@ -1462,7 +1469,7 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 					}
 				}
 			} else {
-				err = errors.New("last document revision not found")
+				err = errors.New("Last document revision not found")
 			}
 
 		}
@@ -1488,7 +1495,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 	if config.EnablePatches {
 		if patchNamespaces[op.Namespace] {
 			if e := addPatch(config, client, op, objectID, indexType, meta); e != nil {
-				errorLog.Printf("unable to save json-patch info: %s", e)
+				errorLog.Printf("Unable to save json-patch info: %s", e)
 			}
 		}
 	}
@@ -1533,7 +1540,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 	bulk.Add(req)
 	if meta.shouldSave() {
 		if e := setIndexMeta(mongo, op.Namespace, objectID, meta); e != nil {
-			errorLog.Printf("unable to save routing info: %s", e)
+			errorLog.Printf("Unable to save routing info: %s", e)
 		}
 	}
 	return
@@ -1712,7 +1719,7 @@ func (fc *findCall) setDatabase(topts map[string]interface{}) (err error) {
 		if ovs, ok := ov.(string); ok {
 			fc.db = ovs
 		} else {
-			err = errors.New("invalid database option value")
+			err = errors.New("Invalid database option value")
 		}
 	}
 	return
@@ -1723,7 +1730,7 @@ func (fc *findCall) setCollection(topts map[string]interface{}) (err error) {
 		if ovs, ok := ov.(string); ok {
 			fc.col = ovs
 		} else {
-			err = errors.New("invalid collection option value")
+			err = errors.New("Invalid collection option value")
 		}
 	}
 	return
@@ -1738,7 +1745,7 @@ func (fc *findCall) setSelect(topts map[string]interface{}) (err error) {
 				}
 			}
 		} else {
-			err = errors.New("invalid select option value")
+			err = errors.New("Invalid select option value")
 		}
 	}
 	return
@@ -1749,7 +1756,7 @@ func (fc *findCall) setSort(topts map[string]interface{}) (err error) {
 		if ovs, ok := ov.([]string); ok {
 			fc.sort = ovs
 		} else {
-			err = errors.New("invalid sort option value")
+			err = errors.New("Invalid sort option value")
 		}
 	}
 	return
@@ -1760,7 +1767,7 @@ func (fc *findCall) setLimit(topts map[string]interface{}) (err error) {
 		if ovl, ok := ov.(int64); ok {
 			fc.limit = int(ovl)
 		} else {
-			err = errors.New("invalid limit option value")
+			err = errors.New("Invalid limit option value")
 		}
 	}
 	return
@@ -1797,11 +1804,11 @@ func (fc *findCall) setOptions(v otto.Value) (err error) {
 				}
 			}
 		default:
-			err = errors.New("invalid options argument")
+			err = errors.New("Invalid options argument")
 			return
 		}
 	} else {
-		err = errors.New("invalid options argument")
+		err = errors.New("Invalid options argument")
 	}
 	return
 }
@@ -1813,7 +1820,7 @@ func (fc *findCall) setDefaults() {
 }
 
 func (fc *findCall) getCollection() *mgo.Collection {
-	return fc.config.session.DB(fc.db).C(fc.col)
+	return fc.session.DB(fc.db).C(fc.col)
 }
 
 func (fc *findCall) getVM() *otto.Otto {
@@ -1894,9 +1901,11 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 	return func(call otto.FunctionCall) (r otto.Value) {
 		var err error
 		fc := &findCall{
-			config: fa,
-			sel:    make(map[string]int),
+			config:  fa,
+			session: fa.session.Copy(),
+			sel:     make(map[string]int),
 		}
+		defer fc.session.Close()
 		fc.setDefaults()
 		args := call.ArgumentList
 		argLen := len(args)
@@ -1919,7 +1928,7 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 				fc.logError(err)
 			}
 		} else {
-			fc.logError(errors.New("at least one argument is required"))
+			fc.logError(errors.New("At least one argument is required"))
 		}
 		return
 	}
@@ -2219,7 +2228,7 @@ func main() {
 		filter = workerFilter
 		directReadFilter = workerFilter
 	} else if config.Workers != nil {
-		panic("workers configured but this worker is undefined. worker must be set to one of the workers.")
+		panic("Workers configured but this worker is undefined. worker must be set to one of the workers.")
 	}
 	nsFilter = gtm.ChainOpFilters(filterChain...)
 	var oplogDatabaseName, oplogCollectionName, cursorTimeout *string
@@ -2238,7 +2247,7 @@ func main() {
 		} else {
 			errorLog.Panicf("Unable to enable cluster mode: %s", err)
 		}
-		enabled, err = isEnabledProcess(mongo, config)
+		enabled, err = enableProcess(mongo, config)
 		if err != nil {
 			errorLog.Panicf("Unable to determine enabled cluster process: %s", err)
 		}
@@ -2346,6 +2355,9 @@ func main() {
 		hsc.buildServer()
 		go hsc.serveHttp()
 	}
+    if config.Verbose {
+        infoLog.Println("Entering event loop")
+    }
 	for {
 		select {
 		case <-done:
@@ -2369,22 +2381,22 @@ func main() {
 				break
 			}
 			if enabled {
-				enabled = isEnabledProcessID(mongo, config)
+				enabled, err = ensureEnabled(mongo, config)
 				if !enabled {
 					infoLog.Printf("Pausing work for cluster %s", config.ClusterName)
 					gtmCtx.Pause()
 					bulk.Stop()
 				}
 			} else {
-				if enabled, err = isEnabledProcess(mongo, config); err == nil {
-					if enabled {
-						infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
-						bulk.Start(context.Background())
-						resumeWork(gtmCtx, mongo, config)
-					}
-				} else {
-					gtmCtx.ErrC <- err
+				enabled, err = enableProcess(mongo, config)
+				if enabled {
+					infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
+					bulk.Start(context.Background())
+					resumeWork(gtmCtx, mongo, config)
 				}
+			}
+			if err != nil {
+				gtmCtx.ErrC <- err
 			}
 		case <-printStats.C:
 			if !enabled {
@@ -2405,7 +2417,12 @@ func main() {
 		case err = <-gtmCtx.ErrC:
 			exitStatus = 1
 			lastTimestamp = 0
-			errorLog.Println(err)
+			switch err {
+			case io.EOF:
+				errorLog.Println("Connection lost to a MongoDB server")
+			default:
+				errorLog.Println(err)
+			}
 			if config.FailFast {
 				os.Exit(exitStatus)
 			}
