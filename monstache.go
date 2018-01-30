@@ -2355,9 +2355,9 @@ func main() {
 		hsc.buildServer()
 		go hsc.serveHttp()
 	}
-    if config.Verbose {
-        infoLog.Println("Entering event loop")
-    }
+	if config.Verbose {
+		infoLog.Println("Entering event loop")
+	}
 	for {
 		select {
 		case <-done:
