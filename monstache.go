@@ -684,7 +684,9 @@ func parseIndexMeta(op *gtm.Op) (meta *indexingMeta) {
 	return meta
 }
 
-func addFileContent(session *mgo.Session, op *gtm.Op, config *configOptions) (err error) {
+func addFileContent(s *mgo.Session, op *gtm.Op, config *configOptions) (err error) {
+	session := s.Copy()
+	defer session.Close()
 	op.Data["file"] = ""
 	gridByteBuffer.Reset()
 	db, bucket :=
@@ -2134,6 +2136,11 @@ func main() {
 	if err != nil {
 		errorLog.Panicf("Unable to connect to mongodb using URL %s: %s", config.MongoURL, err)
 	}
+	if mongoInfo, err := mongo.BuildInfo(); err == nil {
+		infoLog.Printf("Successfully connected to MongoDB version %s", mongoInfo.Version)
+	} else {
+		infoLog.Println("Successfully connected to MongoDB")
+	}
 	defer mongo.Close()
 	config.configureMongo(mongo)
 	loadBuiltinFunctions(mongo)
@@ -2417,12 +2424,7 @@ func main() {
 		case err = <-gtmCtx.ErrC:
 			exitStatus = 1
 			lastTimestamp = 0
-			switch err {
-			case io.EOF:
-				errorLog.Println("Connection lost to a MongoDB server")
-			default:
-				errorLog.Println(err)
-			}
+			errorLog.Println(err)
 			if config.FailFast {
 				os.Exit(exitStatus)
 			}
