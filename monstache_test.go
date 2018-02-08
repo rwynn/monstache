@@ -3,9 +3,9 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"golang.org/x/net/context"
 	"github.com/globalsign/mgo"
-	elastic "gopkg.in/olivere/elastic.v5"
+	"github.com/rwynn/elastic"
+	"golang.org/x/net/context"
 	"testing"
 	"time"
 )

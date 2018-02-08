@@ -17,12 +17,12 @@ import (
 	"github.com/globalsign/mgo/bson"
 	"github.com/robertkrimen/otto"
 	_ "github.com/robertkrimen/otto/underscore"
+	"github.com/rwynn/elastic"
 	"github.com/rwynn/gtm"
 	"github.com/rwynn/gtm/consistent"
 	"github.com/rwynn/monstache/monstachemap"
 	"golang.org/x/net/context"
 	"gopkg.in/natefinch/lumberjack.v2"
-	elastic "gopkg.in/olivere/elastic.v5"
 	"io"
 	"io/ioutil"
 	"log"
@@ -52,9 +52,8 @@ var patchNamespaces map[string]bool
 
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
-var lastTimestamp bson.MongoTimestamp
 
-const version = "3.6.0rc1"
+const version = "3.6.0"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -242,7 +241,7 @@ func (config *configOptions) parseElasticsearchVersion(number string) (err error
 	return
 }
 
-func (config *configOptions) newBulkProcessor(client *elastic.Client, mongo *mgo.Session) (bulk *elastic.BulkProcessor, err error) {
+func (config *configOptions) newBulkProcessor(client *elastic.Client) (bulk *elastic.BulkProcessor, err error) {
 	bulkService := client.BulkProcessor().Name("monstache")
 	bulkService.Workers(config.ElasticMaxConns)
 	bulkService.Stats(config.Stats)
@@ -256,7 +255,6 @@ func (config *configOptions) newBulkProcessor(client *elastic.Client, mongo *mgo
 		bulkService.Backoff(&elastic.StopBackoff{})
 	}
 	bulkService.FlushInterval(time.Duration(config.ElasticMaxSeconds) * time.Second)
-	bulkService.After(createAfterBulk(mongo, config))
 	return bulkService.Do(context.Background())
 }
 
@@ -1405,15 +1403,6 @@ func doFileContent(mongo *mgo.Session, op *gtm.Op, config *configOptions) (inges
 	return
 }
 
-func doResume(mongo *mgo.Session, ts bson.MongoTimestamp, config *configOptions) (err error) {
-	if config.Resume {
-		if ts > 0 {
-			err = saveTimestamp(mongo, ts, config)
-		}
-	}
-	return
-}
-
 func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 	objectID string, indexType *indexTypeMapping, meta *indexingMeta) (err error) {
 	var merges []interface{}
@@ -1973,17 +1962,6 @@ func gtmDefaultSettings() gtmSettings {
 	}
 }
 
-func createAfterBulk(mongo *mgo.Session, config *configOptions) elastic.BulkAfterFunc {
-	return func(executionId int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
-		if err != nil || lastTimestamp == 0 {
-			return
-		}
-		if err = doResume(mongo, lastTimestamp, config); err != nil {
-			errorLog.Printf("Unable to save timestamp: %s", err)
-		}
-	}
-}
-
 func notifySdFailed(config *configOptions, err error) {
 	if err != nil {
 		errorLog.Printf("Systemd notification failed: %s", err)
@@ -2159,7 +2137,7 @@ func main() {
 			errorLog.Panicf("Elasticsearch version must conform to major.minor.fix: %s", err)
 		}
 	}
-	bulk, err := config.newBulkProcessor(elasticClient, mongo)
+	bulk, err := config.newBulkProcessor(elasticClient)
 	if err != nil {
 		errorLog.Panicf("Unable to start bulk processor: %s", err)
 	}
@@ -2328,6 +2306,10 @@ func main() {
 			gtmCtx.Pause()
 		}
 	}
+	timestampTicker := time.NewTicker(10 * time.Second)
+	if config.Resume == false {
+		timestampTicker.Stop()
+	}
 	heartBeat := time.NewTicker(10 * time.Second)
 	if config.ClusterName == "" {
 		heartBeat.Stop()
@@ -2365,6 +2347,7 @@ func main() {
 	if config.Verbose {
 		infoLog.Println("Entering event loop")
 	}
+	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
 	for {
 		select {
 		case <-done:
@@ -2383,6 +2366,15 @@ func main() {
 			}
 			mongo.Close()
 			os.Exit(exitStatus)
+		case <-timestampTicker.C:
+			if lastTimestamp > lastSavedTimestamp {
+				bulk.Flush()
+				if saveTimestamp(mongo, lastTimestamp, config); err == nil {
+					lastSavedTimestamp = lastTimestamp
+				} else {
+					gtmCtx.ErrC <- err
+				}
+			}
 		case <-heartBeat.C:
 			if config.ClusterName == "" {
 				break
@@ -2423,7 +2415,6 @@ func main() {
 			}
 		case err = <-gtmCtx.ErrC:
 			exitStatus = 1
-			lastTimestamp = 0
 			errorLog.Println(err)
 			if config.FailFast {
 				os.Exit(exitStatus)
