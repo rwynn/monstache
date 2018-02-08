@@ -5,6 +5,8 @@ a go daemon that syncs mongodb to elasticsearch in realtime
 
 ### Features
 
+- Supports up to and including the latest versions of Elasticsearch and MongoDB
+
 - Single binary with a light footprint 
 
 - Optionally filter the set of collections to sync
