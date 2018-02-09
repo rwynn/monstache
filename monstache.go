@@ -224,6 +224,26 @@ func (config *configOptions) isSharded() bool {
 	return config.MongoConfigURL != ""
 }
 
+func afterBulk(executionId int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
+	if err != nil {
+		errorLog.Printf("Bulk index request with execution ID %d failed: %s", executionId, err)
+	}
+	if response != nil && response.Errors {
+		failed := response.Failed()
+		if failed != nil {
+			errorLog.Printf("Bulk index request with execution ID %d has %d line failure(s)", executionId, len(failed))
+			for i, item := range failed {
+				json, err := json.Marshal(item)
+				if err != nil {
+					errorLog.Printf("Unable to marshall failed request line #%d: %s", i, err)
+				} else {
+					errorLog.Printf("Failed request line #%d details: %s", i, string(json))
+				}
+			}
+		}
+	}
+}
+
 func (config *configOptions) parseElasticsearchVersion(number string) (err error) {
 	if number == "" {
 		err = errors.New("Elasticsearch version cannot be blank")
@@ -254,6 +274,7 @@ func (config *configOptions) newBulkProcessor(client *elastic.Client) (bulk *ela
 	if config.ElasticRetry == false {
 		bulkService.Backoff(&elastic.StopBackoff{})
 	}
+	bulkService.After(afterBulk)
 	bulkService.FlushInterval(time.Duration(config.ElasticMaxSeconds) * time.Second)
 	return bulkService.Do(context.Background())
 }
@@ -263,6 +284,7 @@ func (config *configOptions) newStatsBulkProcessor(client *elastic.Client) (bulk
 	bulkService.Workers(1)
 	bulkService.Stats(false)
 	bulkService.BulkActions(1)
+	bulkService.After(afterBulk)
 	return bulkService.Do(context.Background())
 }
 
@@ -318,9 +340,7 @@ func (config *configOptions) testElasticsearchConn(client *elastic.Client) (err 
 	url := config.ElasticUrls[0]
 	number, err = client.ElasticsearchVersion(url)
 	if err == nil {
-		if config.Verbose {
-			infoLog.Printf("Successfully connected to Elasticsearch version %s", number)
-		}
+		infoLog.Printf("Successfully connected to Elasticsearch version %s", number)
 		err = config.parseElasticsearchVersion(number)
 	}
 	return
