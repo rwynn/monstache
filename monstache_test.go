@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"flag"
 	"github.com/globalsign/mgo"
-	"github.com/rwynn/elastic"
 	"golang.org/x/net/context"
+	elastic "gopkg.in/olivere/elastic.v5"
 	"testing"
 	"time"
 )

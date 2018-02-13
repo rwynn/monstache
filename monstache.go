@@ -17,12 +17,12 @@ import (
 	"github.com/globalsign/mgo/bson"
 	"github.com/robertkrimen/otto"
 	_ "github.com/robertkrimen/otto/underscore"
-	"github.com/rwynn/elastic"
 	"github.com/rwynn/gtm"
 	"github.com/rwynn/gtm/consistent"
 	"github.com/rwynn/monstache/monstachemap"
 	"golang.org/x/net/context"
 	"gopkg.in/natefinch/lumberjack.v2"
+	elastic "gopkg.in/olivere/elastic.v5"
 	"io"
 	"io/ioutil"
 	"log"
@@ -2107,6 +2107,39 @@ func (config *configOptions) makeShardInsertHandler() gtm.ShardInsertHandler {
 	}
 }
 
+func shutdown(exitStatus int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulkStats *elastic.BulkProcessor, mongo *mgo.Session, config *configOptions) {
+	infoLog.Println("Shutting down")
+	closeC := make(chan bool)
+	go func() {
+		if config.ClusterName != "" {
+			resetClusterState(mongo, config)
+		}
+		if hsc != nil {
+			hsc.shutdown = true
+			hsc.httpServer.Shutdown(context.Background())
+		}
+		bulk.Flush()
+		if bulkStats != nil {
+			bulkStats.Flush()
+		}
+		close(closeC)
+	}()
+	doneC := make(chan bool)
+	go func() {
+		closeT := time.NewTicker(5 * time.Second)
+		for {
+			select {
+			case <-closeC:
+				close(doneC)
+			case <-closeT.C:
+				close(doneC)
+			}
+		}
+	}()
+	<-doneC
+	os.Exit(exitStatus)
+}
+
 func main() {
 	enabled := true
 	config := &configOptions{
@@ -2127,7 +2160,6 @@ func main() {
 	config.loadPlugins()
 
 	sigs := make(chan os.Signal, 1)
-	done := make(chan bool, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
 
 	mongo, err := config.dialMongo(config.MongoURL)
@@ -2170,11 +2202,6 @@ func main() {
 		}
 		defer bulkStats.Stop()
 	}
-
-	go func() {
-		<-sigs
-		done <- true
-	}()
 
 	var after gtm.TimestampGenerator
 	if config.Resume {
@@ -2346,14 +2373,6 @@ func main() {
 		printStats.Stop()
 	}
 	exitStatus := 0
-	if len(config.DirectReadNs) > 0 {
-		go func(c *gtm.OpCtxMulti, config *configOptions) {
-			c.DirectReadWg.Wait()
-			if config.ExitAfterDirectReads {
-				done <- true
-			}
-		}(gtmCtx, config)
-	}
 	go notifySd(config)
 	var hsc *httpServerCtx
 	if config.EnableHTTPServer {
@@ -2364,28 +2383,20 @@ func main() {
 		hsc.buildServer()
 		go hsc.serveHttp()
 	}
-	if config.Verbose {
-		infoLog.Println("Entering event loop")
+	go func() {
+		<-sigs
+		shutdown(exitStatus, hsc, bulk, bulkStats, mongo, config)
+	}()
+	if len(config.DirectReadNs) > 0 {
+		go func() {
+			gtmCtx.DirectReadWg.Wait()
+			shutdown(exitStatus, hsc, bulk, bulkStats, mongo, config)
+		}()
 	}
+	infoLog.Println("Entering event loop")
 	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
 	for {
 		select {
-		case <-done:
-			if hsc != nil {
-				hsc.shutdown = true
-				hsc.httpServer.Shutdown(context.Background())
-			}
-			bulk.Flush()
-			bulk.Stop()
-			if bulkStats != nil {
-				bulkStats.Flush()
-				bulkStats.Stop()
-			}
-			if config.ClusterName != "" {
-				resetClusterState(mongo, config)
-			}
-			mongo.Close()
-			os.Exit(exitStatus)
 		case <-timestampTicker.C:
 			if lastTimestamp > lastSavedTimestamp {
 				bulk.Flush()
