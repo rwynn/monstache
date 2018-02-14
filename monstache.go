@@ -2127,11 +2127,14 @@ func shutdown(exitStatus int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, b
 	doneC := make(chan bool)
 	go func() {
 		closeT := time.NewTicker(5 * time.Second)
-		for {
+		done := false
+		for !done {
 			select {
 			case <-closeC:
+				done = true
 				close(doneC)
 			case <-closeT.C:
+				done = true
 				close(doneC)
 			}
 		}
