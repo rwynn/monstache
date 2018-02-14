@@ -21,6 +21,7 @@ import (
 	"github.com/rwynn/gtm/consistent"
 	"github.com/rwynn/monstache/monstachemap"
 	"golang.org/x/net/context"
+	"gopkg.in/Graylog2/go-gelf.v2/gelf"
 	"gopkg.in/natefinch/lumberjack.v2"
 	elastic "gopkg.in/olivere/elastic.v5"
 	"io"
@@ -156,6 +157,7 @@ type configOptions struct {
 	MongoSessionSettings     mongoSessionSettings `toml:"mongo-session-settings"`
 	GtmSettings              gtmSettings          `toml:"gtm-settings"`
 	Logs                     logFiles             `toml:"logs"`
+	GraylogAddr              string               `toml:"graylog-addr"`
 	ElasticUrls              stringargs           `toml:"elasticsearch-urls"`
 	ElasticUser              string               `toml:"elasticsearch-user"`
 	ElasticPassword          string               `toml:"elasticsearch-password"`
@@ -857,6 +859,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.MongoOpLogDatabaseName, "mongo-oplog-database-name", "", "Override the database name which contains the mongodb oplog")
 	flag.StringVar(&config.MongoOpLogCollectionName, "mongo-oplog-collection-name", "", "Override the collection name which contains the mongodb oplog")
 	flag.StringVar(&config.MongoCursorTimeout, "mongo-cursor-timeout", "", "Override the duration before a cursor timeout occurs when tailing the oplog")
+	flag.StringVar(&config.GraylogAddr, "graylog-addr", "", "Send logs to a Graylog server at this address")
 	flag.StringVar(&config.ElasticVersion, "elasticsearch-version", "", "Specify elasticsearch version directly instead of getting it from the server")
 	flag.StringVar(&config.ElasticUser, "elasticsearch-user", "", "The elasticsearch user name for basic auth")
 	flag.StringVar(&config.ElasticPassword, "elasticsearch-password", "", "The elasticsearch password for basic auth")
@@ -1134,6 +1137,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.Worker == "" {
 			config.Worker = tomlConfig.Worker
 		}
+		if config.GraylogAddr == "" {
+			config.GraylogAddr = tomlConfig.GraylogAddr
+		}
 		if config.MapperPluginPath == "" {
 			config.MapperPluginPath = tomlConfig.MapperPluginPath
 		}
@@ -1162,7 +1168,6 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		config.MongoSessionSettings = tomlConfig.MongoSessionSettings
 		config.GtmSettings = tomlConfig.GtmSettings
 		config.Logs = tomlConfig.Logs
-		tomlConfig.setupLogging()
 		tomlConfig.loadScripts()
 		tomlConfig.loadIndexTypes()
 	}
@@ -1178,20 +1183,32 @@ func (config *configOptions) newLogger(path string) *lumberjack.Logger {
 	}
 }
 
-func (config *configOptions) setupLogging() {
-	logs := config.Logs
-	if logs.Info != "" {
-		infoLog.SetOutput(config.newLogger(logs.Info))
+func (config *configOptions) setupLogging() *configOptions {
+	if config.GraylogAddr != "" {
+		gelfWriter, err := gelf.NewUDPWriter(config.GraylogAddr)
+		if err != nil {
+			errorLog.Fatalf("Error creating gelf writer: %s", err)
+		}
+		infoLog.SetOutput(gelfWriter)
+		errorLog.SetOutput(gelfWriter)
+		traceLog.SetOutput(gelfWriter)
+		statsLog.SetOutput(gelfWriter)
+	} else {
+		logs := config.Logs
+		if logs.Info != "" {
+			infoLog.SetOutput(config.newLogger(logs.Info))
+		}
+		if logs.Error != "" {
+			errorLog.SetOutput(config.newLogger(logs.Error))
+		}
+		if logs.Trace != "" {
+			traceLog.SetOutput(config.newLogger(logs.Trace))
+		}
+		if logs.Stats != "" {
+			statsLog.SetOutput(config.newLogger(logs.Stats))
+		}
 	}
-	if logs.Error != "" {
-		errorLog.SetOutput(config.newLogger(logs.Error))
-	}
-	if logs.Trace != "" {
-		traceLog.SetOutput(config.newLogger(logs.Trace))
-	}
-	if logs.Stats != "" {
-		statsLog.SetOutput(config.newLogger(logs.Stats))
-	}
+	return config
 }
 
 func (config *configOptions) LoadPatchNamespaces() *configOptions {
@@ -2160,6 +2177,7 @@ func main() {
 		config.dump()
 		os.Exit(0)
 	}
+	config.setupLogging()
 	config.loadPlugins()
 
 	sigs := make(chan os.Signal, 1)
