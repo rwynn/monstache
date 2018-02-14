@@ -2409,10 +2409,12 @@ func main() {
 		shutdown(exitStatus, hsc, bulk, bulkStats, mongo, config)
 	}()
 	if len(config.DirectReadNs) > 0 {
-		go func() {
-			gtmCtx.DirectReadWg.Wait()
-			shutdown(exitStatus, hsc, bulk, bulkStats, mongo, config)
-		}()
+		if config.ExitAfterDirectReads {
+			go func() {
+				gtmCtx.DirectReadWg.Wait()
+				shutdown(exitStatus, hsc, bulk, bulkStats, mongo, config)
+			}()
+		}
 	}
 	infoLog.Println("Entering event loop")
 	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
