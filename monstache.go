@@ -54,13 +54,14 @@ var patchNamespaces map[string]bool
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
-const version = "3.6.4"
+const version = "3.6.5"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
 const elasticClientTimeoutDefault int = 60
 const elasticMaxDocsDefault int = 1000
 const gtmChannelSizeDefault int = 512
+const typeFromFuture string = "_doc"
 
 type stringargs []string
 
@@ -196,6 +197,7 @@ type configOptions struct {
 	ElasticMaxSeconds        int    `toml:"elasticsearch-max-seconds"`
 	ElasticClientTimeout     int    `toml:"elasticsearch-client-timeout"`
 	ElasticMajorVersion      int
+	ElasticMinorVersion      int
 	MaxFileSize              int64 `toml:"max-file-size"`
 	ConfigFile               string
 	Script                   []javascript
@@ -246,18 +248,31 @@ func afterBulk(executionId int64, requests []elastic.BulkableRequest, response *
 	}
 }
 
+func (config *configOptions) useTypeFromFuture() (use bool) {
+	if config.ElasticMajorVersion > 6 {
+		use = true
+	} else if config.ElasticMajorVersion == 6 && config.ElasticMinorVersion >= 2 {
+		use = true
+	}
+	return
+}
+
 func (config *configOptions) parseElasticsearchVersion(number string) (err error) {
 	if number == "" {
 		err = errors.New("Elasticsearch version cannot be blank")
 	} else {
 		versionParts := strings.Split(number, ".")
-		var majorVersion int
+		var majorVersion, minorVersion int
 		majorVersion, err = strconv.Atoi(versionParts[0])
 		if err == nil {
 			config.ElasticMajorVersion = majorVersion
 			if majorVersion == 0 {
 				err = errors.New("Invalid Elasticsearch major version 0")
 			}
+		}
+		minorVersion, err = strconv.Atoi(versionParts[1])
+		if err == nil {
+			config.ElasticMinorVersion = minorVersion
 		}
 	}
 	return
@@ -348,38 +363,23 @@ func (config *configOptions) testElasticsearchConn(client *elastic.Client) (err 
 	return
 }
 
-func normalizeIndexName(name string) (normal string) {
-	normal = strings.ToLower(strings.TrimPrefix(name, "_"))
-	return
-}
-
-func normalizeTypeName(name string) (normal string) {
-	normal = strings.TrimPrefix(name, "_")
-	return
-}
-
-func normalizeEsID(id string) (normal string) {
-	normal = strings.TrimPrefix(id, "_")
-	return
-}
-
 func deleteIndexes(client *elastic.Client, db string, config *configOptions) (err error) {
 	ctx := context.Background()
 	for ns, m := range mapIndexTypes {
-		parts := strings.SplitN(ns, ".", 2)
-		if parts[0] == db {
+		dbCol := strings.SplitN(ns, ".", 2)
+		if dbCol[0] == db {
 			if _, err = client.DeleteIndex(m.Index + "*").Do(ctx); err != nil {
 				return
 			}
 		}
 	}
-	_, err = client.DeleteIndex(normalizeIndexName(db) + "*").Do(ctx)
+	_, err = client.DeleteIndex(db + "*").Do(ctx)
 	return
 }
 
 func deleteIndex(client *elastic.Client, namespace string, config *configOptions) (err error) {
 	ctx := context.Background()
-	esIndex := normalizeIndexName(namespace)
+	esIndex := namespace
 	if m := mapIndexTypes[namespace]; m != nil {
 		esIndex = m.Index
 	}
@@ -412,8 +412,8 @@ func ensureFileMappingIngestAttachment(client *elastic.Client, namespace string,
 
 func ensureFileMappingMapperAttachment(conn *elastic.Client, namespace string, config *configOptions) (err error) {
 	ctx := context.Background()
-	parts := strings.SplitN(namespace, ".", 2)
-	esIndex, esType := normalizeIndexName(namespace), normalizeTypeName(parts[1])
+	dbCol := strings.SplitN(namespace, ".", 2)
+	esIndex, esType := namespace, dbCol[1]
 	if m := mapIndexTypes[namespace]; m != nil {
 		esIndex, esType = m.Index, m.Type
 	}
@@ -449,16 +449,20 @@ func ensureFileMappingMapperAttachment(conn *elastic.Client, namespace string, c
 	return err
 }
 
-func defaultIndexTypeMapping(op *gtm.Op) *indexTypeMapping {
+func defaultIndexTypeMapping(config *configOptions, op *gtm.Op) *indexTypeMapping {
+	typeName := typeFromFuture
+	if !config.useTypeFromFuture() {
+		typeName = op.GetCollection()
+	}
 	return &indexTypeMapping{
 		Namespace: op.Namespace,
-		Index:     normalizeIndexName(op.Namespace),
-		Type:      normalizeTypeName(op.GetCollection()),
+		Index:     op.Namespace,
+		Type:      typeName,
 	}
 }
 
-func mapIndexType(op *gtm.Op) *indexTypeMapping {
-	mapping := defaultIndexTypeMapping(op)
+func mapIndexType(config *configOptions, op *gtm.Op) *indexTypeMapping {
+	mapping := defaultIndexTypeMapping(config, op)
 	if mapIndexTypes != nil {
 		if m := mapIndexTypes[op.Namespace]; m != nil {
 			mapping = m
@@ -487,7 +491,7 @@ func opIDToString(op *gtm.Op) string {
 			opIDStr = fmt.Sprintf("%v", op.Id)
 		}
 	default:
-		opIDStr = normalizeEsID(fmt.Sprintf("%v", op.Id))
+		opIDStr = fmt.Sprintf("%v", op.Id)
 	}
 	return opIDStr
 }
@@ -920,8 +924,8 @@ func (config *configOptions) loadIndexTypes() {
 			if m.Namespace != "" && m.Index != "" && m.Type != "" {
 				mapIndexTypes[m.Namespace] = &indexTypeMapping{
 					Namespace: m.Namespace,
-					Index:     normalizeIndexName(m.Index),
-					Type:      normalizeTypeName(m.Type),
+					Index:     m.Index,
+					Type:      m.Type,
 				}
 			} else {
 				panic("Mappings must specify namespace, index, and type attributes")
@@ -1519,7 +1523,7 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, ingestAttachment bool) (err error) {
 	meta := parseIndexMeta(op)
 	prepareDataForIndexing(config, op)
-	objectID, indexType := opIDToString(op), mapIndexType(op)
+	objectID, indexType := opIDToString(op), mapIndexType(config, op)
 	if config.EnablePatches {
 		if patchNamespaces[op.Namespace] {
 			if e := addPatch(config, client, op, objectID, indexType, meta); e != nil {
@@ -1579,7 +1583,7 @@ func doIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 		if op.Data != nil {
 			err = doIndexing(config, mongo, bulk, client, op, ingestAttachment)
 		} else if op.IsUpdate() {
-			doDelete(mongo, bulk, op)
+			doDelete(config, mongo, bulk, op)
 		}
 	}
 	return
@@ -1597,7 +1601,11 @@ func doIndexStats(config *configOptions, bulkStats *elastic.BulkProcessor, stats
 	doc["Pid"] = os.Getpid()
 	doc["Stats"] = stats
 	index := t.Format(config.StatsIndexFormat)
-	req := elastic.NewBulkIndexRequest().Index(index).Type("stats")
+	typeName := "stats"
+	if config.useTypeFromFuture() {
+		typeName = typeFromFuture
+	}
+	req := elastic.NewBulkIndexRequest().Index(index).Type(typeName)
 	req.Doc(doc)
 	bulkStats.Add(req)
 	return
@@ -1962,8 +1970,8 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 	}
 }
 
-func doDelete(mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
-	objectID, indexType, meta := opIDToString(op), mapIndexType(op), &indexingMeta{}
+func doDelete(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
+	objectID, indexType, meta := opIDToString(op), mapIndexType(config, op), &indexingMeta{}
 	if mapEnvs != nil {
 		if env := mapEnvs[op.Namespace]; env != nil && env.Routing {
 			meta = getIndexMeta(mongo, op.Namespace, objectID)
@@ -2486,7 +2494,7 @@ func main() {
 					gtmCtx.ErrC <- err
 				}
 			} else if op.IsDelete() {
-				doDelete(mongo, bulk, op)
+				doDelete(config, mongo, bulk, op)
 			} else if op.Data != nil {
 				ingestAttachment := false
 				if ingestAttachment, err = doFileContent(mongo, op, config); err != nil {
