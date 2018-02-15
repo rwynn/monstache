@@ -15,6 +15,7 @@ import (
 	"github.com/evanphx/json-patch"
 	"github.com/globalsign/mgo"
 	"github.com/globalsign/mgo/bson"
+	"github.com/olivere/elastic"
 	"github.com/robertkrimen/otto"
 	_ "github.com/robertkrimen/otto/underscore"
 	"github.com/rwynn/gtm"
@@ -23,7 +24,6 @@ import (
 	"golang.org/x/net/context"
 	"gopkg.in/Graylog2/go-gelf.v2/gelf"
 	"gopkg.in/natefinch/lumberjack.v2"
-	elastic "gopkg.in/olivere/elastic.v5"
 	"io"
 	"io/ioutil"
 	"log"
@@ -54,7 +54,7 @@ var patchNamespaces map[string]bool
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
-const version = "3.6.5"
+const version = "4.0.0"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
@@ -117,7 +117,6 @@ type indexingMeta struct {
 	Parent          string
 	Version         int64
 	VersionType     string
-	TTL             string
 	Pipeline        string
 	RetryOnConflict int
 }
@@ -333,9 +332,6 @@ func (config *configOptions) newElasticClient() (client *elastic.Client, err err
 	if config.Verbose {
 		clientOptions = append(clientOptions, elastic.SetTraceLog(traceLog))
 	}
-	if config.Gzip {
-		clientOptions = append(clientOptions, elastic.SetGzip(true))
-	}
 	if config.ElasticUser != "" {
 		clientOptions = append(clientOptions, elastic.SetBasicAuth(config.ElasticUser, config.ElasticPassword))
 	}
@@ -387,14 +383,7 @@ func deleteIndex(client *elastic.Client, namespace string, config *configOptions
 	return err
 }
 
-func ensureFileMapping(client *elastic.Client, namespace string, config *configOptions) (err error) {
-	if config.ElasticMajorVersion < 5 {
-		return ensureFileMappingMapperAttachment(client, namespace, config)
-	}
-	return ensureFileMappingIngestAttachment(client, namespace, config)
-}
-
-func ensureFileMappingIngestAttachment(client *elastic.Client, namespace string, config *configOptions) (err error) {
+func ensureFileMapping(client *elastic.Client) (err error) {
 	ctx := context.Background()
 	pipeline := map[string]interface{}{
 		"description": "Extract file information",
@@ -407,45 +396,6 @@ func ensureFileMappingIngestAttachment(client *elastic.Client, namespace string,
 		},
 	}
 	_, err = client.IngestPutPipeline("attachment").BodyJson(pipeline).Do(ctx)
-	return err
-}
-
-func ensureFileMappingMapperAttachment(conn *elastic.Client, namespace string, config *configOptions) (err error) {
-	ctx := context.Background()
-	dbCol := strings.SplitN(namespace, ".", 2)
-	esIndex, esType := namespace, dbCol[1]
-	if m := mapIndexTypes[namespace]; m != nil {
-		esIndex, esType = m.Index, m.Type
-	}
-	props := map[string]interface{}{
-		"properties": map[string]interface{}{
-			"file": map[string]interface{}{
-				"type": "attachment",
-			},
-		},
-	}
-	file := props["properties"].(map[string]interface{})["file"].(map[string]interface{})
-	types := map[string]interface{}{
-		esType: props,
-	}
-	mappings := map[string]interface{}{
-		"mappings": types,
-	}
-	if config.FileHighlighting {
-		file["fields"] = map[string]interface{}{
-			"content": map[string]interface{}{
-				"type":        "string",
-				"term_vector": "with_positions_offsets",
-				"store":       true,
-			},
-		}
-	}
-	var exists bool
-	if exists, err = conn.IndexExists(esIndex).Do(ctx); exists {
-		_, err = conn.PutMapping().Index(esIndex).Type(esType).BodyJson(types).Do(ctx)
-	} else {
-		_, err = conn.CreateIndex(esIndex).BodyJson(mappings).Do(ctx)
-	}
 	return err
 }
 
@@ -639,9 +589,6 @@ func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
 			}
 			if output.VersionType != "" {
 				meta["versionType"] = output.VersionType
-			}
-			if output.TTL != "" {
-				meta["ttl"] = output.TTL
 			}
 			if output.Pipeline != "" {
 				meta["pipeline"] = output.Pipeline
@@ -1398,6 +1345,7 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 		tlsConfig.InsecureSkipVerify = true
 	}
 	transport := &http.Transport{
+		DisableCompression:  !config.Gzip,
 		TLSHandshakeTimeout: time.Duration(30) * time.Second,
 		TLSClientConfig:     tlsConfig,
 	}
@@ -1435,10 +1383,8 @@ func doFileContent(mongo *mgo.Session, op *gtm.Op, config *configOptions) (inges
 	}
 	if fileNamespaces[op.Namespace] {
 		err = addFileContent(mongo, op, config)
-		if config.ElasticMajorVersion >= 5 {
-			if op.Data["file"] != "" {
-				ingestAttachment = true
-			}
+		if err == nil && op.Data["file"] != "" {
+			ingestAttachment = true
 		}
 	}
 	return
@@ -1556,9 +1502,6 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 	if meta.VersionType != "" {
 		req.VersionType(meta.VersionType)
 	}
-	if meta.TTL != "" {
-		req.TTL(meta.TTL)
-	}
 	if meta.Pipeline != "" {
 		req.Pipeline(meta.Pipeline)
 	}
@@ -1649,9 +1592,6 @@ func (meta *indexingMeta) load(metaAttrs map[string]interface{}) {
 	}
 	if v, ok = metaAttrs["versionType"]; ok {
 		meta.VersionType = fmt.Sprintf("%v", v)
-	}
-	if v, ok = metaAttrs["ttl"]; ok {
-		meta.TTL = fmt.Sprintf("%v", v)
 	}
 	if v, ok = metaAttrs["pipeline"]; ok {
 		meta.Pipeline = fmt.Sprintf("%v", v)
@@ -2260,13 +2200,8 @@ func main() {
 		if len(config.FileNamespaces) == 0 {
 			errorLog.Fatalln("File indexing is ON but no file namespaces are configured")
 		}
-		for _, namespace := range config.FileNamespaces {
-			if err := ensureFileMapping(elasticClient, namespace, config); err != nil {
-				panic(err)
-			}
-			if config.ElasticMajorVersion >= 5 {
-				break
-			}
+		if err := ensureFileMapping(elasticClient); err != nil {
+			panic(err)
 		}
 	}
 
