@@ -54,7 +54,7 @@ var patchNamespaces map[string]bool
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
-const version = "4.0.0"
+const version = "4.0.1"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
