@@ -32,7 +32,6 @@ type MapperPluginOutput struct {
 	Parent          string                 // the parent id to use
 	Version         int64                  // the version of the document
 	VersionType     string                 // the version type of the document (internal, external, external_gte)
-	TTL             string                 // the expiration time
 	Pipeline        string                 // the pipeline to index with
 	RetryOnConflict int                    // how many times to retry updates before failing
 }

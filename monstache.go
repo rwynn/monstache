@@ -206,9 +206,7 @@ type configOptions struct {
 	Workers                  stringargs
 	Worker                   string
 	DirectReadNs             stringargs `toml:"direct-read-namespaces"`
-	DirectReadLimit          int        `toml:"direct-read-limit"`
 	DirectReadBatchSize      int        `toml:"direct-read-batch-size"`
-	DirectReadersPerCol      int        `toml:"direct-readers-per-col"`
 	MapperPluginPath         string     `toml:"mapper-plugin-path"`
 	EnableHTTPServer         bool       `toml:"enable-http-server"`
 	HTTPServerAddr           string     `toml:"http-server-addr"`
@@ -843,9 +841,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.FailFast, "fail-fast", false, "True to exit if a single _bulk request fails")
 	flag.BoolVar(&config.IndexOplogTime, "index-oplog-time", false, "True to add date/time information from the oplog to each document when indexing")
 	flag.BoolVar(&config.ExitAfterDirectReads, "exit-after-direct-reads", false, "True to exit the program after reading directly from the configured namespaces")
-	flag.IntVar(&config.DirectReadLimit, "direct-read-limit", 0, "Maximum number of documents to fetch in each direct read query")
 	flag.IntVar(&config.DirectReadBatchSize, "direct-read-batch-size", 0, "The batch size to set on direct read queries")
-	flag.IntVar(&config.DirectReadersPerCol, "direct-readers-per-col", 0, "Number of goroutines directly reading a single collection")
 	flag.StringVar(&config.MergePatchAttr, "merge-patch-attribute", "", "Attribute to store json-patch values under")
 	flag.StringVar(&config.ResumeName, "resume-name", "", "Name under which to load/store the resume state. Defaults to 'default'")
 	flag.StringVar(&config.ClusterName, "cluster-name", "", "Name of the monstache process cluster")
@@ -1001,14 +997,8 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.MaxFileSize == 0 {
 			config.MaxFileSize = tomlConfig.MaxFileSize
 		}
-		if config.DirectReadLimit == 0 {
-			config.DirectReadLimit = tomlConfig.DirectReadLimit
-		}
 		if config.DirectReadBatchSize == 0 {
 			config.DirectReadBatchSize = tomlConfig.DirectReadBatchSize
-		}
-		if config.DirectReadersPerCol == 0 {
-			config.DirectReadersPerCol = tomlConfig.DirectReadersPerCol
 		}
 		if config.DroppedDatabases && !tomlConfig.DroppedDatabases {
 			config.DroppedDatabases = false
@@ -2298,9 +2288,7 @@ func main() {
 		BufferDuration:      gtmBufferDuration,
 		BufferSize:          config.GtmSettings.BufferSize,
 		DirectReadNs:        config.DirectReadNs,
-		DirectReadLimit:     config.DirectReadLimit,
 		DirectReadBatchSize: config.DirectReadBatchSize,
-		DirectReadersPerCol: config.DirectReadersPerCol,
 		DirectReadFilter:    directReadFilter,
 	}
 
