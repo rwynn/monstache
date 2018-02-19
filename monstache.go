@@ -48,8 +48,9 @@ var errorLog = log.New(os.Stderr, "ERROR ", log.Flags())
 var mapperPlugin func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error)
 var mapEnvs map[string]*executionEnv
 var mapIndexTypes map[string]*indexTypeMapping
-var fileNamespaces map[string]bool
-var patchNamespaces map[string]bool
+var fileNamespaces map[string]bool = make(map[string]bool)
+var patchNamespaces map[string]bool = make(map[string]bool)
+var tmNamespaces map[string]bool = make(map[string]bool)
 
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
@@ -210,6 +211,10 @@ type configOptions struct {
 	MapperPluginPath         string     `toml:"mapper-plugin-path"`
 	EnableHTTPServer         bool       `toml:"enable-http-server"`
 	HTTPServerAddr           string     `toml:"http-server-addr"`
+	TimeMachineNamespaces    stringargs `toml:"time-machine-namespaces"`
+	TimeMachineIndexPrefix   string     `toml:"time-machine-index-prefix"`
+	TimeMachineIndexSuffix   string     `toml:"time-machine-index-suffix"`
+	TimeMachineDirectReads   bool       `toml:"time-machine-direct-reads"`
 }
 
 func (args *stringargs) String() string {
@@ -850,6 +855,10 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
 	flag.StringVar(&config.NsExcludeRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
 	flag.Var(&config.DirectReadNs, "direct-read-namespace", "A list of direct read namespaces")
+	flag.Var(&config.TimeMachineNamespaces, "time-machine-namespace", "A list of direct read namespaces")
+	flag.StringVar(&config.TimeMachineIndexPrefix, "time-machine-index-prefix", "", "A prefix to preprend to time machine indexes")
+	flag.StringVar(&config.TimeMachineIndexSuffix, "time-machine-index-suffix", "", "A suffix to append to time machine indexes")
+	flag.BoolVar(&config.TimeMachineDirectReads, "time-machine-direct-reads", false, "True to index the results of direct reads into the any time machine indexes")
 	flag.Var(&config.ElasticUrls, "elasticsearch-url", "A list of Elasticsearch URLs")
 	flag.Var(&config.FileNamespaces, "file-namespace", "A list of file namespaces")
 	flag.Var(&config.PatchNamespaces, "patch-namespace", "A list of patch namespaces")
@@ -1073,7 +1082,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 			if len(config.FileNamespaces) == 0 {
 				config.FileNamespaces = tomlConfig.FileNamespaces
 			}
-			config.LoadGridFsConfig()
+			config.loadGridFsConfig()
 		}
 		if config.Worker == "" {
 			config.Worker = tomlConfig.Worker
@@ -1088,7 +1097,20 @@ func (config *configOptions) loadConfigFile() *configOptions {
 			if len(config.PatchNamespaces) == 0 {
 				config.PatchNamespaces = tomlConfig.PatchNamespaces
 			}
-			config.LoadPatchNamespaces()
+			config.loadPatchNamespaces()
+		}
+		if len(config.TimeMachineNamespaces) == 0 {
+			config.TimeMachineNamespaces = tomlConfig.TimeMachineNamespaces
+			config.loadTimeMachineNamespaces()
+		}
+		if config.TimeMachineIndexPrefix == "" {
+			config.TimeMachineIndexPrefix = tomlConfig.TimeMachineIndexPrefix
+		}
+		if config.TimeMachineIndexSuffix == "" {
+			config.TimeMachineIndexSuffix = tomlConfig.TimeMachineIndexSuffix
+		}
+		if !config.TimeMachineDirectReads {
+			config.TimeMachineDirectReads = tomlConfig.TimeMachineDirectReads
 		}
 		if len(config.DirectReadNs) == 0 {
 			config.DirectReadNs = tomlConfig.DirectReadNs
@@ -1152,16 +1174,21 @@ func (config *configOptions) setupLogging() *configOptions {
 	return config
 }
 
-func (config *configOptions) LoadPatchNamespaces() *configOptions {
-	patchNamespaces = make(map[string]bool)
+func (config *configOptions) loadTimeMachineNamespaces() *configOptions {
+	for _, namespace := range config.TimeMachineNamespaces {
+		tmNamespaces[namespace] = true
+	}
+	return config
+}
+
+func (config *configOptions) loadPatchNamespaces() *configOptions {
 	for _, namespace := range config.PatchNamespaces {
 		patchNamespaces[namespace] = true
 	}
 	return config
 }
 
-func (config *configOptions) LoadGridFsConfig() *configOptions {
-	fileNamespaces = make(map[string]bool)
+func (config *configOptions) loadGridFsConfig() *configOptions {
 	for _, namespace := range config.FileNamespaces {
 		fileNamespaces[namespace] = true
 	}
@@ -1246,6 +1273,12 @@ func (config *configOptions) setDefaults() *configOptions {
 	}
 	if config.StatsIndexFormat == "" {
 		config.StatsIndexFormat = "monstache.stats.2006-01-02"
+	}
+	if config.TimeMachineIndexPrefix == "" {
+		config.TimeMachineIndexPrefix = "log"
+	}
+	if config.TimeMachineIndexSuffix == "" {
+		config.TimeMachineIndexSuffix = "2006-01-02"
 	}
 	return config
 }
@@ -1508,6 +1541,46 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 			errorLog.Printf("Unable to save routing info: %s", e)
 		}
 	}
+
+	if tmNamespaces[op.Namespace] {
+		if op.IsSourceOplog() || config.TimeMachineDirectReads {
+			t := time.Now().UTC()
+			tmIndex := func(idx string) string {
+				pre, suf := config.TimeMachineIndexPrefix, config.TimeMachineIndexSuffix
+				tmFormat := strings.Join([]string{pre, idx, suf}, ".")
+				return t.Format(tmFormat)
+			}
+			data := make(map[string]interface{})
+			for k, v := range op.Data {
+				data[k] = v
+			}
+			data["_source_id"] = objectID
+			if config.IndexOplogTime == false {
+				secs := int64(op.Timestamp >> 32)
+				t := time.Unix(secs, 0).UTC()
+				data["_oplog_ts"] = op.Timestamp
+				data["_oplog_date"] = t.Format("2006/01/02 15:04:05")
+			}
+			req = elastic.NewBulkIndexRequest()
+			req.Index(tmIndex(indexType.Index))
+			req.Type(indexType.Type)
+			req.Doc(data)
+			if meta.Index != "" {
+				req.Index(tmIndex(meta.Index))
+			}
+			if meta.Type != "" {
+				req.Type(meta.Type)
+			}
+			if meta.Pipeline != "" {
+				req.Pipeline(meta.Pipeline)
+			}
+			if ingestAttachment {
+				req.Pipeline("attachment")
+			}
+			bulk.Add(req)
+		}
+	}
+
 	return
 }
 
@@ -2110,6 +2183,7 @@ func main() {
 		fmt.Println(version)
 		os.Exit(0)
 	}
+	config.loadTimeMachineNamespaces().loadPatchNamespaces().loadGridFsConfig()
 	config.loadConfigFile().setDefaults()
 	if config.Print {
 		config.dump()
