@@ -1564,6 +1564,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 			req = elastic.NewBulkIndexRequest()
 			req.Index(tmIndex(indexType.Index))
 			req.Type(indexType.Type)
+			req.Routing(objectID)
 			req.Doc(data)
 			if meta.Index != "" {
 				req.Index(tmIndex(meta.Index))
