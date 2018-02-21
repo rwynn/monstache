@@ -56,7 +56,7 @@ var routingNamespaces map[string]bool = make(map[string]bool)
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
-const version = "4.1.1"
+const version = "4.1.2"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 10
