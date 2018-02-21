@@ -46,11 +46,12 @@ var traceLog = log.New(os.Stdout, "TRACE ", log.Flags())
 var errorLog = log.New(os.Stderr, "ERROR ", log.Flags())
 
 var mapperPlugin func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error)
-var mapEnvs map[string]*executionEnv
-var mapIndexTypes map[string]*indexTypeMapping
+var mapEnvs map[string]*executionEnv = make(map[string]*executionEnv)
+var mapIndexTypes map[string]*indexTypeMapping = make(map[string]*indexTypeMapping)
 var fileNamespaces map[string]bool = make(map[string]bool)
 var patchNamespaces map[string]bool = make(map[string]bool)
 var tmNamespaces map[string]bool = make(map[string]bool)
+var routingNamespaces map[string]bool = make(map[string]bool)
 
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
@@ -67,14 +68,14 @@ const typeFromFuture string = "_doc"
 type stringargs []string
 
 type executionEnv struct {
-	VM      *otto.Otto
-	Script  string
-	Routing bool
+	VM     *otto.Otto
+	Script string
 }
 
 type javascript struct {
 	Namespace string
 	Script    string
+	Path      string
 	Routing   bool
 }
 
@@ -216,6 +217,7 @@ type configOptions struct {
 	TimeMachineIndexPrefix   string     `toml:"time-machine-index-prefix"`
 	TimeMachineIndexSuffix   string     `toml:"time-machine-index-suffix"`
 	TimeMachineDirectReads   bool       `toml:"time-machine-direct-reads"`
+	RoutingNamespaces        stringargs `toml:"routing-namespaces"`
 }
 
 func (args *stringargs) String() string {
@@ -367,16 +369,15 @@ func (config *configOptions) testElasticsearchConn(client *elastic.Client) (err 
 }
 
 func deleteIndexes(client *elastic.Client, db string, config *configOptions) (err error) {
-	ctx := context.Background()
 	for ns, m := range mapIndexTypes {
 		dbCol := strings.SplitN(ns, ".", 2)
 		if dbCol[0] == db {
-			if _, err = client.DeleteIndex(m.Index + "*").Do(ctx); err != nil {
+			if _, err = client.DeleteIndex(m.Index + "*").Do(context.Background()); err != nil {
 				return
 			}
 		}
 	}
-	_, err = client.DeleteIndex(db + "*").Do(ctx)
+	_, err = client.DeleteIndex(db + "*").Do(context.Background())
 	return
 }
 
@@ -466,10 +467,8 @@ func defaultIndexTypeMapping(config *configOptions, op *gtm.Op) *indexTypeMappin
 
 func mapIndexType(config *configOptions, op *gtm.Op) *indexTypeMapping {
 	mapping := defaultIndexTypeMapping(config, op)
-	if mapIndexTypes != nil {
-		if m := mapIndexTypes[op.Namespace]; m != nil {
-			mapping = m
-		}
+	if m := mapIndexTypes[op.Namespace]; m != nil {
+		mapping = m
 	}
 	return mapping
 }
@@ -571,9 +570,6 @@ func deepExportMap(e map[string]interface{}) map[string]interface{} {
 }
 
 func mapDataJavascript(op *gtm.Op) error {
-	if mapEnvs == nil {
-		return nil
-	}
 	if env := mapEnvs[op.Namespace]; env != nil {
 		arg := convertMapJavascript(op.Data)
 		val, err := env.VM.Call("module.exports", arg, arg)
@@ -624,7 +620,7 @@ func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
 			if output.Passthrough == false {
 				op.Data = output.Document
 			}
-			var meta map[string]interface{}
+			meta := make(map[string]interface{})
 			if output.Index != "" {
 				meta["index"] = output.Index
 			}
@@ -908,6 +904,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
 	flag.StringVar(&config.NsExcludeRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
 	flag.Var(&config.DirectReadNs, "direct-read-namespace", "A list of direct read namespaces")
+	flag.Var(&config.RoutingNamespaces, "routing-namespace", "A list of namespaces that override routing information")
 	flag.Var(&config.TimeMachineNamespaces, "time-machine-namespace", "A list of direct read namespaces")
 	flag.StringVar(&config.TimeMachineIndexPrefix, "time-machine-index-prefix", "", "A prefix to preprend to time machine indexes")
 	flag.StringVar(&config.TimeMachineIndexSuffix, "time-machine-index-suffix", "", "A suffix to append to time machine indexes")
@@ -924,7 +921,6 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 
 func (config *configOptions) loadIndexTypes() {
 	if config.Mapping != nil {
-		mapIndexTypes = make(map[string]*indexTypeMapping)
 		for _, m := range config.Mapping {
 			if m.Namespace != "" && m.Index != "" && m.Type != "" {
 				mapIndexTypes[m.Namespace] = &indexTypeMapping{
@@ -940,32 +936,40 @@ func (config *configOptions) loadIndexTypes() {
 }
 
 func (config *configOptions) loadScripts() {
-	if config.Script != nil {
-		mapEnvs = make(map[string]*executionEnv)
-		for _, s := range config.Script {
-			if s.Namespace != "" && s.Script != "" {
-				env := &executionEnv{
-					VM:      otto.New(),
-					Script:  s.Script,
-					Routing: s.Routing,
-				}
-				if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
-					panic(err)
-				}
-				if _, err := env.VM.Run(env.Script); err != nil {
-					panic(err)
-				}
-				val, err := env.VM.Run("module.exports")
-				if err != nil {
-					panic(err)
-				} else if !val.IsFunction() {
-					panic("module.exports must be a function")
-
-				}
-				mapEnvs[s.Namespace] = env
-			} else {
-				panic("Scripts must specify namespace and script attributes")
+	for _, s := range config.Script {
+		if s.Namespace != "" && (s.Script != "" || s.Path != "") {
+			if s.Path != "" && s.Script != "" {
+				panic("Scripts must specify path or script but not both")
 			}
+			if s.Path != "" {
+				if script, err := ioutil.ReadFile(s.Path); err == nil {
+					s.Script = string(script[:])
+				} else {
+					errorLog.Panicf("Unable to load script at path %s: %s", s.Path, err)
+				}
+			}
+			env := &executionEnv{
+				VM:     otto.New(),
+				Script: s.Script,
+			}
+			if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
+				panic(err)
+			}
+			if _, err := env.VM.Run(env.Script); err != nil {
+				panic(err)
+			}
+			val, err := env.VM.Run("module.exports")
+			if err != nil {
+				panic(err)
+			} else if !val.IsFunction() {
+				panic("module.exports must be a function")
+			}
+			mapEnvs[s.Namespace] = env
+			if s.Routing {
+				routingNamespaces[s.Namespace] = true
+			}
+		} else {
+			panic("Scripts must specify namespace and path or script attributes")
 		}
 	}
 }
@@ -1152,6 +1156,10 @@ func (config *configOptions) loadConfigFile() *configOptions {
 			}
 			config.loadPatchNamespaces()
 		}
+		if len(config.RoutingNamespaces) == 0 {
+			config.RoutingNamespaces = tomlConfig.RoutingNamespaces
+			config.loadRoutingNamespaces()
+		}
 		if len(config.TimeMachineNamespaces) == 0 {
 			config.TimeMachineNamespaces = tomlConfig.TimeMachineNamespaces
 			config.loadTimeMachineNamespaces()
@@ -1223,6 +1231,13 @@ func (config *configOptions) setupLogging() *configOptions {
 		if logs.Stats != "" {
 			statsLog.SetOutput(config.newLogger(logs.Stats))
 		}
+	}
+	return config
+}
+
+func (config *configOptions) loadRoutingNamespaces() *configOptions {
+	for _, namespace := range config.RoutingNamespaces {
+		routingNamespaces[namespace] = true
 	}
 	return config
 }
@@ -1777,9 +1792,6 @@ func getIndexMeta(session *mgo.Session, namespace, id string) (meta *indexingMet
 }
 
 func loadBuiltinFunctions(s *mgo.Session) {
-	if mapEnvs == nil {
-		return
-	}
 	for ns, env := range mapEnvs {
 		var fa *findConf
 		fa = &findConf{
@@ -2036,10 +2048,8 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 
 func doDelete(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
 	objectID, indexType, meta := opIDToString(op), mapIndexType(config, op), &indexingMeta{}
-	if mapEnvs != nil {
-		if env := mapEnvs[op.Namespace]; env != nil && env.Routing {
-			meta = getIndexMeta(mongo, op.Namespace, objectID)
-		}
+	if routingNamespaces[op.Namespace] {
+		meta = getIndexMeta(mongo, op.Namespace, objectID)
 	}
 	req := elastic.NewBulkDeleteRequest()
 	req.Id(objectID)
@@ -2244,8 +2254,12 @@ func main() {
 		fmt.Println(version)
 		os.Exit(0)
 	}
-	config.loadTimeMachineNamespaces().loadPatchNamespaces().loadGridFsConfig()
-	config.loadConfigFile().setDefaults()
+	config.loadTimeMachineNamespaces()
+	config.loadRoutingNamespaces()
+	config.loadPatchNamespaces()
+	config.loadGridFsConfig()
+	config.loadConfigFile()
+	config.setDefaults()
 	if config.Print {
 		config.dump()
 		os.Exit(0)
