@@ -713,36 +713,42 @@ func filterWithRegex(regex string) gtm.OpFilter {
 
 func filterWithPlugin() gtm.OpFilter {
 	return func(op *gtm.Op) bool {
-		input := &monstachemap.MapperPluginInput{
-			Document:   op.Data,
-			Namespace:  op.Namespace,
-			Database:   op.GetDatabase(),
-			Collection: op.GetCollection(),
-			Operation:  op.Operation,
+		var keep bool = true
+		if (op.IsInsert() || op.IsUpdate()) && op.Data != nil {
+			keep = false
+			input := &monstachemap.MapperPluginInput{
+				Document:   op.Data,
+				Namespace:  op.Namespace,
+				Database:   op.GetDatabase(),
+				Collection: op.GetCollection(),
+				Operation:  op.Operation,
+			}
+			if ok, err := filterPlugin(input); err == nil {
+				keep = ok
+			} else {
+				errorLog.Println(err)
+			}
 		}
-		if ok, err := filterPlugin(input); err == nil {
-			return ok
-		} else {
-			errorLog.Println(err)
-			return false
-		}
+		return keep
 	}
 }
 
 func filterWithScript() gtm.OpFilter {
 	return func(op *gtm.Op) bool {
 		var keep bool = true
-		if env := filterEnvs[op.Namespace]; env != nil {
-			keep = false
-			arg := convertMapJavascript(op.Data)
-			val, err := env.VM.Call("module.exports", arg, arg)
-			if err != nil {
-				errorLog.Println(err)
-			} else {
-				if ok, err := val.ToBoolean(); err == nil {
-					keep = ok
-				} else {
+		if (op.IsInsert() || op.IsUpdate()) && op.Data != nil {
+			if env := filterEnvs[op.Namespace]; env != nil {
+				keep = false
+				arg := convertMapJavascript(op.Data)
+				val, err := env.VM.Call("module.exports", arg, arg)
+				if err != nil {
 					errorLog.Println(err)
+				} else {
+					if ok, err := val.ToBoolean(); err == nil {
+						keep = ok
+					} else {
+						errorLog.Println(err)
+					}
 				}
 			}
 		}
