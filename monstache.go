@@ -784,8 +784,9 @@ func filterWithPlugin() gtm.OpFilter {
 
 func filterWithScript() gtm.OpFilter {
 	return func(op *gtm.Op) bool {
-		var keep bool
+		var keep bool = true
 		if env := filterEnvs[op.Namespace]; env != nil {
+			keep = false
 			arg := convertMapJavascript(op.Data)
 			val, err := env.VM.Call("module.exports", arg, arg)
 			if err != nil {
