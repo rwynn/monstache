@@ -46,7 +46,9 @@ var traceLog = log.New(os.Stdout, "TRACE ", log.Flags())
 var errorLog = log.New(os.Stderr, "ERROR ", log.Flags())
 
 var mapperPlugin func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error)
+var filterPlugin func(*monstachemap.MapperPluginInput) (bool, error)
 var mapEnvs map[string]*executionEnv = make(map[string]*executionEnv)
+var filterEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var mapIndexTypes map[string]*indexTypeMapping = make(map[string]*indexTypeMapping)
 var fileNamespaces map[string]bool = make(map[string]bool)
 var patchNamespaces map[string]bool = make(map[string]bool)
@@ -203,6 +205,7 @@ type configOptions struct {
 	MaxFileSize              int64 `toml:"max-file-size"`
 	ConfigFile               string
 	Script                   []javascript
+	Filter                   []javascript
 	Mapping                  []indexTypeMapping
 	FileNamespaces           stringargs `toml:"file-namespaces"`
 	PatchNamespaces          stringargs `toml:"patch-namespaces"`
@@ -761,6 +764,44 @@ func filterWithRegex(regex string) gtm.OpFilter {
 	}
 }
 
+func filterWithPlugin() gtm.OpFilter {
+	return func(op *gtm.Op) bool {
+		input := &monstachemap.MapperPluginInput{
+			Document:   op.Data,
+			Namespace:  op.Namespace,
+			Database:   op.GetDatabase(),
+			Collection: op.GetCollection(),
+			Operation:  op.Operation,
+		}
+		if ok, err := filterPlugin(input); err == nil {
+			return ok
+		} else {
+			errorLog.Println(err)
+			return false
+		}
+	}
+}
+
+func filterWithScript() gtm.OpFilter {
+	return func(op *gtm.Op) bool {
+		var keep bool
+		if env := filterEnvs[op.Namespace]; env != nil {
+			arg := convertMapJavascript(op.Data)
+			val, err := env.VM.Call("module.exports", arg, arg)
+			if err != nil {
+				errorLog.Println(err)
+			} else {
+				if ok, err := val.ToBoolean(); err == nil {
+					keep = ok
+				} else {
+					errorLog.Println(err)
+				}
+			}
+		}
+		return keep
+	}
+}
+
 func filterInverseWithRegex(regex string) gtm.OpFilter {
 	var invalidNameSpace = regexp.MustCompile(regex)
 	return func(op *gtm.Op) bool {
@@ -935,6 +976,42 @@ func (config *configOptions) loadIndexTypes() {
 	}
 }
 
+func (config *configOptions) loadFilters() {
+	for _, s := range config.Filter {
+		if s.Namespace != "" && (s.Script != "" || s.Path != "") {
+			if s.Path != "" && s.Script != "" {
+				panic("Scripts must specify path or script but not both")
+			}
+			if s.Path != "" {
+				if script, err := ioutil.ReadFile(s.Path); err == nil {
+					s.Script = string(script[:])
+				} else {
+					errorLog.Panicf("Unable to load script at path %s: %s", s.Path, err)
+				}
+			}
+			env := &executionEnv{
+				VM:     otto.New(),
+				Script: s.Script,
+			}
+			if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
+				panic(err)
+			}
+			if _, err := env.VM.Run(env.Script); err != nil {
+				panic(err)
+			}
+			val, err := env.VM.Run("module.exports")
+			if err != nil {
+				panic(err)
+			} else if !val.IsFunction() {
+				panic("module.exports must be a function")
+			}
+			filterEnvs[s.Namespace] = env
+		} else {
+			panic("Scripts must specify namespace and path or script attributes")
+		}
+	}
+}
+
 func (config *configOptions) loadScripts() {
 	for _, s := range config.Script {
 		if s.Namespace != "" && (s.Script != "" || s.Path != "") {
@@ -989,6 +1066,16 @@ func (config *configOptions) loadPlugins() *configOptions {
 			mapperPlugin = mapper.(func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error))
 		default:
 			errorLog.Panicf("Plugin 'Map' function must be typed %T", mapperPlugin)
+		}
+		filter, err := p.Lookup("Filter")
+		if err == nil {
+			switch filter.(type) {
+			case func(*monstachemap.MapperPluginInput) (bool, error):
+				filterPlugin = mapper.(func(*monstachemap.MapperPluginInput) (bool, error))
+			default:
+				errorLog.Panicf("Plugin 'Filter' function must be typed %T", filterPlugin)
+			}
+
 		}
 	}
 	return config
@@ -1193,6 +1280,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		config.GtmSettings = tomlConfig.GtmSettings
 		config.Logs = tomlConfig.Logs
 		tomlConfig.loadScripts()
+		tomlConfig.loadFilters()
 		tomlConfig.loadIndexTypes()
 	}
 	return config
@@ -2351,6 +2439,7 @@ func main() {
 
 	var nsFilter, filter, directReadFilter gtm.OpFilter
 	filterChain := []gtm.OpFilter{notMonstache, notSystem, notChunks}
+	filterArray := []gtm.OpFilter{}
 	if config.isSharded() {
 		filterChain = append(filterChain, notConfig)
 	}
@@ -2365,12 +2454,18 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		filter = workerFilter
-		directReadFilter = workerFilter
+		filterArray = append(filterArray, workerFilter)
 	} else if config.Workers != nil {
 		panic("Workers configured but this worker is undefined. worker must be set to one of the workers.")
 	}
+	if filterPlugin != nil {
+		filterArray = append(filterArray, filterWithPlugin())
+	} else if len(filterEnvs) > 0 {
+		filterArray = append(filterArray, filterWithScript())
+	}
 	nsFilter = gtm.ChainOpFilters(filterChain...)
+	filter = gtm.ChainOpFilters(filterArray...)
+	directReadFilter = gtm.ChainOpFilters(filterArray...)
 	var oplogDatabaseName, oplogCollectionName, cursorTimeout *string
 	if config.MongoOpLogDatabaseName != "" {
 		oplogDatabaseName = &config.MongoOpLogDatabaseName
