@@ -368,25 +368,25 @@ func (config *configOptions) testElasticsearchConn(client *elastic.Client) (err 
 }
 
 func deleteIndexes(client *elastic.Client, db string, config *configOptions) (err error) {
+	index := strings.ToLower(db + "*")
 	for ns, m := range mapIndexTypes {
 		dbCol := strings.SplitN(ns, ".", 2)
 		if dbCol[0] == db {
-			if _, err = client.DeleteIndex(m.Index + "*").Do(context.Background()); err != nil {
-				return
-			}
+			index = strings.ToLower(m.Index + "*")
+			break
 		}
 	}
-	_, err = client.DeleteIndex(db + "*").Do(context.Background())
+	_, err = client.DeleteIndex(index).Do(context.Background())
 	return
 }
 
 func deleteIndex(client *elastic.Client, namespace string, config *configOptions) (err error) {
 	ctx := context.Background()
-	esIndex := namespace
+	index := strings.ToLower(namespace)
 	if m := mapIndexTypes[namespace]; m != nil {
-		esIndex = m.Index
+		index = strings.ToLower(m.Index)
 	}
-	_, err = client.DeleteIndex(esIndex).Do(ctx)
+	_, err = client.DeleteIndex(index).Do(ctx)
 	return err
 }
 
@@ -413,7 +413,7 @@ func defaultIndexTypeMapping(config *configOptions, op *gtm.Op) *indexTypeMappin
 	}
 	return &indexTypeMapping{
 		Namespace: op.Namespace,
-		Index:     op.Namespace,
+		Index:     strings.ToLower(op.Namespace),
 		Type:      typeName,
 	}
 }
@@ -622,10 +622,6 @@ func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
 		data["_oplog_date"] = t.Format("2006/01/02 15:04:05")
 	}
 	delete(data, "_id")
-	delete(data, "_type")
-	delete(data, "_index")
-	delete(data, "_score")
-	delete(data, "_source")
 	delete(data, "_meta_monstache")
 }
 
@@ -920,7 +916,7 @@ func (config *configOptions) loadIndexTypes() {
 			if m.Namespace != "" && m.Index != "" && m.Type != "" {
 				mapIndexTypes[m.Namespace] = &indexTypeMapping{
 					Namespace: m.Namespace,
-					Index:     m.Index,
+					Index:     strings.ToLower(m.Index),
 					Type:      m.Type,
 				}
 			} else {
@@ -1658,7 +1654,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 			tmIndex := func(idx string) string {
 				pre, suf := config.TimeMachineIndexPrefix, config.TimeMachineIndexSuffix
 				tmFormat := strings.Join([]string{pre, idx, suf}, ".")
-				return t.Format(tmFormat)
+				return strings.ToLower(t.Format(tmFormat))
 			}
 			data := make(map[string]interface{})
 			for k, v := range op.Data {
@@ -1717,7 +1713,7 @@ func doIndexStats(config *configOptions, bulkStats *elastic.BulkProcessor, stats
 	}
 	doc["Pid"] = os.Getpid()
 	doc["Stats"] = stats
-	index := t.Format(config.StatsIndexFormat)
+	index := strings.ToLower(t.Format(config.StatsIndexFormat))
 	typeName := "stats"
 	if config.useTypeFromFuture() {
 		typeName = typeFromFuture
@@ -1811,7 +1807,7 @@ func getIndexMeta(session *mgo.Session, namespace, id string) (meta *indexingMet
 		meta.Routing = doc["routing"].(string)
 	}
 	if doc["index"] != nil {
-		meta.Index = doc["index"].(string)
+		meta.Index = strings.ToLower(doc["index"].(string))
 	}
 	if doc["type"] != nil {
 		meta.Type = doc["type"].(string)
