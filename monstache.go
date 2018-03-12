@@ -2392,7 +2392,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		filterArray = append(filterArray, workerFilter)
+		filterChain = append(filterChain, workerFilter)
 	} else if config.Workers != nil {
 		panic("Workers configured but this worker is undefined. worker must be set to one of the workers.")
 	}
