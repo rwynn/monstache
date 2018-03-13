@@ -212,6 +212,7 @@ type configOptions struct {
 	Worker                   string
 	DirectReadNs             stringargs `toml:"direct-read-namespaces"`
 	DirectReadBatchSize      int        `toml:"direct-read-batch-size"`
+	DirectReadCursors        int        `toml:"direct-read-cursors"`
 	MapperPluginPath         string     `toml:"mapper-plugin-path"`
 	EnableHTTPServer         bool       `toml:"enable-http-server"`
 	HTTPServerAddr           string     `toml:"http-server-addr"`
@@ -887,6 +888,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.IndexOplogTime, "index-oplog-time", false, "True to add date/time information from the oplog to each document when indexing")
 	flag.BoolVar(&config.ExitAfterDirectReads, "exit-after-direct-reads", false, "True to exit the program after reading directly from the configured namespaces")
 	flag.IntVar(&config.DirectReadBatchSize, "direct-read-batch-size", 0, "The batch size to set on direct read queries")
+	flag.IntVar(&config.DirectReadCursors, "direct-read-cursors", 0, "The number of cursors to request for parallel collection scans")
 	flag.StringVar(&config.MergePatchAttr, "merge-patch-attribute", "", "Attribute to store json-patch values under")
 	flag.StringVar(&config.ResumeName, "resume-name", "", "Name under which to load/store the resume state. Defaults to 'default'")
 	flag.StringVar(&config.ClusterName, "cluster-name", "", "Name of the monstache process cluster")
@@ -1102,6 +1104,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.DirectReadBatchSize == 0 {
 			config.DirectReadBatchSize = tomlConfig.DirectReadBatchSize
+		}
+		if config.DirectReadCursors == 0 {
+			config.DirectReadCursors = tomlConfig.DirectReadCursors
 		}
 		if config.DroppedDatabases && !tomlConfig.DroppedDatabases {
 			config.DroppedDatabases = false
@@ -2476,6 +2481,7 @@ func main() {
 		BufferSize:          config.GtmSettings.BufferSize,
 		DirectReadNs:        config.DirectReadNs,
 		DirectReadBatchSize: config.DirectReadBatchSize,
+		DirectReadCursors:   config.DirectReadCursors,
 		DirectReadFilter:    directReadFilter,
 	}
 
