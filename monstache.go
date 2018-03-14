@@ -427,7 +427,12 @@ func ensureFileMappingMapperAttachment(conn *elastic.Client, namespace string, c
 	dbCol := strings.SplitN(namespace, ".", 2)
 	esIndex, esType := namespace, dbCol[1]
 	if m := mapIndexTypes[namespace]; m != nil {
-		esIndex, esType = m.Index, m.Type
+		if m.Index != "" {
+			esIndex = m.Index
+		}
+		if m.Type != "" {
+			esType = m.Type
+		}
 	}
 	props := map[string]interface{}{
 		"properties": map[string]interface{}{
