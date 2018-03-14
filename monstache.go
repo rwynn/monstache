@@ -377,7 +377,9 @@ func deleteIndexes(client *elastic.Client, db string, config *configOptions) (er
 	for ns, m := range mapIndexTypes {
 		dbCol := strings.SplitN(ns, ".", 2)
 		if dbCol[0] == db {
-			index = strings.ToLower(m.Index + "*")
+			if m.Index != "" {
+				index = strings.ToLower(m.Index + "*")
+			}
 			break
 		}
 	}
@@ -389,7 +391,9 @@ func deleteIndex(client *elastic.Client, namespace string, config *configOptions
 	ctx := context.Background()
 	index := strings.ToLower(namespace)
 	if m := mapIndexTypes[namespace]; m != nil {
-		index = strings.ToLower(m.Index)
+		if m.Index != "" {
+			index = strings.ToLower(m.Index)
+		}
 	}
 	_, err = client.DeleteIndex(index).Do(ctx)
 	return err
@@ -472,7 +476,12 @@ func defaultIndexTypeMapping(config *configOptions, op *gtm.Op) *indexTypeMappin
 func mapIndexType(config *configOptions, op *gtm.Op) *indexTypeMapping {
 	mapping := defaultIndexTypeMapping(config, op)
 	if m := mapIndexTypes[op.Namespace]; m != nil {
-		mapping = m
+		if m.Index != "" {
+			mapping.Index = m.Index
+		}
+		if m.Type != "" {
+			mapping.Type = m.Type
+		}
 	}
 	return mapping
 }
@@ -968,14 +977,14 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 func (config *configOptions) loadIndexTypes() {
 	if config.Mapping != nil {
 		for _, m := range config.Mapping {
-			if m.Namespace != "" && m.Index != "" && m.Type != "" {
+			if m.Namespace != "" && (m.Index != "" || m.Type != "") {
 				mapIndexTypes[m.Namespace] = &indexTypeMapping{
 					Namespace: m.Namespace,
 					Index:     strings.ToLower(m.Index),
 					Type:      m.Type,
 				}
 			} else {
-				panic("Mappings must specify namespace, index, and type attributes")
+				panic("Mappings must specify namespace and at least one of index and type")
 			}
 		}
 	}
@@ -2548,6 +2557,7 @@ func main() {
 		DirectReadBatchSize: config.DirectReadBatchSize,
 		DirectReadCursors:   config.DirectReadCursors,
 		DirectReadFilter:    directReadFilter,
+		Log:                 infoLog,
 	}
 
 	gtmCtx := gtm.StartMulti(mongos, gtmOpts)
