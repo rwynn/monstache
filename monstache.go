@@ -501,6 +501,9 @@ func deepExportValue(a interface{}) (b interface{}) {
 	switch t := a.(type) {
 	case otto.Value:
 		ex, err := t.Export()
+		if t.Class() == "Date" {
+			ex, err = time.Parse("Mon, 2 Jan 2006 15:04:05 MST", t.String())
+		}
 		if err == nil {
 			b = deepExportValue(ex)
 		} else {
@@ -533,28 +536,32 @@ func deepExportMap(e map[string]interface{}) map[string]interface{} {
 }
 
 func mapDataJavascript(op *gtm.Op) error {
-	if env := mapEnvs[op.Namespace]; env != nil {
-		arg := convertMapJavascript(op.Data)
-		val, err := env.VM.Call("module.exports", arg, arg)
-		if err != nil {
-			return err
-		}
-		if strings.ToLower(val.Class()) == "object" {
-			data, err := val.Export()
+	names := []string{"", op.Namespace}
+	for _, name := range names {
+		if env := mapEnvs[name]; env != nil {
+			arg := convertMapJavascript(op.Data)
+			val, err := env.VM.Call("module.exports", arg, arg, op.Namespace)
 			if err != nil {
 				return err
-			} else if data == val {
-				return errors.New("Exported function must return an object")
-			} else {
-				dm := data.(map[string]interface{})
-				op.Data = deepExportMap(dm)
 			}
-		} else {
-			indexed, err := val.ToBoolean()
-			if err != nil {
-				return err
-			} else if !indexed {
-				op.Data = nil
+			if strings.ToLower(val.Class()) == "object" {
+				data, err := val.Export()
+				if err != nil {
+					return err
+				} else if data == val {
+					return errors.New("Exported function must return an object")
+				} else {
+					dm := data.(map[string]interface{})
+					op.Data = deepExportMap(dm)
+				}
+			} else {
+				indexed, err := val.ToBoolean()
+				if err != nil {
+					return err
+				} else if !indexed {
+					op.Data = nil
+					break
+				}
 			}
 		}
 	}
@@ -975,7 +982,7 @@ func (config *configOptions) loadFilters() {
 
 func (config *configOptions) loadScripts() {
 	for _, s := range config.Script {
-		if s.Namespace != "" && (s.Script != "" || s.Path != "") {
+		if s.Script != "" || s.Path != "" {
 			if s.Path != "" && s.Script != "" {
 				panic("Scripts must specify path or script but not both")
 			}
@@ -985,6 +992,9 @@ func (config *configOptions) loadScripts() {
 				} else {
 					errorLog.Panicf("Unable to load script at path %s: %s", s.Path, err)
 				}
+			}
+			if _, exists := mapEnvs[s.Namespace]; exists {
+				errorLog.Panicf("Multiple scripts with same namespace: %s", s.Namespace)
 			}
 			env := &executionEnv{
 				VM:     otto.New(),
@@ -1003,11 +1013,11 @@ func (config *configOptions) loadScripts() {
 				panic("module.exports must be a function")
 			}
 			mapEnvs[s.Namespace] = env
-			if s.Routing {
+			if s.Namespace != "" && s.Routing {
 				routingNamespaces[s.Namespace] = true
 			}
 		} else {
-			panic("Scripts must specify namespace and path or script attributes")
+			panic("Scripts must specify path or script")
 		}
 	}
 }
@@ -1971,9 +1981,11 @@ func (fc *findCall) setOptions(v otto.Value) (err error) {
 }
 
 func (fc *findCall) setDefaults() {
-	ns := strings.Split(fc.config.ns, ".")
-	fc.db = ns[0]
-	fc.col = ns[1]
+	if fc.config.ns != "" {
+		ns := strings.Split(fc.config.ns, ".")
+		fc.db = ns[0]
+		fc.col = ns[1]
+	}
 }
 
 func (fc *findCall) getCollection() *mgo.Collection {
@@ -2073,6 +2085,10 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 					fc.logError(err)
 					return
 				}
+			}
+			if fc.db == "" || fc.col == "" {
+				fc.logError(errors.New("Find call must specify db and collection"))
+				return
 			}
 			if err = fc.setQuery(call.Argument(0)); err == nil {
 				var result otto.Value
