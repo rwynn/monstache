@@ -67,6 +67,14 @@ const elasticMaxDocsDefault int = 1000
 const gtmChannelSizeDefault int = 512
 const typeFromFuture string = "_doc"
 
+type deleteStrategy int
+
+const (
+	statelessDeleteStrategy deleteStrategy = iota
+	statefulDeleteStrategy
+	ignoreDeleteStrategy
+)
+
 type stringargs []string
 
 type executionEnv struct {
@@ -211,17 +219,32 @@ type configOptions struct {
 	PatchNamespaces          stringargs `toml:"patch-namespaces"`
 	Workers                  stringargs
 	Worker                   string
-	DirectReadNs             stringargs `toml:"direct-read-namespaces"`
-	DirectReadBatchSize      int        `toml:"direct-read-batch-size"`
-	DirectReadCursors        int        `toml:"direct-read-cursors"`
-	MapperPluginPath         string     `toml:"mapper-plugin-path"`
-	EnableHTTPServer         bool       `toml:"enable-http-server"`
-	HTTPServerAddr           string     `toml:"http-server-addr"`
-	TimeMachineNamespaces    stringargs `toml:"time-machine-namespaces"`
-	TimeMachineIndexPrefix   string     `toml:"time-machine-index-prefix"`
-	TimeMachineIndexSuffix   string     `toml:"time-machine-index-suffix"`
-	TimeMachineDirectReads   bool       `toml:"time-machine-direct-reads"`
-	RoutingNamespaces        stringargs `toml:"routing-namespaces"`
+	DirectReadNs             stringargs     `toml:"direct-read-namespaces"`
+	DirectReadBatchSize      int            `toml:"direct-read-batch-size"`
+	DirectReadCursors        int            `toml:"direct-read-cursors"`
+	MapperPluginPath         string         `toml:"mapper-plugin-path"`
+	EnableHTTPServer         bool           `toml:"enable-http-server"`
+	HTTPServerAddr           string         `toml:"http-server-addr"`
+	TimeMachineNamespaces    stringargs     `toml:"time-machine-namespaces"`
+	TimeMachineIndexPrefix   string         `toml:"time-machine-index-prefix"`
+	TimeMachineIndexSuffix   string         `toml:"time-machine-index-suffix"`
+	TimeMachineDirectReads   bool           `toml:"time-machine-direct-reads"`
+	RoutingNamespaces        stringargs     `toml:"routing-namespaces"`
+	DeleteStrategy           deleteStrategy `toml:"delete-strategy"`
+}
+
+func (arg *deleteStrategy) String() string {
+	return fmt.Sprintf("%s", *arg)
+}
+
+func (arg *deleteStrategy) Set(value string) error {
+	if i, err := strconv.Atoi(value); err != nil {
+		return err
+	} else {
+		ds := deleteStrategy(i)
+		*arg = ds
+		return nil
+	}
 }
 
 func (args *stringargs) String() string {
@@ -982,6 +1005,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.Var(&config.Workers, "workers", "A list of worker names")
 	flag.BoolVar(&config.EnableHTTPServer, "enable-http-server", false, "True to enable an internal http server")
 	flag.StringVar(&config.HTTPServerAddr, "http-server-addr", "", "The address the internal http server listens on")
+	flag.Var(&config.DeleteStrategy, "delete-strategy", "Stategy to use for deletes. 0=stateless,1=stateful,2=ignore")
 	flag.Parse()
 	return config
 }
@@ -1071,7 +1095,7 @@ func (config *configOptions) loadScripts() {
 				panic("module.exports must be a function")
 			}
 			mapEnvs[s.Namespace] = env
-			if s.Namespace != "" && s.Routing {
+			if s.Routing {
 				routingNamespaces[s.Namespace] = true
 			}
 		} else {
@@ -1184,6 +1208,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.DirectReadCursors == 0 {
 			config.DirectReadCursors = tomlConfig.DirectReadCursors
+		}
+		if config.DeleteStrategy == 0 {
+			config.DeleteStrategy = tomlConfig.DeleteStrategy
 		}
 		if config.DroppedDatabases && !tomlConfig.DroppedDatabases {
 			config.DroppedDatabases = false
@@ -1728,7 +1755,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 	}
 
 	bulk.Add(req)
-	if meta.shouldSave() {
+	if meta.shouldSave(config) {
 		if e := setIndexMeta(mongo, op.Namespace, objectID, meta); e != nil {
 			errorLog.Printf("Unable to save routing info: %s", e)
 		}
@@ -1782,7 +1809,7 @@ func doIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 		if op.Data != nil {
 			err = doIndexing(config, mongo, bulk, client, op, ingestAttachment)
 		} else if op.IsUpdate() {
-			doDelete(config, mongo, bulk, op)
+			doDelete(config, client, mongo, bulk, op)
 		}
 	}
 	return
@@ -1863,12 +1890,16 @@ func (meta *indexingMeta) load(metaAttrs map[string]interface{}) {
 	}
 }
 
-func (meta *indexingMeta) shouldSave() bool {
-	return (meta.Routing != "" ||
-		meta.Index != "" ||
-		meta.Type != "" ||
-		meta.Parent != "" ||
-		meta.Pipeline != "")
+func (meta *indexingMeta) shouldSave(config *configOptions) bool {
+	if config.DeleteStrategy == statefulDeleteStrategy {
+		return (meta.Routing != "" ||
+			meta.Index != "" ||
+			meta.Type != "" ||
+			meta.Parent != "" ||
+			meta.Pipeline != "")
+	} else {
+		return false
+	}
 }
 
 func setIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta) error {
@@ -2172,28 +2203,61 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 	}
 }
 
-func doDelete(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
-	objectID, indexType, meta := opIDToString(op), mapIndexType(config, op), &indexingMeta{}
-	if routingNamespaces[op.Namespace] {
-		meta = getIndexMeta(mongo, op.Namespace, objectID)
-	}
+func doDelete(config *configOptions, client *elastic.Client, mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
 	req := elastic.NewBulkDeleteRequest()
+	if config.DeleteStrategy == ignoreDeleteStrategy {
+		return
+	}
+	objectID, indexType, meta := opIDToString(op), mapIndexType(config, op), &indexingMeta{}
 	req.Id(objectID)
-	req.Index(indexType.Index)
-	req.Type(indexType.Type)
 	req.Version(int64(op.Timestamp))
 	req.VersionType("external")
-	if meta.Index != "" {
-		req.Index(meta.Index)
-	}
-	if meta.Type != "" {
-		req.Type(meta.Type)
-	}
-	if meta.Routing != "" {
-		req.Routing(meta.Routing)
-	}
-	if meta.Parent != "" {
-		req.Parent(meta.Parent)
+	if config.DeleteStrategy == statefulDeleteStrategy {
+		if routingNamespaces[""] || routingNamespaces[op.Namespace] {
+			meta = getIndexMeta(mongo, op.Namespace, objectID)
+		}
+		req.Index(indexType.Index)
+		req.Type(indexType.Type)
+		if meta.Index != "" {
+			req.Index(meta.Index)
+		}
+		if meta.Type != "" {
+			req.Type(meta.Type)
+		}
+		if meta.Routing != "" {
+			req.Routing(meta.Routing)
+		}
+		if meta.Parent != "" {
+			req.Parent(meta.Parent)
+		}
+	} else if config.DeleteStrategy == statelessDeleteStrategy {
+		if routingNamespaces[""] || routingNamespaces[op.Namespace] {
+			termQuery := elastic.NewTermQuery("_id", objectID)
+			searchResult, err := client.Search().FetchSource(false).Size(1).Index("*").Query(termQuery).Do(context.Background())
+			if err != nil {
+				errorLog.Printf("Unable to delete document %s: %s", objectID, err)
+				return
+			}
+			if searchResult.Hits != nil && searchResult.Hits.TotalHits == 1 {
+				hit := searchResult.Hits.Hits[0]
+				req.Index(hit.Index)
+				req.Type(hit.Type)
+				if hit.Routing != "" {
+					req.Routing(hit.Routing)
+				}
+				if hit.Parent != "" {
+					req.Parent(hit.Parent)
+				}
+			} else {
+				errorLog.Printf("Failed to find unique document %s for deletion", objectID)
+				return
+			}
+		} else {
+			req.Index(indexType.Index)
+			req.Type(indexType.Type)
+		}
+	} else {
+		return
 	}
 	bulk.Add(req)
 	return
@@ -2706,7 +2770,7 @@ func main() {
 					gtmCtx.ErrC <- err
 				}
 			} else if op.IsDelete() {
-				doDelete(config, mongo, bulk, op)
+				doDelete(config, elasticClient, mongo, bulk, op)
 			} else if op.Data != nil {
 				ingestAttachment := false
 				if ingestAttachment, err = doFileContent(mongo, op, config); err != nil {
