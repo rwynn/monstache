@@ -231,6 +231,7 @@ type configOptions struct {
 	TimeMachineDirectReads   bool           `toml:"time-machine-direct-reads"`
 	RoutingNamespaces        stringargs     `toml:"routing-namespaces"`
 	DeleteStrategy           deleteStrategy `toml:"delete-strategy"`
+	DeleteIndexPattern       string         `toml:"delete-index-pattern"`
 }
 
 func (arg *deleteStrategy) String() string {
@@ -1006,6 +1007,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.EnableHTTPServer, "enable-http-server", false, "True to enable an internal http server")
 	flag.StringVar(&config.HTTPServerAddr, "http-server-addr", "", "The address the internal http server listens on")
 	flag.Var(&config.DeleteStrategy, "delete-strategy", "Stategy to use for deletes. 0=stateless,1=stateful,2=ignore")
+	flag.StringVar(&config.DeleteIndexPattern, "delete-index-pattern", "", "An Elasticsearch index-pattern to restric the scope of stateless deletes")
 	flag.Parse()
 	return config
 }
@@ -1211,6 +1213,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.DeleteStrategy == 0 {
 			config.DeleteStrategy = tomlConfig.DeleteStrategy
+		}
+		if config.DeleteIndexPattern == "" {
+			config.DeleteIndexPattern = tomlConfig.DeleteIndexPattern
 		}
 		if config.DroppedDatabases && !tomlConfig.DroppedDatabases {
 			config.DroppedDatabases = false
@@ -1494,6 +1499,9 @@ func (config *configOptions) setDefaults() *configOptions {
 	}
 	if config.TimeMachineIndexSuffix == "" {
 		config.TimeMachineIndexSuffix = "2006-01-02"
+	}
+	if config.DeleteIndexPattern == "" {
+		config.DeleteIndexPattern = "*"
 	}
 	return config
 }
@@ -2233,7 +2241,7 @@ func doDelete(config *configOptions, client *elastic.Client, mongo *mgo.Session,
 	} else if config.DeleteStrategy == statelessDeleteStrategy {
 		if routingNamespaces[""] || routingNamespaces[op.Namespace] {
 			termQuery := elastic.NewTermQuery("_id", objectID)
-			searchResult, err := client.Search().FetchSource(false).Size(1).Index("*").Query(termQuery).Do(context.Background())
+			searchResult, err := client.Search().FetchSource(false).Size(1).Index(config.DeleteIndexPattern).Query(termQuery).Do(context.Background())
 			if err != nil {
 				errorLog.Printf("Unable to delete document %s: %s", objectID, err)
 				return
@@ -2249,7 +2257,7 @@ func doDelete(config *configOptions, client *elastic.Client, mongo *mgo.Session,
 					req.Parent(hit.Parent)
 				}
 			} else {
-				errorLog.Printf("Failed to find unique document %s for deletion", objectID)
+				errorLog.Printf("Failed to find unique document %s for deletion using index pattern", objectID, config.DeleteIndexPattern)
 				return
 			}
 		} else {
