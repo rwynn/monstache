@@ -2257,7 +2257,7 @@ func doDelete(config *configOptions, client *elastic.Client, mongo *mgo.Session,
 					req.Parent(hit.Parent)
 				}
 			} else {
-				errorLog.Printf("Failed to find unique document %s for deletion using index pattern", objectID, config.DeleteIndexPattern)
+				errorLog.Printf("Failed to find unique document %s for deletion using index pattern %s", objectID, config.DeleteIndexPattern)
 				return
 			}
 		} else {
