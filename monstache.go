@@ -775,18 +775,24 @@ func filterWithScript() gtm.OpFilter {
 	return func(op *gtm.Op) bool {
 		var keep bool = true
 		if (op.IsInsert() || op.IsUpdate()) && op.Data != nil {
-			if env := filterEnvs[op.Namespace]; env != nil {
-				keep = false
-				arg := convertMapJavascript(op.Data)
-				val, err := env.VM.Call("module.exports", arg, arg)
-				if err != nil {
-					errorLog.Println(err)
-				} else {
-					if ok, err := val.ToBoolean(); err == nil {
-						keep = ok
-					} else {
+			nss := []string{"", op.Namespace}
+			for _, ns := range nss {
+				if env := filterEnvs[ns]; env != nil {
+					keep = false
+					arg := convertMapJavascript(op.Data)
+					val, err := env.VM.Call("module.exports", arg, arg, op.Namespace)
+					if err != nil {
 						errorLog.Println(err)
+					} else {
+						if ok, err := val.ToBoolean(); err == nil {
+							keep = ok
+						} else {
+							errorLog.Println(err)
+						}
 					}
+				}
+				if !keep {
+					break
 				}
 			}
 		}
@@ -974,16 +980,19 @@ func (config *configOptions) loadIndexTypes() {
 
 func (config *configOptions) loadFilters() {
 	for _, s := range config.Filter {
-		if s.Namespace != "" && (s.Script != "" || s.Path != "") {
+		if s.Script != "" || s.Path != "" {
 			if s.Path != "" && s.Script != "" {
-				panic("Scripts must specify path or script but not both")
+				panic("Filters must specify path or script but not both")
 			}
 			if s.Path != "" {
 				if script, err := ioutil.ReadFile(s.Path); err == nil {
 					s.Script = string(script[:])
 				} else {
-					errorLog.Panicf("Unable to load script at path %s: %s", s.Path, err)
+					errorLog.Panicf("Unable to load filter at path %s: %s", s.Path, err)
 				}
+			}
+			if _, exists := filterEnvs[s.Namespace]; exists {
+				errorLog.Panicf("Multiple filters with namespace: %s", s.Namespace)
 			}
 			env := &executionEnv{
 				VM:     otto.New(),
@@ -1003,7 +1012,7 @@ func (config *configOptions) loadFilters() {
 			}
 			filterEnvs[s.Namespace] = env
 		} else {
-			panic("Scripts must specify namespace and path or script attributes")
+			panic("Filters must specify path or script attributes")
 		}
 	}
 }
@@ -1022,7 +1031,7 @@ func (config *configOptions) loadScripts() {
 				}
 			}
 			if _, exists := mapEnvs[s.Namespace]; exists {
-				errorLog.Panicf("Multiple scripts with same namespace: %s", s.Namespace)
+				errorLog.Panicf("Multiple scripts with namespace: %s", s.Namespace)
 			}
 			env := &executionEnv{
 				VM:     otto.New(),
