@@ -39,7 +39,6 @@ import (
 	"time"
 )
 
-var gridByteBuffer bytes.Buffer
 var infoLog = log.New(os.Stdout, "INFO ", log.Flags())
 var statsLog = log.New(os.Stdout, "STATS ", log.Flags())
 var traceLog = log.New(os.Stdout, "TRACE ", log.Flags())
@@ -66,6 +65,7 @@ const elasticClientTimeoutDefault int = 60
 const elasticMaxDocsDefault int = 1000
 const gtmChannelSizeDefault int = 512
 const typeFromFuture string = "_doc"
+const fileDownloadersDefault = 10
 
 type deleteStrategy int
 
@@ -232,10 +232,11 @@ type configOptions struct {
 	RoutingNamespaces        stringargs     `toml:"routing-namespaces"`
 	DeleteStrategy           deleteStrategy `toml:"delete-strategy"`
 	DeleteIndexPattern       string         `toml:"delete-index-pattern"`
+	FileDownloaders          int            `toml:"file-downloaders"`
 }
 
 func (arg *deleteStrategy) String() string {
-	return fmt.Sprintf("%s", *arg)
+	return fmt.Sprintf("%d", *arg)
 }
 
 func (arg *deleteStrategy) Set(value string) error {
@@ -756,7 +757,7 @@ func addFileContent(s *mgo.Session, op *gtm.Op, config *configOptions) (err erro
 	session := s.Copy()
 	defer session.Close()
 	op.Data["file"] = ""
-	gridByteBuffer.Reset()
+	var gridByteBuffer bytes.Buffer
 	db, bucket :=
 		session.DB(op.GetDatabase()),
 		strings.SplitN(op.GetCollection(), ".", 2)[0]
@@ -959,6 +960,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.ElasticPemFile, "elasticsearch-pem-file", "", "Path to a PEM file for secure connections to elasticsearch")
 	flag.BoolVar(&config.ElasticValidatePemFile, "elasticsearch-validate-pem-file", true, "Set to boolean false to not validate the Elasticsearch PEM file")
 	flag.IntVar(&config.ElasticMaxConns, "elasticsearch-max-conns", 0, "Elasticsearch max connections")
+	flag.IntVar(&config.FileDownloaders, "file-downloaders", 0, "GridFs download go routines")
 	flag.BoolVar(&config.ElasticRetry, "elasticsearch-retry", false, "True to retry failed request to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxDocs, "elasticsearch-max-docs", 0, "Number of docs to hold before flushing to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxBytes, "elasticsearch-max-bytes", 0, "Number of bytes to hold before flushing to Elasticsearch")
@@ -1210,6 +1212,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.DirectReadCursors == 0 {
 			config.DirectReadCursors = tomlConfig.DirectReadCursors
+		}
+		if config.FileDownloaders == 0 {
+			config.FileDownloaders = tomlConfig.FileDownloaders
 		}
 		if config.DeleteStrategy == 0 {
 			config.DeleteStrategy = tomlConfig.DeleteStrategy
@@ -1503,6 +1508,9 @@ func (config *configOptions) setDefaults() *configOptions {
 	if config.DeleteIndexPattern == "" {
 		config.DeleteIndexPattern = "*"
 	}
+	if config.FileDownloaders == 0 {
+		config.FileDownloaders = fileDownloadersDefault
+	}
 	return config
 }
 
@@ -1622,19 +1630,11 @@ func doDrop(mongo *mgo.Session, elastic *elastic.Client, op *gtm.Op, config *con
 	return
 }
 
-func doFileContent(mongo *mgo.Session, op *gtm.Op, config *configOptions) (ingestAttachment bool, err error) {
+func hasFileContent(op *gtm.Op, config *configOptions) (ingest bool) {
 	if !config.IndexFiles {
 		return
 	}
-	if fileNamespaces[op.Namespace] {
-		err = addFileContent(mongo, op, config)
-		if config.ElasticMajorVersion >= 5 {
-			if op.Data["file"] != "" {
-				ingestAttachment = true
-			}
-		}
-	}
-	return
+	return fileNamespaces[op.Namespace]
 }
 
 func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
@@ -2710,6 +2710,19 @@ func main() {
 	}
 	infoLog.Println("Entering event loop")
 	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
+	fileC := make(chan *gtm.Op)
+	fileDoneC := make(chan *gtm.Op)
+	for i := 0; i < config.FileDownloaders; i++ {
+		go func() {
+			for op := range fileC {
+				err := addFileContent(mongo, op, config)
+				if err != nil {
+					gtmCtx.ErrC <- err
+				}
+				fileDoneC <- op
+			}
+		}()
+	}
 	for {
 		select {
 		case <-timestampTicker.C:
@@ -2765,6 +2778,14 @@ func main() {
 			if config.FailFast {
 				os.Exit(exitStatus)
 			}
+		case op := <-fileDoneC:
+			ingest := config.ElasticMajorVersion >= 5
+			if ingest {
+				ingest = op.Data["file"] != nil
+			}
+			if err = doIndex(config, mongo, bulk, elasticClient, op, ingest); err != nil {
+				gtmCtx.ErrC <- err
+			}
 		case op := <-gtmCtx.OpC:
 			if !enabled {
 				break
@@ -2780,12 +2801,12 @@ func main() {
 			} else if op.IsDelete() {
 				doDelete(config, elasticClient, mongo, bulk, op)
 			} else if op.Data != nil {
-				ingestAttachment := false
-				if ingestAttachment, err = doFileContent(mongo, op, config); err != nil {
-					gtmCtx.ErrC <- err
-				}
-				if err = doIndex(config, mongo, bulk, elasticClient, op, ingestAttachment); err != nil {
-					gtmCtx.ErrC <- err
+				if hasFileContent(op, config) {
+					fileC <- op
+				} else {
+					if err = doIndex(config, mongo, bulk, elasticClient, op, false); err != nil {
+						gtmCtx.ErrC <- err
+					}
 				}
 			}
 		}
