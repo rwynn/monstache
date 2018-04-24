@@ -27,6 +27,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -230,6 +231,7 @@ type configOptions struct {
 	DeleteStrategy           deleteStrategy `toml:"delete-strategy"`
 	DeleteIndexPattern       string         `toml:"delete-index-pattern"`
 	FileDownloaders          int            `toml:"file-downloaders"`
+	PruneInvalidJSON         bool           `toml:"prune-invalid-json"`
 }
 
 func (arg *deleteStrategy) String() string {
@@ -520,6 +522,58 @@ func convertMapJavascript(e map[string]interface{}) map[string]interface{} {
 	return o
 }
 
+func fixSlicePruneInvalidJSON(a []interface{}) []interface{} {
+	var avs []interface{}
+	for _, av := range a {
+		var avc interface{}
+		switch achild := av.(type) {
+		case map[string]interface{}:
+			avc = fixPruneInvalidJSON(achild)
+		case []interface{}:
+			avc = fixSlicePruneInvalidJSON(achild)
+		case float64:
+			if math.IsNaN(achild) {
+				// causes an error in the json serializer
+				continue
+			} else if math.IsInf(achild, 0) {
+				// causes an error in the json serializer
+				continue
+			} else {
+				avc = av
+			}
+		default:
+			avc = av
+		}
+		avs = append(avs, avc)
+	}
+	return avs
+}
+
+func fixPruneInvalidJSON(e map[string]interface{}) map[string]interface{} {
+	o := make(map[string]interface{})
+	for k, v := range e {
+		switch child := v.(type) {
+		case map[string]interface{}:
+			o[k] = fixPruneInvalidJSON(child)
+		case []interface{}:
+			o[k] = fixSlicePruneInvalidJSON(child)
+		case float64:
+			if math.IsNaN(child) {
+				// causes an error in the json serializer
+				continue
+			} else if math.IsInf(child, 0) {
+				// causes an error in the json serializer
+				continue
+			} else {
+				o[k] = v
+			}
+		default:
+			o[k] = v
+		}
+	}
+	return o
+}
+
 func deepExportValue(a interface{}) (b interface{}) {
 	switch t := a.(type) {
 	case otto.Value:
@@ -663,6 +717,9 @@ func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
 	}
 	delete(data, "_id")
 	delete(data, "_meta_monstache")
+	if config.PruneInvalidJSON {
+		op.Data = fixPruneInvalidJSON(data)
+	}
 }
 
 func parseIndexMeta(op *gtm.Op) (meta *indexingMeta) {
@@ -952,6 +1009,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.Var(&config.Workers, "workers", "A list of worker names")
 	flag.BoolVar(&config.EnableHTTPServer, "enable-http-server", false, "True to enable an internal http server")
 	flag.StringVar(&config.HTTPServerAddr, "http-server-addr", "", "The address the internal http server listens on")
+	flag.BoolVar(&config.PruneInvalidJSON, "prune-invalid-json", false, "True to omit values which do not serialize to JSON such as +Inf and -Inf and thus cause errors")
 	flag.Var(&config.DeleteStrategy, "delete-strategy", "Stategy to use for deletes. 0=stateless,1=stateful,2=ignore")
 	flag.StringVar(&config.DeleteIndexPattern, "delete-index-pattern", "", "An Elasticsearch index-pattern to restric the scope of stateless deletes")
 	flag.Parse()
@@ -1195,6 +1253,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if !config.EnablePatches && tomlConfig.EnablePatches {
 			config.EnablePatches = true
+		}
+		if !config.PruneInvalidJSON && tomlConfig.PruneInvalidJSON {
+			config.PruneInvalidJSON = true
 		}
 		if !config.Replay && tomlConfig.Replay {
 			config.Replay = true
