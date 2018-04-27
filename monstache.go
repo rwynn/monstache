@@ -61,9 +61,10 @@ var systemsRegex = regexp.MustCompile("system\\..+$")
 const version = "3.13.1"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
-const elasticMaxConnsDefault int = 10
+const elasticMaxConnsDefault int = 4
 const elasticClientTimeoutDefault int = 60
-const elasticMaxDocsDefault int = 1000
+const elasticMaxDocsDefault int = -1
+const elasticMaxBytesDefault int = 8 * 1024 * 1024
 const gtmChannelSizeDefault int = 512
 const typeFromFuture string = "_doc"
 const fileDownloadersDefault = 10
@@ -316,12 +317,8 @@ func (config *configOptions) newBulkProcessor(client *elastic.Client) (bulk *ela
 	bulkService := client.BulkProcessor().Name("monstache")
 	bulkService.Workers(config.ElasticMaxConns)
 	bulkService.Stats(config.Stats)
-	if config.ElasticMaxDocs != 0 {
-		bulkService.BulkActions(config.ElasticMaxDocs)
-	}
-	if config.ElasticMaxBytes != 0 {
-		bulkService.BulkSize(config.ElasticMaxBytes)
-	}
+	bulkService.BulkActions(config.ElasticMaxDocs)
+	bulkService.BulkSize(config.ElasticMaxBytes)
 	if config.ElasticRetry == false {
 		bulkService.Backoff(&elastic.StopBackoff{})
 	}
@@ -332,9 +329,11 @@ func (config *configOptions) newBulkProcessor(client *elastic.Client) (bulk *ela
 
 func (config *configOptions) newStatsBulkProcessor(client *elastic.Client) (bulk *elastic.BulkProcessor, err error) {
 	bulkService := client.BulkProcessor().Name("monstache-stats")
-	bulkService.Workers(1)
+	bulkService.Workers(2)
 	bulkService.Stats(false)
-	bulkService.BulkActions(1)
+	bulkService.BulkActions(-1)
+	bulkService.BulkSize(elasticMaxBytesDefault)
+	bulkService.FlushInterval(time.Duration(5) * time.Second)
 	bulkService.After(afterBulk)
 	return bulkService.Do(context.Background())
 }
@@ -1542,10 +1541,17 @@ func (config *configOptions) setDefaults() *configOptions {
 		config.MergePatchAttr = "json-merge-patches"
 	}
 	if config.ElasticMaxSeconds == 0 {
-		config.ElasticMaxSeconds = 1
+		if len(config.DirectReadNs) > 0 {
+			config.ElasticMaxSeconds = 5
+		} else {
+			config.ElasticMaxSeconds = 1
+		}
 	}
 	if config.ElasticMaxDocs == 0 {
 		config.ElasticMaxDocs = elasticMaxDocsDefault
+	}
+	if config.ElasticMaxBytes == 0 {
+		config.ElasticMaxBytes = elasticMaxBytesDefault
 	}
 	if config.MongoURL != "" {
 		config.MongoURL = config.parseMongoURL(config.MongoURL)
@@ -2483,7 +2489,7 @@ func shutdown(exitStatus int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, b
 	}()
 	doneC := make(chan bool)
 	go func() {
-		closeT := time.NewTicker(5 * time.Second)
+		closeT := time.NewTicker(10 * time.Second)
 		done := false
 		for !done {
 			select {
