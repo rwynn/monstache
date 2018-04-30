@@ -576,21 +576,32 @@ func convertMapJavascript(e map[string]interface{}) map[string]interface{} {
 	return o
 }
 
-func fixSlicePruneInvalidJSON(a []interface{}) []interface{} {
+func fixSlicePruneInvalidJSON(id string, a []interface{}) []interface{} {
 	var avs []interface{}
 	for _, av := range a {
 		var avc interface{}
 		switch achild := av.(type) {
 		case map[string]interface{}:
-			avc = fixPruneInvalidJSON(achild)
+			avc = fixPruneInvalidJSON(id, achild)
 		case []interface{}:
-			avc = fixSlicePruneInvalidJSON(achild)
+			avc = fixSlicePruneInvalidJSON(id, achild)
+		case time.Time:
+			year := achild.Year()
+			if year < 0 || year > 9999 {
+				// year outside of valid range
+				errorLog.Printf("Dropping invalid time.Time value: %s for document _id: %s", achild, id)
+				continue
+			} else {
+				avc = av
+			}
 		case float64:
 			if math.IsNaN(achild) {
 				// causes an error in the json serializer
+				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", achild, id)
 				continue
 			} else if math.IsInf(achild, 0) {
 				// causes an error in the json serializer
+				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", achild, id)
 				continue
 			} else {
 				avc = av
@@ -603,20 +614,31 @@ func fixSlicePruneInvalidJSON(a []interface{}) []interface{} {
 	return avs
 }
 
-func fixPruneInvalidJSON(e map[string]interface{}) map[string]interface{} {
+func fixPruneInvalidJSON(id string, e map[string]interface{}) map[string]interface{} {
 	o := make(map[string]interface{})
 	for k, v := range e {
 		switch child := v.(type) {
 		case map[string]interface{}:
-			o[k] = fixPruneInvalidJSON(child)
+			o[k] = fixPruneInvalidJSON(id, child)
 		case []interface{}:
-			o[k] = fixSlicePruneInvalidJSON(child)
+			o[k] = fixSlicePruneInvalidJSON(id, child)
+		case time.Time:
+			year := child.Year()
+			if year < 0 || year > 9999 {
+				// year outside of valid range
+				errorLog.Printf("Dropping invalid time.Time value: %s for document _id: %s", child, id)
+				continue
+			} else {
+				o[k] = v
+			}
 		case float64:
 			if math.IsNaN(child) {
 				// causes an error in the json serializer
+				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", child, id)
 				continue
 			} else if math.IsInf(child, 0) {
 				// causes an error in the json serializer
+				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", child, id)
 				continue
 			} else {
 				o[k] = v
@@ -775,7 +797,7 @@ func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
 	delete(data, "_id")
 	delete(data, "_meta_monstache")
 	if config.PruneInvalidJSON {
-		op.Data = fixPruneInvalidJSON(data)
+		op.Data = fixPruneInvalidJSON(opIDToString(op), data)
 	}
 }
 
