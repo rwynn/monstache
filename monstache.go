@@ -36,6 +36,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -82,6 +83,7 @@ type stringargs []string
 type executionEnv struct {
 	VM     *otto.Otto
 	Script string
+	lock   *sync.Mutex
 }
 
 type javascript struct {
@@ -856,6 +858,7 @@ func filterWithScript() gtm.OpFilter {
 				if env := filterEnvs[ns]; env != nil {
 					keep = false
 					arg := convertMapJavascript(op.Data)
+					env.lock.Lock()
 					val, err := env.VM.Call("module.exports", arg, arg, op.Namespace)
 					if err != nil {
 						errorLog.Println(err)
@@ -866,6 +869,7 @@ func filterWithScript() gtm.OpFilter {
 							errorLog.Println(err)
 						}
 					}
+					env.lock.Unlock()
 				}
 				if !keep {
 					break
@@ -1072,6 +1076,7 @@ func (config *configOptions) loadFilters() {
 			env := &executionEnv{
 				VM:     otto.New(),
 				Script: s.Script,
+				lock:   &sync.Mutex{},
 			}
 			if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
 				panic(err)
