@@ -2497,7 +2497,7 @@ func (config *configOptions) makeShardInsertHandler() gtm.ShardInsertHandler {
 	}
 }
 
-func shutdown(exitStatus int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulkStats *elastic.BulkProcessor, mongo *mgo.Session, config *configOptions) {
+func shutdown(timeout int, exitStatus int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulkStats *elastic.BulkProcessor, mongo *mgo.Session, config *configOptions) {
 	infoLog.Println("Shutting down")
 	closeC := make(chan bool)
 	go func() {
@@ -2516,7 +2516,7 @@ func shutdown(exitStatus int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, b
 	}()
 	doneC := make(chan bool)
 	go func() {
-		closeT := time.NewTicker(10 * time.Second)
+		closeT := time.NewTicker(time.Duration(timeout) * time.Second)
 		done := false
 		for !done {
 			select {
@@ -2789,13 +2789,13 @@ func main() {
 	}
 	go func() {
 		<-sigs
-		shutdown(exitStatus, hsc, bulk, bulkStats, mongo, config)
+		shutdown(10, exitStatus, hsc, bulk, bulkStats, mongo, config)
 	}()
 	if len(config.DirectReadNs) > 0 {
 		if config.ExitAfterDirectReads {
 			go func() {
 				gtmCtx.DirectReadWg.Wait()
-				shutdown(exitStatus, hsc, bulk, bulkStats, mongo, config)
+				shutdown(30, exitStatus, hsc, bulk, bulkStats, mongo, config)
 			}()
 		}
 	}
