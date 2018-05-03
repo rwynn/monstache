@@ -1,5 +1,6 @@
 FROM golang:alpine
 
+# Install dependencies required to install dependencies and build the app
 RUN apk add --no-cache gcc go git musl-dev make zip
 
 # https://github.com/kelseyhightower/confd/issues/609

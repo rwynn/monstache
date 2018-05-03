@@ -1,9 +1,9 @@
 # build stage
 # FROM rwynn/monstache-builder-base:0.0.1 AS monstache-builder-base
 
-FROM golang:alpine
+FROM golang:alpine AS base
 
-RUN apk add --no-cache gcc go git musl-dev make zip
+# RUN apk add --no-cache gcc go git musl-dev make zip
 
 # The 1st stage is to cache go packages
 
@@ -13,6 +13,8 @@ RUN apk add --no-cache gcc go git musl-dev make zip
 # ENV GOPATH /go
 
 RUN apk add --no-cache gcc go git musl-dev make zip
+
+FROM base AS deps-cache
 
 WORKDIR /go/src/app
 
@@ -27,12 +29,14 @@ RUN go get -d -v ./...
 # RUN make
 
 # FROM golang:alpine
-FROM quadric/monstache-builder-base AS monstache-builder-make
+# FROM rwynn/monstache-builder-base:0.0.1 AS monstache-builder-make
+# FROM deps-cache AS make-app
+FROM base AS make-app
 
 # The 2nd stage is to run make all using already cached binaries
 
-COPY --from=monstache-builder-base /go /go
-COPY --from=monstache-builder-base /usr/lib/go /usr/lib/go
+COPY --from=deps-cache /go /go
+COPY --from=deps-cache /usr/lib/go /usr/lib/go
 
 WORKDIR /go/src/app
 
@@ -43,7 +47,7 @@ RUN make
 # FROM golang:alpine
 
 # Use the following with CGO_ENABLED=0 builds
-FROM alpine:3.7
+FROM alpine:3.7 AS final
 
 # # Use the following with CGO_ENABLED=1 builds (e.g. you need to use the go plugin feature)
 # FROM debian:latest
@@ -57,4 +61,4 @@ ENTRYPOINT ["/bin/monstache"]
 # COPY --from=monstache-builder-make /go/src/app/build /app/build
 
 # ADD monstache /bin/monstache
-COPY --from=monstache-builder-make /go/src/app/build/linux-amd64/monstache /bin/monstache
+COPY --from=make-app /go/src/app/build/linux-amd64/monstache /bin/monstache

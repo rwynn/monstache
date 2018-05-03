@@ -1,5 +1,5 @@
 #build stage
-FROM quadric/monstache-builder-base
+FROM rwynn/monstache-builder-base:0.0.1
 
 # https://github.com/kelseyhightower/confd/issues/609
 # ENV CGO_ENABLED=0
