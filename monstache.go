@@ -36,6 +36,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -58,12 +59,13 @@ var routingNamespaces map[string]bool = make(map[string]bool)
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 
-const version = "4.6.0"
+const version = "4.6.3"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
-const elasticMaxConnsDefault int = 10
+const elasticMaxConnsDefault int = 4
 const elasticClientTimeoutDefault int = 60
-const elasticMaxDocsDefault int = 1000
+const elasticMaxDocsDefault int = -1
+const elasticMaxBytesDefault int = 8 * 1024 * 1024
 const gtmChannelSizeDefault int = 512
 const typeFromFuture string = "_doc"
 const fileDownloadersDefault = 10
@@ -81,6 +83,7 @@ type stringargs []string
 type executionEnv struct {
 	VM     *otto.Otto
 	Script string
+	lock   *sync.Mutex
 }
 
 type javascript struct {
@@ -315,12 +318,8 @@ func (config *configOptions) newBulkProcessor(client *elastic.Client) (bulk *ela
 	bulkService := client.BulkProcessor().Name("monstache")
 	bulkService.Workers(config.ElasticMaxConns)
 	bulkService.Stats(config.Stats)
-	if config.ElasticMaxDocs != 0 {
-		bulkService.BulkActions(config.ElasticMaxDocs)
-	}
-	if config.ElasticMaxBytes != 0 {
-		bulkService.BulkSize(config.ElasticMaxBytes)
-	}
+	bulkService.BulkActions(config.ElasticMaxDocs)
+	bulkService.BulkSize(config.ElasticMaxBytes)
 	if config.ElasticRetry == false {
 		bulkService.Backoff(&elastic.StopBackoff{})
 	}
@@ -331,9 +330,11 @@ func (config *configOptions) newBulkProcessor(client *elastic.Client) (bulk *ela
 
 func (config *configOptions) newStatsBulkProcessor(client *elastic.Client) (bulk *elastic.BulkProcessor, err error) {
 	bulkService := client.BulkProcessor().Name("monstache-stats")
-	bulkService.Workers(1)
+	bulkService.Workers(2)
 	bulkService.Stats(false)
-	bulkService.BulkActions(1)
+	bulkService.BulkActions(-1)
+	bulkService.BulkSize(elasticMaxBytesDefault)
+	bulkService.FlushInterval(time.Duration(5) * time.Second)
 	bulkService.After(afterBulk)
 	return bulkService.Do(context.Background())
 }
@@ -522,21 +523,32 @@ func convertMapJavascript(e map[string]interface{}) map[string]interface{} {
 	return o
 }
 
-func fixSlicePruneInvalidJSON(a []interface{}) []interface{} {
+func fixSlicePruneInvalidJSON(id string, a []interface{}) []interface{} {
 	var avs []interface{}
 	for _, av := range a {
 		var avc interface{}
 		switch achild := av.(type) {
 		case map[string]interface{}:
-			avc = fixPruneInvalidJSON(achild)
+			avc = fixPruneInvalidJSON(id, achild)
 		case []interface{}:
-			avc = fixSlicePruneInvalidJSON(achild)
+			avc = fixSlicePruneInvalidJSON(id, achild)
+		case time.Time:
+			year := achild.Year()
+			if year < 0 || year > 9999 {
+				// year outside of valid range
+				errorLog.Printf("Dropping invalid time.Time value: %s for document _id: %s", achild, id)
+				continue
+			} else {
+				avc = av
+			}
 		case float64:
 			if math.IsNaN(achild) {
 				// causes an error in the json serializer
+				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", achild, id)
 				continue
 			} else if math.IsInf(achild, 0) {
 				// causes an error in the json serializer
+				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", achild, id)
 				continue
 			} else {
 				avc = av
@@ -549,20 +561,31 @@ func fixSlicePruneInvalidJSON(a []interface{}) []interface{} {
 	return avs
 }
 
-func fixPruneInvalidJSON(e map[string]interface{}) map[string]interface{} {
+func fixPruneInvalidJSON(id string, e map[string]interface{}) map[string]interface{} {
 	o := make(map[string]interface{})
 	for k, v := range e {
 		switch child := v.(type) {
 		case map[string]interface{}:
-			o[k] = fixPruneInvalidJSON(child)
+			o[k] = fixPruneInvalidJSON(id, child)
 		case []interface{}:
-			o[k] = fixSlicePruneInvalidJSON(child)
+			o[k] = fixSlicePruneInvalidJSON(id, child)
+		case time.Time:
+			year := child.Year()
+			if year < 0 || year > 9999 {
+				// year outside of valid range
+				errorLog.Printf("Dropping invalid time.Time value: %s for document _id: %s", child, id)
+				continue
+			} else {
+				o[k] = v
+			}
 		case float64:
 			if math.IsNaN(child) {
 				// causes an error in the json serializer
+				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", child, id)
 				continue
 			} else if math.IsInf(child, 0) {
 				// causes an error in the json serializer
+				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", child, id)
 				continue
 			} else {
 				o[k] = v
@@ -718,7 +741,7 @@ func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
 	delete(data, "_id")
 	delete(data, "_meta_monstache")
 	if config.PruneInvalidJSON {
-		op.Data = fixPruneInvalidJSON(data)
+		op.Data = fixPruneInvalidJSON(opIDToString(op), data)
 	}
 }
 
@@ -835,6 +858,7 @@ func filterWithScript() gtm.OpFilter {
 				if env := filterEnvs[ns]; env != nil {
 					keep = false
 					arg := convertMapJavascript(op.Data)
+					env.lock.Lock()
 					val, err := env.VM.Call("module.exports", arg, arg, op.Namespace)
 					if err != nil {
 						errorLog.Println(err)
@@ -845,6 +869,7 @@ func filterWithScript() gtm.OpFilter {
 							errorLog.Println(err)
 						}
 					}
+					env.lock.Unlock()
 				}
 				if !keep {
 					break
@@ -1051,6 +1076,7 @@ func (config *configOptions) loadFilters() {
 			env := &executionEnv{
 				VM:     otto.New(),
 				Script: s.Script,
+				lock:   &sync.Mutex{},
 			}
 			if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
 				panic(err)
@@ -1484,10 +1510,17 @@ func (config *configOptions) setDefaults() *configOptions {
 		config.MergePatchAttr = "json-merge-patches"
 	}
 	if config.ElasticMaxSeconds == 0 {
-		config.ElasticMaxSeconds = 1
+		if len(config.DirectReadNs) > 0 {
+			config.ElasticMaxSeconds = 5
+		} else {
+			config.ElasticMaxSeconds = 1
+		}
 	}
 	if config.ElasticMaxDocs == 0 {
 		config.ElasticMaxDocs = elasticMaxDocsDefault
+	}
+	if config.ElasticMaxBytes == 0 {
+		config.ElasticMaxBytes = elasticMaxBytesDefault
 	}
 	if config.MongoURL != "" {
 		config.MongoURL = config.parseMongoURL(config.MongoURL)
@@ -2401,7 +2434,7 @@ func (config *configOptions) makeShardInsertHandler() gtm.ShardInsertHandler {
 	}
 }
 
-func shutdown(exitStatus int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulkStats *elastic.BulkProcessor, mongo *mgo.Session, config *configOptions) {
+func shutdown(timeout int, exitStatus int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulkStats *elastic.BulkProcessor, mongo *mgo.Session, config *configOptions) {
 	infoLog.Println("Shutting down")
 	closeC := make(chan bool)
 	go func() {
@@ -2420,7 +2453,7 @@ func shutdown(exitStatus int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, b
 	}()
 	doneC := make(chan bool)
 	go func() {
-		closeT := time.NewTicker(5 * time.Second)
+		closeT := time.NewTicker(time.Duration(timeout) * time.Second)
 		done := false
 		for !done {
 			select {
@@ -2688,13 +2721,13 @@ func main() {
 	}
 	go func() {
 		<-sigs
-		shutdown(exitStatus, hsc, bulk, bulkStats, mongo, config)
+		shutdown(10, exitStatus, hsc, bulk, bulkStats, mongo, config)
 	}()
 	if len(config.DirectReadNs) > 0 {
 		if config.ExitAfterDirectReads {
 			go func() {
 				gtmCtx.DirectReadWg.Wait()
-				shutdown(exitStatus, hsc, bulk, bulkStats, mongo, config)
+				shutdown(30, exitStatus, hsc, bulk, bulkStats, mongo, config)
 			}()
 		}
 	}
