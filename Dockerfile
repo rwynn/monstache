@@ -1,11 +1,7 @@
-# build stage
 # FROM rwynn/monstache-builder-base:0.0.1 AS monstache-builder-base
-
 FROM golang:alpine AS base
 
-# RUN apk add --no-cache gcc go git musl-dev make zip
-
-# The 1st stage is to cache go packages
+# Step 1 Create a base builder image
 
 # https://github.com/kelseyhightower/confd/issues/609
 # ENV CGO_ENABLED=0
@@ -16,16 +12,18 @@ RUN apk add --no-cache gcc go git musl-dev make zip
 
 FROM base AS deps-cache
 
+# Step 2 use go to install packages
+
 WORKDIR /go/src/app
 
 COPY . .
 
 RUN go get -d -v ./...
 
-# # # RUN go install -v ./...
 # RUN go install
 
-# # RUN go build
+# RUN go build
+
 # RUN make
 
 # FROM golang:alpine
@@ -33,7 +31,7 @@ RUN go get -d -v ./...
 # FROM deps-cache AS make-app
 FROM base AS make-app
 
-# The 2nd stage is to run make all using already cached binaries
+# Step 3 run make to build the app
 
 COPY --from=deps-cache /go /go
 COPY --from=deps-cache /usr/lib/go /usr/lib/go
@@ -45,14 +43,13 @@ COPY . .
 RUN make
 
 # FROM golang:alpine
-
 # Use the following with CGO_ENABLED=0 builds
 FROM alpine:3.7 AS final
 
 # # Use the following with CGO_ENABLED=1 builds (e.g. you need to use the go plugin feature)
 # FROM debian:latest
 
-# The 3rd stage is to copy make all using already cached binaries
+# Step 4 copy output build file to an alpine image
 
 RUN apk --no-cache add ca-certificates
 
