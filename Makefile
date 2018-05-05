@@ -1,8 +1,6 @@
 GB =go build
 BUILD_DIR =build
 
-CGO =CGO_ENABLED=0
-
 ENV_LINUX =env GOOS=linux GOARCH=amd64
 ENV_WIN =env GOOS=windows GOARCH=amd64
 ENV_DARWIN =env GOOS=darwin GOARCH=amd64
@@ -31,10 +29,13 @@ TARGET = monstache
 
 all: $(TARGET)
 
+release: $(TARGET).go
+	$(ENV_LINUX) $(GB) $(LDFLAGS) -v -o $(OUT_LINUX)
+
 $(TARGET): $(TARGET).go
-	$(CGO) $(ENV_LINUX) $(GB) $(LDFLAGS) -v -o $(OUT_LINUX)
-	$(CGO) $(ENV_WIN) $(GB) $(LDFLAGS) -v -o $(OUT_WIN)
-	$(CGO) $(ENV_DARWIN) $(GB) $(LDFLAGS) -v -o $(OUT_DARWIN)
+	$(ENV_LINUX) $(GB) $(LDFLAGS) -v -o $(OUT_LINUX)
+	$(ENV_WIN) $(GB) $(LDFLAGS) -v -o $(OUT_WIN)
+	$(ENV_DARWIN) $(GB) $(LDFLAGS) -v -o $(OUT_DARWIN)
 	sha256sum $(OUT_LINUX) > $(SHA256_LINUX)
 	sha256sum $(OUT_WIN) > $(SHA256_WIN)
 	sha256sum $(OUT_DARWIN) > $(SHA256_DARWIN)
