@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
+	"os"
+	"testing"
+	"time"
+
 	"github.com/globalsign/mgo"
 	"github.com/olivere/elastic"
 	"golang.org/x/net/context"
-	"testing"
-	"time"
 )
 
 /*
@@ -28,7 +31,23 @@ go test -v -delay 10
 
 var delay int
 
+func getEnv(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
+}
+
+var mongoUrl = getEnv("MONGO_DB_URL", "localhost:27017")
+
+var elasticUrl = getEnv("ELASTIC_SEARCH_URL", "localhost:9200")
+
+var elasticUrlConfig = elastic.SetURL(elasticUrl)
+var elasticNoSniffConfig = elastic.SetSniff(false)
+
 func init() {
+	fmt.Printf("MongoDB Url: %v\nElasticsearch Url: %v\n", mongoUrl, elasticUrl)
+
 	flag.IntVar(&delay, "delay", 3, "Delay between operations in seconds")
 	flag.Parse()
 }
@@ -109,11 +128,13 @@ func TestParseSecureMongoUrl(t *testing.T) {
 }
 
 func TestInsert(t *testing.T) {
-	client, err := elastic.NewClient()
+	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
+	// client, err := elastic.NewSimpleClient(elasticUrlConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := mgo.Dial("localhost")
+	// session, err := mgo.Dial(getEnv("MONGO_DB_URL", "localhost"))
+	session, err := mgo.Dial(mongoUrl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,11 +157,13 @@ func TestInsert(t *testing.T) {
 }
 
 func TestUpdate(t *testing.T) {
-	client, err := elastic.NewClient()
+	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
+	// client, err := elastic.NewSimpleClient(elasticUrlConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := mgo.Dial("localhost")
+	// session, err := mgo.Dial(getEnv("MONGO_DB_URL", "localhost"))
+	session, err := mgo.Dial(mongoUrl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,11 +196,13 @@ func TestUpdate(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	client, err := elastic.NewClient()
+	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
+	// client, err := elastic.NewSimpleClient(elasticUrlConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := mgo.Dial("localhost")
+	// session, err := mgo.Dial(getEnv("MONGO_DB_URL", "localhost"))
+	session, err := mgo.Dial(mongoUrl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,11 +233,13 @@ func TestDelete(t *testing.T) {
 }
 
 func TestDropDatabase(t *testing.T) {
-	client, err := elastic.NewClient()
+	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
+	// client, err := elastic.NewSimpleClient(elasticUrlConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := mgo.Dial("localhost")
+	// session, err := mgo.Dial(getEnv("MONGO_DB_URL", "localhost"))
+	session, err := mgo.Dial(mongoUrl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,11 +274,13 @@ func TestDropDatabase(t *testing.T) {
 }
 
 func TestDropCollection(t *testing.T) {
-	client, err := elastic.NewClient()
+	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
+	// client, err := elastic.NewSimpleClient(elasticUrlConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := mgo.Dial("localhost")
+	// session, err := mgo.Dial(getEnv("MONGO_DB_URL", "localhost"))
+	session, err := mgo.Dial(mongoUrl)
 	if err != nil {
 		t.Fatal(err)
 	}
