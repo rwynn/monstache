@@ -223,6 +223,7 @@ type configOptions struct {
 	Workers                  stringargs
 	Worker                   string
 	DirectReadNs             stringargs     `toml:"direct-read-namespaces"`
+	DirectReadSplitMax       int            `toml:"direct-read-split-max"`
 	MapperPluginPath         string         `toml:"mapper-plugin-path"`
 	EnableHTTPServer         bool           `toml:"enable-http-server"`
 	HTTPServerAddr           string         `toml:"http-server-addr"`
@@ -1023,6 +1024,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
 	flag.StringVar(&config.NsExcludeRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
 	flag.Var(&config.DirectReadNs, "direct-read-namespace", "A list of direct read namespaces")
+	flag.IntVar(&config.DirectReadSplitMax, "direct-read-split-max", 0, "Max number of times to split a collection for direct reads")
 	flag.Var(&config.RoutingNamespaces, "routing-namespace", "A list of namespaces that override routing information")
 	flag.Var(&config.TimeMachineNamespaces, "time-machine-namespace", "A list of direct read namespaces")
 	flag.StringVar(&config.TimeMachineIndexPrefix, "time-machine-index-prefix", "", "A prefix to preprend to time machine indexes")
@@ -1219,6 +1221,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.ElasticMaxConns == 0 {
 			config.ElasticMaxConns = tomlConfig.ElasticMaxConns
+		}
+		if config.DirectReadSplitMax == 0 {
+			config.DirectReadSplitMax = tomlConfig.DirectReadSplitMax
 		}
 		if !config.ElasticRetry && tomlConfig.ElasticRetry {
 			config.ElasticRetry = true
@@ -2672,6 +2677,7 @@ func main() {
 		BufferDuration:      gtmBufferDuration,
 		BufferSize:          config.GtmSettings.BufferSize,
 		DirectReadNs:        config.DirectReadNs,
+		DirectReadSplitMax:  config.DirectReadSplitMax,
 		DirectReadFilter:    directReadFilter,
 		Log:                 infoLog,
 	}
