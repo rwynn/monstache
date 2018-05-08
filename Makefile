@@ -29,6 +29,9 @@ TARGET = monstache
 
 all: $(TARGET)
 
+release: $(TARGET).go
+	$(ENV_LINUX) $(GB) $(LDFLAGS) -v -o $(OUT_LINUX)
+
 $(TARGET): $(TARGET).go
 	$(ENV_LINUX) $(GB) $(LDFLAGS) -v -o $(OUT_LINUX)
 	$(ENV_WIN) $(GB) $(LDFLAGS) -v -o $(OUT_WIN)
