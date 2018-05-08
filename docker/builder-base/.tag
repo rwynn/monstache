@@ -1,1 +1,0 @@
-rwynn/monstache-builder-base:0.0.1

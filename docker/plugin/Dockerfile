@@ -1,6 +1,4 @@
-FROM golang:alpine
-
-RUN apk add --no-cache gcc go git musl-dev make zip
+FROM rwynn/monstache-builder:1.0.0 AS build-app
 
 WORKDIR /go/src/app
 
