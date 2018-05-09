@@ -68,7 +68,11 @@ elasticsearch-max-docs = 1
 # # resume-name = "default"
 
 # # include documents whose namespace matches the following pattern
-namespace-regex = '^*(test.test)$'
+# namespace-regex = '^*(test.test)$'
+# namespace-regex = '^*(test.)*$'
+namespace-regex = '^*test*$'
+# namespace-regex = '^*$'
+
 
 # direct-read-namespaces = [
 #   "test.test"
