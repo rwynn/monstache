@@ -31,13 +31,14 @@ if [ ! -z "${MONGO_USER_ROOT_NAME+x}" ] && [ ! -z "${MONGO_USER_ROOT_PASSWORD+x}
   mongo admin --eval "db.createUser({user: '$MONGO_USER_ROOT_NAME', pwd: '$MONGO_USER_ROOT_PASSWORD', roles:[{ role: 'root', db: 'admin' }]});"
 else
   echo 'ERROR: Mongo root user credentials are not provided!';
+  exit 1;
 fi
 
 # create admin user
 if [ ! -z "${MONGO_USER_ADMIN_NAME+x}" ] && [ ! -z "${MONGO_USER_ADMIN_PASSWORD+x}" ] ; then
   mongo admin --eval "db.createUser({user: '$MONGO_USER_ADMIN_NAME', pwd: '$MONGO_USER_ADMIN_PASSWORD', roles: [{ role: 'dbAdminAnyDatabase', db: 'admin' }, { role: 'dbAdmin', db: 'local' }]});"
 else
-  echo 'ERROR: Mongo admin user credentials are not provided!';
+  echo 'WARNING: Mongo admin user credentials are not provided!';
 fi
 
 # create app user
@@ -45,7 +46,7 @@ if [ ! -z "${MONGO_USER_APP_NAME+x}" ] && [ ! -z "${MONGO_USER_APP_PASSWORD+x}" 
   # mongo admin --eval "db.createUser({ user: '$MONGO_USER_APP_NAME', pwd: '$MONGO_USER_APP_PASSWORD', roles: [{ role: 'readWrite', db: '$MONGO_DB_NAME' }, { role: 'read', db: 'local' }]});"
   mongo "$MONGO_DB_NAME" --eval "db.createUser({ user: '$MONGO_USER_APP_NAME', pwd: '$MONGO_USER_APP_PASSWORD', roles: [{ role: 'readWrite', db: '$MONGO_DB_NAME' }, { role: 'read', db: 'local' }]});"
 else
-  echo 'ERROR: Mongo app user credentials are not provided!';
+  echo 'WARNING: Mongo app user credentials are not provided!';
 fi
 
 # create oplogger user
@@ -57,14 +58,14 @@ if [ ! -z "${MONGO_USER_OPLOGGER_NAME+x}" ] && [ ! -z "${MONGO_USER_OPLOGGER_PAS
   # mongo "admin" -u "$MONGO_USER_ROOT_NAME" -p "$MONGO_USER_ROOT_PASSWORD" --eval "db.createUser({ user: '$MONGO_USER_OPLOGGER_NAME', pwd: '$MONGO_USER_OPLOGGER_PASSWORD', roles: [{ role: 'read', db: 'local' }]});"
   # mongo admin --eval "db.createUser({ user: '$MONGO_USER_OPLOGGER_NAME', pwd: '$MONGO_USER_OPLOGGER_PASSWORD', roles: [], otherDBRoles: { local: [ 'read' ]}})"
 else
-  echo 'ERROR: Mongo oplogger user credentials are not provided!';
+  echo 'WARNING: Mongo oplogger user credentials are not provided!';
 fi
 
 # create backup user
 if [ ! -z "${MONGO_USER_APP_NAME+x}" ] && [ ! -z "${MONGO_USER_APP_PASSWORD+x}" ] ; then
   mongo admin --eval "db.createUser({ user: '$MONGO_USER_BACKUP_NAME', pwd: '$MONGO_USER_BACKUP_PASSWORD', roles: [{ role: 'backup', db: 'admin' }]});"
 else
-  echo 'ERROR: Mongo backup user credentials are not provided!';
+  echo 'WARNING: Mongo backup user credentials are not provided!';
 fi
 
 echo "Shutting down...";

@@ -10,3 +10,4 @@ set -eo pipefail;
 
 ./mongo-rep-set-wait.sh
 
+# TODO Create an empty database with the name $MONGO_DB_NAME
