@@ -1,0 +1,81 @@
+# https://www.elastic.co/guide/en/elasticsearch/reference/6.x/settings.html
+
+# https://www.elastic.co/guide/en/elasticsearch/reference/6.x/node.name.html
+node.name: ${ELASTIC6_SEARCH_NODE_NAME:es6-data}
+
+# https://www.elastic.co/guide/en/elasticsearch/reference/6.x/cluster.name.html
+# cluster.name: es6-cluster
+
+# discovery.type: single-node
+
+# bootstrap.mlockall: true
+# http.cors.allow-credentials: true
+http.cors.enabled: true
+# http.cors.allow-origin: http://localhost:9200
+# http.cors.allow-origin: "*"
+# TODO Remove this from production, or allow access only from localhost && the proxy app, as it will never be exposed publicly
+http.cors.allow-origin: "/.*/"
+# http.cors.allow-origin: /https?:\/\/localhost(:[0-9]+)?/
+# http.cors.allow-origin: http://localhost:1358,http://localhost:3030
+# http.cors.allow-origin: "http://127.0.0.1:9200"
+# http.cors.allow-headers: "X-Requested-With, Content-Type, Content-Length, Authorization, Access-Control-Allow-Origin"
+# http.cors.allow-headers: "X-Requested-With, X-Auth-Token, Content-Type, Content-Length, Authorization, Access-Control-Allow-Origin"
+http.cors.allow-headers: "X-Requested-With, WWW-Authenticate, X-Auth-Token, Content-Type, Content-Length, Authorization, Access-Control-Allow-Origin"
+# http.cors.allow-headers: X-Requested-With,X-Auth-Token,Content-Type,Content-Length,Authorization,Access-Control-Allow-Origin
+# http.cors.allow-headers: X-Requested-With,X-Auth-Token,Content-Type,Content-Length,Authorization
+http.cors.allow-methods: "GET, POST, PATCH, PUT, DELETE, OPTIONS"
+# http.cors.allow-methods: GET,POST,PATCH,PUT,DELETE,OPTIONS
+
+# http.port: ${ELASTIC6_SEARCH_DOCKER_PORT:9200}
+http.port: 9200
+
+# https://www.elastic.co/guide/en/elasticsearch/reference/6.x/modules-network.html#network-interface-values
+# https://www.elastic.co/guide/en/elasticsearch/reference/6.x/network.host.html
+network.host: 0.0.0.0
+# network.bind_host: 0.0.0.0
+
+# https://www.elastic.co/guide/en/x-pack/5.6/installing-xpack.html#xpack-enabling
+# xpack.security.enabled: false
+# xpack.ml.enabled: false
+# xpack.monitoring.enabled: false
+# xpack.watcher.enabled: false
+
+# xpack.security.authc:
+#   anonymous:
+#     username: anonymous_user
+#     roles: admin
+#     # roles: role1, role2
+#     authz_exception: true
+
+# # https://www.elastic.co/guide/en/elasticsearch/guide/current/_creating_an_index.html#_creating_an_index
+action.auto_create_index: true
+
+# https://www.elastic.co/guide/en/elasticsearch/reference/master/modules-threadpool.html
+thread_pool:
+  bulk:
+    queue_size: 200
+
+# https://www.elastic.co/guide/en/elasticsearch/reference/6.x/heap-size.html
+
+# https://www.elastic.co/guide/en/elasticsearch/reference/6.x/path-settings.html
+# path:
+#   logs: data/log
+#   logs: /var/log/elasticsearch
+#   data: /var/data/elasticsearch
+  # data:
+  #   - /mnt/elasticsearch_1
+  #   - /mnt/elasticsearch_2
+  #   - /mnt/elasticsearch_3
+
+
+# A command to run elasticsearch in docker
+# docker run --name es -d -p 9200:9200 elasticsearch:2 -Des.http.port=9200 -Des.http.cors.allow-origin="http://127.0.0.1:3030" -Des.http.cors.enabled=true -Des.http.cors.allow-headers=X-Requested-With,X-Auth-Token,Content-Type,Content-Length,Authorization -Des.http.cors.allow-credentials=true
+
+# -Des.http.port=9200
+# -Des.http.cors.allow-origin="/.*/"
+# -Des.http.cors.enabled=true
+# -Des.http.cors.allow-headers="X-Requested-With, X-Auth-Token, Content-Type, Content-Length, Authorization, Access-Control-Allow-Origin"
+# -Des.http.cors.allow-credentials=true
+# -Des.http.cors.allow-methods="GET, POST, PATCH, PUT, DELETE, OPTIONS"
+# -Des.http.host="0.0.0.0"
+# -Des.network.host="0.0.0.0"
