@@ -12,8 +12,8 @@ docker run --rm -d monstache-plugin tail -f /go/src/app/$plugin.go
 # Get the container id of the last created container
 CONTAINER_ID=$(docker ps -l -q)
 
-
 # If the folder docker-build exists locally
+# TODO add a step to confirm from the user before removing the existing folder
 if [ -d docker-build ] ; then
  # Then remove it
  rm -r docker-build
