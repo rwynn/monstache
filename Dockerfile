@@ -11,8 +11,8 @@ COPY . .
 
 RUN go get -d -v ./...
 
-# RUN make
-RUN go build -ldflags="-s -w" -v -o build/linux-amd64/monstache
+RUN make release
+# RUN go build -ldflags="-s -w" -v -o build/linux-amd64/monstache
 
 ####################################################################################################
 # Step 2: Copy output build file to an alpine image
