@@ -6,3 +6,7 @@ WORKDIR /go/src/app
 COPY . .
 
 RUN go get -d -v ./...
+
+# RUN make release
+
+# RUN ln -s build/linux-amd64/monstache monstache
