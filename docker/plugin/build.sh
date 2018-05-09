@@ -2,12 +2,21 @@
 
 plugin=$(<.plugin)
 
+MONSTACHE_SOURCE_CODE_PATH=${MONSTACHE_SOURCE_CODE_PATH:-../..}
+
 # # Build a docker image
-docker build --build-arg PLUGIN="$plugin" \
-       -f ./Dockerfile -t monstache-plugin ../..
+docker build \
+"$MONSTACHE_SOURCE_CODE_PATH" \
+-f ./Dockerfile \
+--build-arg PLUGIN="$plugin" \
+-t monstache-plugin
 
 # Start a container from the newly built docker image (the `tail -f` here is just a dummy process to keep the container running until stopped -tail with follow any file-)
-docker run --rm -d monstache-plugin tail -f /go/src/app/monstache.go
+docker run \
+--rm \
+-d \
+monstache-plugin \
+tail -f /go/src/app/monstache.go
 
 # Get the container id of the last created container
 CONTAINER_ID=$(docker ps -l -q)

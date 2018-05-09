@@ -23,6 +23,10 @@ Note: the script will remove an existing `docker-build` -if any- before exportin
 - Set the name of the file (without .go) in the file `.plugin`
 - Run script `./build.sh`
 
+## Result
+
+You should see `$PLUGIN.so` file under `docker-build` folder
+
 ### Run binaries
 
 - Linux: If your host is linux you may need to install `musl` to run the resulting binary. For example, on a debian system
