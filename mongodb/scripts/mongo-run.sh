@@ -72,4 +72,8 @@ $cmd &
 
 ./mongo-db-setup.sh
 
+# Create the health.check file indicating healthy
+MONGO_CONTAINER_HEALTHCHECK_FILE_PATH=${MONGO_CONTAINER_HEALTHCHECK_FILE_PATH:-/data/health.check}
+echo '1' >> "$MONGO_CONTAINER_HEALTHCHECK_FILE_PATH"
+
 fg

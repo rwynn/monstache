@@ -74,11 +74,11 @@ services:
       # MONGO_USER_BACKUP_PASSWORD: password
     ports:
       - "27017:27017"
-    # healthcheck:
-    #   test: "[ -f /data/health.check ] && exit 0 || exit 1"
-    #   interval: 1s
-    #   timeout: 30s
-    #   retries: 300
+    healthcheck:
+      test: "[ -f /data/health.check ] && exit 0 || exit 1"
+      interval: 1s
+      timeout: 30s
+      retries: 300
     restart: unless-stopped
 
   es6:
