@@ -42,9 +42,9 @@ elasticsearch-urls = ["http://es6:9200"]
 # use 10 go routines concurrently pushing documents to Elasticsearch
 elasticsearch-max-conns = 10
 
-# elasticsearch-max-seconds = 1
+elasticsearch-max-seconds = 1
 
-# elasticsearch-max-docs = 1
+elasticsearch-max-docs = 1
 
 # # use the following PEM file to connections to Elasticsearch
 # elasticsearch-pem-file = "/path/to/elasticCert.pem"
