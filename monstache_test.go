@@ -16,6 +16,10 @@ This test requires the following processes to be running on localhost
 	- mongodb
 	- monstache
 
+monstache should be run with the following settings to force bulk requests
+ -elasticsearch-max-docs 1
+ -elasticsearch-max-seconds 1
+
 WARNING: This test is destructive for the database test in mongodb and
 any index prefixed with test in elasticsearch
 
