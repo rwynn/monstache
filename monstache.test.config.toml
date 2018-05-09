@@ -64,11 +64,11 @@ elasticsearch-max-conns = 10
 # # resume-name = "default"
 
 # # include documents whose namespace matches the following pattern
-namespace-regex = '^*\.(test.test)$'
+namespace-regex = '^*(test.test)$'
 
-direct-read-namespaces = [
-  "test.test"
-]
+# direct-read-namespaces = [
+#   "test.test"
+# ]
 
 # print detailed information including request traces
 verbose = true
