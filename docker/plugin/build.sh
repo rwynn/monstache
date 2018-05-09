@@ -6,8 +6,8 @@ plugin=$(<.plugin)
 docker build --build-arg PLUGIN="$plugin" \
        -f ./Dockerfile -t monstache-plugin ../..
 
-# Start a container from the newly built docker image
-docker run --rm -d monstache-plugin tail -f /go/src/app/$plugin.go
+# Start a container from the newly built docker image (the `tail -f` here is just a dummy process to keep the container running until stopped -tail with follow any file-)
+docker run --rm -d monstache-plugin tail -f /go/src/app/monstache.go
 
 # Get the container id of the last created container
 CONTAINER_ID=$(docker ps -l -q)
@@ -21,7 +21,7 @@ fi
 
 mkdir docker-build
 
-docker cp "$CONTAINER_ID":/go/src/app/$plugin.so ./docker-build/$plugin.so
+docker cp "$CONTAINER_ID":/go/src/app/docker/plugin/$plugin.so ./docker-build/$plugin.so
 
 # Stop the container (it'll be removed automatically once stopped, as we used `--rm`)
 docker stop "$CONTAINER_ID"
