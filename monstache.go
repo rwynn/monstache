@@ -2310,7 +2310,7 @@ func gtmDefaultSettings() gtmSettings {
 	return gtmSettings{
 		ChannelSize:    gtmChannelSizeDefault,
 		BufferSize:     32,
-		BufferDuration: "750ms",
+		BufferDuration: "75ms",
 	}
 }
 
