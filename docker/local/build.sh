@@ -1,10 +1,19 @@
 #!/bin/bash
 
+MONSTACHE_SOURCE_CODE_PATH=${MONSTACHE_SOURCE_CODE_PATH:-../..}
+
 # # Build a docker image
-docker build ../.. -f ./Dockerfile -t monstache-build
+docker build \
+"$MONSTACHE_SOURCE_CODE_PATH" \
+-f ./Dockerfile \
+-t monstache-build
 
 # Start a container from the newly built docker image
-docker run --rm -d monstache-build tail -f /go/src/app/monstache.go
+docker run \
+--rm \
+-d \
+monstache-build \
+tail -f /go/src/app/monstache.go
 
 # Get the container id of the last created container
 CONTAINER_ID=$(docker ps -l -q)
