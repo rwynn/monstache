@@ -30,6 +30,7 @@ services:
     image: rwynn/monstache-test-runner
     container_name: c-monstache-test-runner
     command: go test -v
+    # command: go test -v -delay 20
     build:
       context: ./
       dockerfile: ./Dockerfile-test
