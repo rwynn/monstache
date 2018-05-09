@@ -4,7 +4,7 @@ plugin=$(<.plugin)
 
 # # Build a docker image
 docker build --build-arg PLUGIN="$plugin" \
-       -f ./Dockerfile -t monstache-plugin .
+       -f ./Dockerfile -t monstache-plugin ../..
 
 # Start a container from the newly built docker image
 docker run --rm -d monstache-plugin tail -f /go/src/app/$plugin.go
