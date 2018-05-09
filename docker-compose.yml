@@ -5,14 +5,11 @@ services:
   monstache:
     image: rwynn/monstache-test
     container_name: c-monstache
-    # command: monstache -f /go/src/app/monstache.test.config.toml
-    # command: monstache -f ./monstache.test.config.toml
+    working_dir: /go/src/app
     command: -f ./monstache.test.config.toml
-    # command: /bin/monstache -f ./monstache.test.config.toml
     build:
       context: ./
       dockerfile: ./Dockerfile
-    working_dir: /go/src/app
     volumes:
       - $PWD/monstache.test.config.toml:/go/src/app/monstache.test.config.toml
     depends_on:
@@ -51,11 +48,6 @@ services:
       ELASTIC_SEARCH_URL: 'http://es6:9200'
     restart: unless-stopped
 
-  # mongodb:
-  #   image: mongo:3.4.14-jessie
-  #   container_name: c-mongo
-  #   restart: unless-stopped
-
   mongo-0:
     image: mongo:3.4.14-jessie
     container_name: c-mongo-0
@@ -63,6 +55,23 @@ services:
     working_dir: /scripts
     volumes:
       - ./mongodb/scripts:/scripts
+    environment:
+      MONGO_REPLICA_SET_NAME: rs0
+      MONGO_REPLICAS: mongo-0:27017
+      MONGO_REPLICA_SET_MEMBERS: "[{'_id':0,'host':'mongo-0:27017','priority':1}]"
+      MONGO_USER_ROOT_NAME: root-user
+      MONGO_USER_ROOT_PASSWORD: password
+      MONGO_AUTH_SOURCE: admin
+      MONGO_BIND_IP: "0.0.0.0"
+      # MONGO_DB_NAME: test
+      # MONGO_USER_ADMIN_NAME: admin-user
+      # MONGO_USER_ADMIN_PASSWORD: password
+      # MONGO_USER_APP_NAME: app-user
+      # MONGO_USER_APP_PASSWORD: password
+      # MONGO_USER_OPLOGGER_NAME: oplogger-user
+      # MONGO_USER_OPLOGGER_PASSWORD: password
+      # MONGO_USER_BACKUP_NAME: backup-user
+      # MONGO_USER_BACKUP_PASSWORD: password
     ports:
       - "27017:27017"
     # healthcheck:
@@ -71,7 +80,6 @@ services:
     #   timeout: 30s
     #   retries: 300
     restart: unless-stopped
-
 
   es6:
     image: docker.elastic.co/elasticsearch/elasticsearch-oss:6.2.4
