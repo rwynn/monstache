@@ -42,6 +42,7 @@ import (
 )
 
 var infoLog = log.New(os.Stdout, "INFO ", log.Flags())
+var warnLog = log.New(os.Stdout, "WARN ", log.Flags())
 var statsLog = log.New(os.Stdout, "STATS ", log.Flags())
 var traceLog = log.New(os.Stdout, "TRACE ", log.Flags())
 var errorLog = log.New(os.Stderr, "ERROR ", log.Flags())
@@ -121,6 +122,7 @@ type findCall struct {
 
 type logFiles struct {
 	Info  string
+	Warn  string
 	Error string
 	Trace string
 	Stats string
@@ -272,13 +274,17 @@ func afterBulk(executionId int64, requests []elastic.BulkableRequest, response *
 	if response != nil && response.Errors {
 		failed := response.Failed()
 		if failed != nil {
-			errorLog.Printf("Bulk index request with execution ID %d has %d line failure(s)", executionId, len(failed))
+			errorLog.Printf("Bulk index request with execution ID %d has %d line failure/warning(s)", executionId, len(failed))
 			for i, item := range failed {
 				json, err := json.Marshal(item)
 				if err != nil {
 					errorLog.Printf("Unable to marshall failed request line #%d: %s", i, err)
 				} else {
-					errorLog.Printf("Failed request line #%d details: %s", i, string(json))
+					if item.Status == 409 {
+						warnLog.Printf("Conflict request line #%d details: %s", i, string(json))
+					} else {
+						errorLog.Printf("Failed request line #%d details: %s", i, string(json))
+					}
 				}
 			}
 		}
@@ -331,10 +337,10 @@ func (config *configOptions) newBulkProcessor(client *elastic.Client) (bulk *ela
 
 func (config *configOptions) newStatsBulkProcessor(client *elastic.Client) (bulk *elastic.BulkProcessor, err error) {
 	bulkService := client.BulkProcessor().Name("monstache-stats")
-	bulkService.Workers(2)
+	bulkService.Workers(1)
 	bulkService.Stats(false)
 	bulkService.BulkActions(-1)
-	bulkService.BulkSize(elasticMaxBytesDefault)
+	bulkService.BulkSize(-1)
 	bulkService.FlushInterval(time.Duration(5) * time.Second)
 	bulkService.After(afterBulk)
 	return bulkService.Do(context.Background())
@@ -790,7 +796,7 @@ func addFileContent(s *mgo.Session, op *gtm.Op, config *configOptions) (err erro
 	defer file.Close()
 	if config.MaxFileSize > 0 {
 		if file.Size() > config.MaxFileSize {
-			infoLog.Printf("File %s md5(%s) exceeds max file size. file content omitted.",
+			warnLog.Printf("File %s md5(%s) exceeds max file size. file content omitted.",
 				file.Name(), file.MD5())
 			return
 		}
@@ -1404,6 +1410,7 @@ func (config *configOptions) setupLogging() *configOptions {
 			errorLog.Fatalf("Error creating gelf writer: %s", err)
 		}
 		infoLog.SetOutput(gelfWriter)
+		warnLog.SetOutput(gelfWriter)
 		errorLog.SetOutput(gelfWriter)
 		traceLog.SetOutput(gelfWriter)
 		statsLog.SetOutput(gelfWriter)
@@ -1411,6 +1418,9 @@ func (config *configOptions) setupLogging() *configOptions {
 		logs := config.Logs
 		if logs.Info != "" {
 			infoLog.SetOutput(config.newLogger(logs.Info))
+		}
+		if logs.Warn != "" {
+			warnLog.SetOutput(config.newLogger(logs.Warn))
 		}
 		if logs.Error != "" {
 			errorLog.SetOutput(config.newLogger(logs.Error))
@@ -2319,7 +2329,7 @@ func notifySdFailed(config *configOptions, err error) {
 		errorLog.Printf("Systemd notification failed: %s", err)
 	} else {
 		if config.Verbose {
-			infoLog.Println("Systemd notification not supported (i.e. NOTIFY_SOCKET is unset)")
+			warnLog.Println("Systemd notification not supported (i.e. NOTIFY_SOCKET is unset)")
 		}
 	}
 }
@@ -2329,7 +2339,7 @@ func watchdogSdFailed(config *configOptions, err error) {
 		errorLog.Printf("Error determining systemd WATCHDOG interval: %s", err)
 	} else {
 		if config.Verbose {
-			infoLog.Println("Systemd WATCHDOG not enabled")
+			warnLog.Println("Systemd WATCHDOG not enabled")
 		}
 	}
 }
