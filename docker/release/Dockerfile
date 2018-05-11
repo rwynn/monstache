@@ -1,21 +1,18 @@
-FROM rwynn/monstache-builder:1.0.0 AS deps-cache
+####################################################################################################
+# Step 1: Build the app
+####################################################################################################
 
-WORKDIR /go/src/app
+FROM rwynn/monstache-builder-cache:1.0.1 AS build-app
 
-COPY . .
-
-RUN go get -d -v ./...
-
-FROM rwynn/monstache-builder:1.0.0 AS make-app
-
-COPY --from=deps-cache /go /go
-COPY --from=deps-cache /usr/lib/go /usr/lib/go
-
-WORKDIR /go/src/app
+WORKDIR /go/src/cache-app
 
 COPY . .
 
 RUN make release
+
+####################################################################################################
+# Step 2: Copy output build file to an alpine image
+####################################################################################################
 
 FROM quadric/alpine-certs:3.7 AS final
 
@@ -34,4 +31,4 @@ LABEL org.label-schema.build-date=$BUILD_DATE \
 
 ENTRYPOINT ["/bin/monstache"]
 
-COPY --from=make-app /go/src/app/build/linux-amd64/monstache /bin/monstache
+COPY --from=build-app /go/src/cache-app/build/linux-amd64/monstache /bin/monstache
