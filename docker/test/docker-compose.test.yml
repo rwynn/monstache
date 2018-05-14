@@ -1,0 +1,101 @@
+version: "2.3"
+
+services:
+
+  monstache:
+    image: rwynn/monstache-test-rel3
+    container_name: c-monstache
+    working_dir: /go/src/cache-app
+    command: -f ./monstache.test.config.toml
+    build:
+      context: ../..
+      dockerfile: ./Dockerfile
+    volumes:
+      - $PWD/monstache.test.config.toml:/go/src/cache-app/monstache.test.config.toml
+    depends_on:
+      mongo-0:
+        condition: service_started
+      es5:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: "wget -q -O - http://localhost:8080/healthz"
+      interval: 1s
+      timeout: 30s
+      retries: 300
+    restart: unless-stopped
+
+  sut:
+    image: rwynn/monstache-test-runner-rel3
+    container_name: c-monstache-test-runner
+    command: go test -v
+    build:
+      context: ../..
+      dockerfile: ./docker/test/Dockerfile
+    working_dir: /go/src/cache-app
+    volumes:
+      - $PWD/../..:/go/src/cache-app
+    depends_on:
+      mongo-0:
+        condition: service_started
+      es5:
+        condition: service_healthy
+      monstache:
+        condition: service_healthy
+    environment:
+      MONGO_DB_URL: 'mongodb://root-user:password@mongo-0:27017'
+      ELASTIC_SEARCH_USER: 'elastic'
+      ELASTIC_SEARCH_PASS: 'changeme'
+      ELASTIC_SEARCH_URL: 'http://es5:9200'
+
+  mongo-0:
+    image: mongo:3.4.14-jessie
+    logging:
+      driver: none
+    container_name: c-mongo-0
+    command: /scripts/mongo-run.sh
+    working_dir: /scripts
+    volumes:
+      - ./mongodb/scripts:/scripts
+    environment:
+      MONGO_REPLICA_SET_NAME: rs0
+      MONGO_REPLICAS: mongo-0:27017
+      MONGO_REPLICA_SET_MEMBERS: "[{'_id':0,'host':'mongo-0:27017','priority':1}]"
+      MONGO_USER_ROOT_NAME: root-user
+      MONGO_USER_ROOT_PASSWORD: password
+      MONGO_AUTH_SOURCE: admin
+      MONGO_BIND_IP: "0.0.0.0"
+      # MONGO_DB_NAME: test
+      # MONGO_USER_ADMIN_NAME: admin-user
+      # MONGO_USER_ADMIN_PASSWORD: password
+      # MONGO_USER_APP_NAME: app-user
+      # MONGO_USER_APP_PASSWORD: password
+      # MONGO_USER_OPLOGGER_NAME: oplogger-user
+      # MONGO_USER_OPLOGGER_PASSWORD: password
+      # MONGO_USER_BACKUP_NAME: backup-user
+      # MONGO_USER_BACKUP_PASSWORD: password
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: "[ -f /data/health.check ] && exit 0 || exit 1"
+      interval: 1s
+      timeout: 30s
+      retries: 300
+    restart: unless-stopped
+
+  es5:
+    image: docker.elastic.co/elasticsearch/elasticsearch:5.6.9
+    logging:
+      driver: none
+    container_name: c-es5
+    # volumes:
+    #   - ./elasticsearch/elasticsearch.config.yml:/usr/share/elasticsearch/config/elasticsearch.yml
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: "wget --user elastic --password changeme -q -O - http://localhost:9200/_cat/health"
+      interval: 1s
+      timeout: 30s
+      retries: 300
+    restart: unless-stopped
