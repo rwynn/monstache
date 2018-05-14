@@ -2443,17 +2443,6 @@ func (ctx *httpServerCtx) buildServer() {
 			}
 		})
 	}
-	mux.HandleFunc("/config", func(w http.ResponseWriter, req *http.Request) {
-		conf, err := json.MarshalIndent(ctx.config, "", "    ")
-		if err == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(200)
-			w.Write(conf)
-		} else {
-			w.WriteHeader(500)
-			fmt.Fprintf(w, "Unable to print config: %s", err)
-		}
-	})
 	s := &http.Server{
 		Addr:     ctx.config.HTTPServerAddr,
 		Handler:  mux,
