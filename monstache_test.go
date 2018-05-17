@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/globalsign/mgo"
+	"github.com/olivere/elastic"
+	"github.com/rwynn/gtm"
+	"golang.org/x/net/context"
+	"math"
 	"os"
 	"testing"
 	"time"
-
-	"github.com/globalsign/mgo"
-	"github.com/olivere/elastic"
-	"golang.org/x/net/context"
 )
 
 /*
@@ -44,7 +45,7 @@ func getEnv(key, fallback string) string {
 
 var mongoUrl = getEnv("MONGO_DB_URL", "localhost:27017")
 
-var elasticUrl = getEnv("ELASTIC_SEARCH_URL", "localhost:9200")
+var elasticUrl = getEnv("ELASTIC_SEARCH_URL", "http://localhost:9200")
 
 var elasticUrlConfig = elastic.SetURL(elasticUrl)
 var elasticNoSniffConfig = elastic.SetSniff(false)
@@ -74,6 +75,75 @@ func ValidateDocResponse(t *testing.T, doc map[string]string, resp *elastic.GetR
 	}
 	if src["data"].(string) != doc["data"] {
 		t.Fatalf("elasticsearch data %s does not match mongo data %s", src["data"], doc["data"])
+	}
+}
+
+func TestParseElasticsearchVersion(t *testing.T) {
+	var err error
+	c := &configOptions{}
+	err = c.parseElasticsearchVersion("6.2.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ElasticMajorVersion != 6 {
+		t.Fatalf("Expect major version 6")
+	}
+	if c.ElasticMinorVersion != 2 {
+		t.Fatalf("Expect minor version 2")
+	}
+	err = c.parseElasticsearchVersion("")
+	if err == nil {
+		t.Fatalf("Expected error for blank version")
+	}
+	err = c.parseElasticsearchVersion("0")
+	if err == nil {
+		t.Fatalf("Expected error for invalid version")
+	}
+}
+
+func TestOpIdToString(t *testing.T) {
+	var result string
+	var id float64 = 10.0
+	var id2 int64 = 1
+	var id3 float32 = 12.0
+	op := &gtm.Op{Id: id}
+	result = opIDToString(op)
+	if result != "10" {
+		t.Fatalf("Expected decimal dropped from float64 for ID")
+	}
+	op.Id = id2
+	result = opIDToString(op)
+	if result != "1" {
+		t.Fatalf("Expected int64 converted to string")
+	}
+	op.Id = id3
+	result = opIDToString(op)
+	if result != "12" {
+		t.Fatalf("Expected int64 converted to string")
+	}
+}
+
+func TestPruneInvalidJSON(t *testing.T) {
+	ts := time.Date(-1, time.November, 10, 23, 0, 0, 0, time.UTC)
+	m := make(map[string]interface{})
+	m["a"] = math.Inf(1)
+	m["b"] = math.Inf(-1)
+	m["c"] = math.NaN()
+	m["d"] = 1
+	m["e"] = ts
+	m["f"] = []interface{}{m["a"], m["b"], m["c"], m["d"], m["e"]}
+	out := fixPruneInvalidJSON("docId-1", m)
+	if len(out) != 2 {
+		t.Fatalf("Expected 4 fields to be pruned")
+	}
+	if out["d"] != 1 {
+		t.Fatalf("Expected 1 field to remain intact")
+	}
+	if len(out["f"].([]interface{})) != 1 {
+		t.Fatalf("Expected 4 array fields to be pruned")
+	}
+	if out["f"].([]interface{})[0] != 1 {
+		t.Fatalf("Expected 1 array field to remain intact")
 	}
 }
 
@@ -133,11 +203,9 @@ func TestParseSecureMongoUrl(t *testing.T) {
 
 func TestInsert(t *testing.T) {
 	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
-	// client, err := elastic.NewSimpleClient(elasticUrlConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// session, err := mgo.Dial(getEnv("MONGO_DB_URL", "localhost"))
 	session, err := mgo.Dial(mongoUrl)
 	if err != nil {
 		t.Fatal(err)
@@ -162,11 +230,9 @@ func TestInsert(t *testing.T) {
 
 func TestUpdate(t *testing.T) {
 	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
-	// client, err := elastic.NewSimpleClient(elasticUrlConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// session, err := mgo.Dial(getEnv("MONGO_DB_URL", "localhost"))
 	session, err := mgo.Dial(mongoUrl)
 	if err != nil {
 		t.Fatal(err)
@@ -201,11 +267,9 @@ func TestUpdate(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
-	// client, err := elastic.NewSimpleClient(elasticUrlConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// session, err := mgo.Dial(getEnv("MONGO_DB_URL", "localhost"))
 	session, err := mgo.Dial(mongoUrl)
 	if err != nil {
 		t.Fatal(err)
@@ -238,11 +302,9 @@ func TestDelete(t *testing.T) {
 
 func TestDropDatabase(t *testing.T) {
 	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
-	// client, err := elastic.NewSimpleClient(elasticUrlConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// session, err := mgo.Dial(getEnv("MONGO_DB_URL", "localhost"))
 	session, err := mgo.Dial(mongoUrl)
 	if err != nil {
 		t.Fatal(err)
@@ -279,11 +341,9 @@ func TestDropDatabase(t *testing.T) {
 
 func TestDropCollection(t *testing.T) {
 	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
-	// client, err := elastic.NewSimpleClient(elasticUrlConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// session, err := mgo.Dial(getEnv("MONGO_DB_URL", "localhost"))
 	session, err := mgo.Dial(mongoUrl)
 	if err != nil {
 		t.Fatal(err)

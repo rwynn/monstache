@@ -313,9 +313,11 @@ func (config *configOptions) parseElasticsearchVersion(number string) (err error
 				err = errors.New("Invalid Elasticsearch major version 0")
 			}
 		}
-		minorVersion, err = strconv.Atoi(versionParts[1])
-		if err == nil {
-			config.ElasticMinorVersion = minorVersion
+		if len(versionParts) > 1 {
+			minorVersion, err = strconv.Atoi(versionParts[1])
+			if err == nil {
+				config.ElasticMinorVersion = minorVersion
+			}
 		}
 	}
 	return
