@@ -1,0 +1,10 @@
+sudo: required
+
+services:
+  - docker
+
+install: true
+
+before_script: cd docker/test
+
+script: ./run-tests.sh
