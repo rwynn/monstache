@@ -2,11 +2,9 @@
 
 plugin=$(<.plugin)
 
-MONSTACHE_SOURCE_CODE_PATH=${MONSTACHE_SOURCE_CODE_PATH:-../..}
-
 # # Build a docker image
 docker build \
-"$MONSTACHE_SOURCE_CODE_PATH" \
+. \
 -f ./Dockerfile \
 --build-arg PLUGIN="$plugin" \
 -t monstache-plugin
@@ -16,7 +14,7 @@ docker run \
 --rm \
 -d \
 monstache-plugin \
-tail -f /go/src/app/monstache.go
+tail -f /proc/loadavg
 
 # Get the container id of the last created container
 CONTAINER_ID=$(docker ps -l -q)
@@ -30,7 +28,7 @@ fi
 
 mkdir docker-build
 
-docker cp "$CONTAINER_ID":/go/src/app/docker/plugin/$plugin.so ./docker-build/$plugin.so
+docker cp "$CONTAINER_ID":/go/src/app/$plugin.so ./docker-build/$plugin.so
 
 # Stop the container (it'll be removed automatically once stopped, as we used `--rm`)
 docker stop "$CONTAINER_ID"

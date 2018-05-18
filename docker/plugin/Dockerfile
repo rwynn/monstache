@@ -8,4 +8,4 @@ COPY . .
 
 RUN go get -d -v ./...
 
-RUN go build -buildmode=plugin -o ./docker/plugin/$PLUGIN.so ./docker/plugin/$PLUGIN.go
+RUN go build -buildmode=plugin -o $PLUGIN.so $PLUGIN.go

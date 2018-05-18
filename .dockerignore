@@ -1,5 +1,4 @@
 monstache
 build
 images
-# docker (docker folder has to be passed so we can build plugins in docker/plugin)
-docker/*/docker-build
+docker
