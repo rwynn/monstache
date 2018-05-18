@@ -1,5 +1,9 @@
 version: "2.3"
 
+networks:
+  test:
+    driver: bridge
+
 services:
 
   monstache:
@@ -19,6 +23,8 @@ services:
         condition: service_healthy
     ports:
       - "8080:8080"
+    networks:
+      - test
     healthcheck:
       test: "wget -q -O - http://localhost:8080/healthz"
       interval: 1s
@@ -28,7 +34,7 @@ services:
 
   sut:
     image: rwynn/monstache-test-runner
-    container_name: c-monstache-test-runner
+    container_name: c-sut
     command: go test -v
     build:
       context: ../..
@@ -46,12 +52,14 @@ services:
     environment:
       MONGO_DB_URL: 'mongodb://root-user:password@mongo-0:27017'
       ELASTIC_SEARCH_URL: 'http://es6:9200'
+    networks:
+      - test
 
   mongo-0:
     image: mongo:3.4.14-jessie
     logging:
       driver: none
-    container_name: c-mongo-0
+    container_name: c-mongo
     command: /scripts/mongo-run.sh
     working_dir: /scripts
     volumes:
@@ -75,6 +83,8 @@ services:
       # MONGO_USER_BACKUP_PASSWORD: password
     ports:
       - "27017:27017"
+    networks:
+      - test
     healthcheck:
       test: "[ -f /data/health.check ] && exit 0 || exit 1"
       interval: 1s
@@ -86,11 +96,13 @@ services:
     image: docker.elastic.co/elasticsearch/elasticsearch-oss:6.2.4
     logging:
       driver: none
-    container_name: c-es6
+    container_name: c-es
     # volumes:
     #   - ./elasticsearch/elasticsearch.config.yml:/usr/share/elasticsearch/config/elasticsearch.yml
     ports:
       - "9200:9200"
+    networks:
+      - test
     healthcheck:
       test: "wget -q -O - http://localhost:9200/_cat/health"
       interval: 1s
