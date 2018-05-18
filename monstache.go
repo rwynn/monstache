@@ -600,7 +600,7 @@ func fixSlicePruneInvalidJSON(id string, a []interface{}) []interface{} {
 			year := achild.Year()
 			if year < 0 || year > 9999 {
 				// year outside of valid range
-				errorLog.Printf("Dropping invalid time.Time value: %s for document _id: %s", achild, id)
+				warnLog.Printf("Dropping invalid time.Time value: %s for document _id: %s", achild, id)
 				continue
 			} else {
 				avc = av
@@ -608,11 +608,11 @@ func fixSlicePruneInvalidJSON(id string, a []interface{}) []interface{} {
 		case float64:
 			if math.IsNaN(achild) {
 				// causes an error in the json serializer
-				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", achild, id)
+				warnLog.Printf("Dropping invalid float64 value: %v for document _id: %s", achild, id)
 				continue
 			} else if math.IsInf(achild, 0) {
 				// causes an error in the json serializer
-				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", achild, id)
+				warnLog.Printf("Dropping invalid float64 value: %v for document _id: %s", achild, id)
 				continue
 			} else {
 				avc = av
@@ -637,7 +637,7 @@ func fixPruneInvalidJSON(id string, e map[string]interface{}) map[string]interfa
 			year := child.Year()
 			if year < 0 || year > 9999 {
 				// year outside of valid range
-				errorLog.Printf("Dropping invalid time.Time value: %s for document _id: %s", child, id)
+				warnLog.Printf("Dropping invalid time.Time value: %s for document _id: %s", child, id)
 				continue
 			} else {
 				o[k] = v
@@ -645,11 +645,11 @@ func fixPruneInvalidJSON(id string, e map[string]interface{}) map[string]interfa
 		case float64:
 			if math.IsNaN(child) {
 				// causes an error in the json serializer
-				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", child, id)
+				warnLog.Printf("Dropping invalid float64 value: %v for document _id: %s", child, id)
 				continue
 			} else if math.IsInf(child, 0) {
 				// causes an error in the json serializer
-				errorLog.Printf("Dropping invalid float64 value: %v for document _id: %s", child, id)
+				warnLog.Printf("Dropping invalid float64 value: %v for document _id: %s", child, id)
 				continue
 			} else {
 				o[k] = v
