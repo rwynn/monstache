@@ -8,7 +8,10 @@ WORKDIR /go/src/cache-app
 
 COPY . .
 
-RUN go build -ldflags="-s -w" -v -o build/linux-amd64/monstache
+RUN go get -d -v ./...
+
+RUN make release
+# RUN go build -ldflags="-s -w" -v -o build/linux-amd64/monstache
 
 ####################################################################################################
 # Step 2: Copy output build file to an alpine image
