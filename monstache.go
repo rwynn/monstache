@@ -1169,7 +1169,7 @@ func (config *configOptions) loadPlugins() *configOptions {
 		if err == nil {
 			switch filter.(type) {
 			case func(*monstachemap.MapperPluginInput) (bool, error):
-				filterPlugin = mapper.(func(*monstachemap.MapperPluginInput) (bool, error))
+				filterPlugin = filter.(func(*monstachemap.MapperPluginInput) (bool, error))
 			default:
 				errorLog.Panicf("Plugin 'Filter' function must be typed %T", filterPlugin)
 			}
