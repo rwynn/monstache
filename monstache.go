@@ -170,7 +170,6 @@ type configOptions struct {
 	MongoValidatePemFile     bool                 `toml:"mongo-validate-pem-file"`
 	MongoOpLogDatabaseName   string               `toml:"mongo-oplog-database-name"`
 	MongoOpLogCollectionName string               `toml:"mongo-oplog-collection-name"`
-	MongoCursorTimeout       string               `toml:"mongo-cursor-timeout"`
 	MongoDialSettings        mongoDialSettings    `toml:"mongo-dial-settings"`
 	MongoSessionSettings     mongoSessionSettings `toml:"mongo-session-settings"`
 	GtmSettings              gtmSettings          `toml:"gtm-settings"`
@@ -989,7 +988,6 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.MongoValidatePemFile, "mongo-validate-pem-file", true, "Set to boolean false to not validate the MongoDB PEM file")
 	flag.StringVar(&config.MongoOpLogDatabaseName, "mongo-oplog-database-name", "", "Override the database name which contains the mongodb oplog")
 	flag.StringVar(&config.MongoOpLogCollectionName, "mongo-oplog-collection-name", "", "Override the collection name which contains the mongodb oplog")
-	flag.StringVar(&config.MongoCursorTimeout, "mongo-cursor-timeout", "", "Override the duration before a cursor timeout occurs when tailing the oplog")
 	flag.StringVar(&config.GraylogAddr, "graylog-addr", "", "Send logs to a Graylog server at this address")
 	flag.StringVar(&config.ElasticVersion, "elasticsearch-version", "", "Specify elasticsearch version directly instead of getting it from the server")
 	flag.StringVar(&config.ElasticUser, "elasticsearch-user", "", "The elasticsearch user name for basic auth")
@@ -1208,9 +1206,6 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.MongoOpLogCollectionName == "" {
 			config.MongoOpLogCollectionName = tomlConfig.MongoOpLogCollectionName
-		}
-		if config.MongoCursorTimeout == "" {
-			config.MongoCursorTimeout = tomlConfig.MongoCursorTimeout
 		}
 		if config.ElasticUser == "" {
 			config.ElasticUser = tomlConfig.ElasticUser
@@ -2607,15 +2602,12 @@ func main() {
 	nsFilter = gtm.ChainOpFilters(filterChain...)
 	filter = gtm.ChainOpFilters(filterArray...)
 	directReadFilter = gtm.ChainOpFilters(filterArray...)
-	var oplogDatabaseName, oplogCollectionName, cursorTimeout *string
+	var oplogDatabaseName, oplogCollectionName *string
 	if config.MongoOpLogDatabaseName != "" {
 		oplogDatabaseName = &config.MongoOpLogDatabaseName
 	}
 	if config.MongoOpLogCollectionName != "" {
 		oplogCollectionName = &config.MongoOpLogCollectionName
-	}
-	if config.MongoCursorTimeout != "" {
-		cursorTimeout = &config.MongoCursorTimeout
 	}
 	if config.ClusterName != "" {
 		if err = ensureClusterTTL(mongo); err == nil {
@@ -2671,7 +2663,6 @@ func main() {
 		NamespaceFilter:     nsFilter,
 		OpLogDatabaseName:   oplogDatabaseName,
 		OpLogCollectionName: oplogCollectionName,
-		CursorTimeout:       cursorTimeout,
 		ChannelSize:         config.GtmSettings.ChannelSize,
 		Ordering:            gtm.AnyOrder,
 		WorkerCount:         10,
