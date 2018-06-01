@@ -30,6 +30,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"plugin"
@@ -187,6 +188,8 @@ type configOptions struct {
 	ClusterName              string               `toml:"cluster-name"`
 	Print                    bool                 `toml:"print-config"`
 	Version                  bool
+	Pprof                    bool
+	EnableEasyJSON           bool `toml:"enable-easy-json"`
 	Stats                    bool
 	IndexStats               bool   `toml:"index-stats"`
 	StatsDuration            string `toml:"stats-duration"`
@@ -1008,6 +1011,8 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.Version, "v", false, "True to print the version number")
 	flag.BoolVar(&config.Gzip, "gzip", false, "True to use gzip for requests to elasticsearch")
 	flag.BoolVar(&config.Verbose, "verbose", false, "True to output verbose messages")
+	flag.BoolVar(&config.Pprof, "pprof", false, "True to enable pprof endpoints")
+	flag.BoolVar(&config.EnableEasyJSON, "enable-easy-json", false, "True to enable easy-json serialization")
 	flag.BoolVar(&config.Stats, "stats", false, "True to print out statistics")
 	flag.BoolVar(&config.IndexStats, "index-stats", false, "True to index stats in elasticsearch")
 	flag.StringVar(&config.StatsDuration, "stats-duration", "", "The duration after which stats are logged")
@@ -1269,6 +1274,12 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if !config.Stats && tomlConfig.Stats {
 			config.Stats = true
+		}
+		if !config.Pprof && tomlConfig.Pprof {
+			config.Pprof = true
+		}
+		if !config.EnableEasyJSON && tomlConfig.EnableEasyJSON {
+			config.EnableEasyJSON = true
 		}
 		if !config.IndexStats && tomlConfig.IndexStats {
 			config.IndexStats = true
@@ -1774,6 +1785,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 	}
 	req := elastic.NewBulkIndexRequest()
 
+	req.UseEasyJSON(config.EnableEasyJSON)
 	req.Id(objectID)
 	req.Index(indexType.Index)
 	req.Type(indexType.Type)
@@ -1834,6 +1846,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 				data["_oplog_date"] = t.Format("2006/01/02 15:04:05")
 			}
 			req = elastic.NewBulkIndexRequest()
+			req.UseEasyJSON(config.EnableEasyJSON)
 			req.Index(tmIndex(indexType.Index))
 			req.Type(indexType.Type)
 			req.Routing(objectID)
@@ -1885,6 +1898,7 @@ func doIndexStats(config *configOptions, bulkStats *elastic.BulkProcessor, stats
 		typeName = typeFromFuture
 	}
 	req := elastic.NewBulkIndexRequest().Index(index).Type(typeName)
+	req.UseEasyJSON(config.EnableEasyJSON)
 	req.Doc(doc)
 	bulkStats.Add(req)
 	return
@@ -2255,6 +2269,7 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 
 func doDelete(config *configOptions, client *elastic.Client, mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
 	req := elastic.NewBulkDeleteRequest()
+	req.UseEasyJSON(config.EnableEasyJSON)
 	if config.DeleteStrategy == ignoreDeleteStrategy {
 		return
 	}
@@ -2376,6 +2391,13 @@ func (ctx *httpServerCtx) buildServer() {
 				fmt.Fprintf(w, "Unable to print statistics: %s", err)
 			}
 		})
+	}
+	if ctx.config.Pprof {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	}
 	s := &http.Server{
 		Addr:     ctx.config.HTTPServerAddr,
