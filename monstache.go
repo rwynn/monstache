@@ -2272,17 +2272,23 @@ func (fc *findCall) execute() (r otto.Value, err error) {
 			mq.Select(fc.sel)
 		}
 		if err = mq.All(&docs); err == nil {
-			r, err = fc.getVM().ToValue(docs)
+			var rdocs []map[string]interface{}
+			for _, doc := range docs {
+				rdocs = append(rdocs, convertMapJavascript(doc))
+			}
+			r, err = fc.getVM().ToValue(rdocs)
 		}
 	} else {
 		doc := make(map[string]interface{})
 		if fc.config.byId {
 			if err = col.FindId(fc.query).One(doc); err == nil {
-				r, err = fc.getVM().ToValue(doc)
+				rdoc := convertMapJavascript(doc)
+				r, err = fc.getVM().ToValue(rdoc)
 			}
 		} else {
 			if err = col.Find(fc.query).One(doc); err == nil {
-				r, err = fc.getVM().ToValue(doc)
+				rdoc := convertMapJavascript(doc)
+				r, err = fc.getVM().ToValue(rdoc)
 			}
 		}
 	}
