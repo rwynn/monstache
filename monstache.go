@@ -2195,20 +2195,21 @@ func (fc *findCall) restoreIds(v interface{}) (r interface{}) {
 }
 
 func (fc *findCall) execute() (r otto.Value, err error) {
+	var q *mgo.Query
 	col := fc.getCollection()
 	if fc.isMulti() {
-		var docs []map[string]interface{}
-		mq := col.Find(fc.query)
+		q = col.Find(fc.query)
 		if fc.limit > 0 {
-			mq.Limit(fc.limit)
+			q.Limit(fc.limit)
 		}
 		if len(fc.sort) > 0 {
-			mq.Sort(fc.sort...)
+			q.Sort(fc.sort...)
 		}
 		if len(fc.sel) > 0 {
-			mq.Select(fc.sel)
+			q.Select(fc.sel)
 		}
-		if err = mq.All(&docs); err == nil {
+		var docs []map[string]interface{}
+		if err = q.All(&docs); err == nil {
 			var rdocs []map[string]interface{}
 			for _, doc := range docs {
 				rdocs = append(rdocs, convertMapJavascript(doc))
@@ -2216,17 +2217,18 @@ func (fc *findCall) execute() (r otto.Value, err error) {
 			r, err = fc.getVM().ToValue(rdocs)
 		}
 	} else {
-		doc := make(map[string]interface{})
 		if fc.config.byId {
-			if err = col.FindId(fc.query).One(doc); err == nil {
-				rdoc := convertMapJavascript(doc)
-				r, err = fc.getVM().ToValue(rdoc)
-			}
+			q = col.FindId(fc.query)
 		} else {
-			if err = col.Find(fc.query).One(doc); err == nil {
-				rdoc := convertMapJavascript(doc)
-				r, err = fc.getVM().ToValue(rdoc)
-			}
+			q = col.Find(fc.query)
+		}
+		if len(fc.sel) > 0 {
+			q.Select(fc.sel)
+		}
+		doc := make(map[string]interface{})
+		if err = q.One(doc); err == nil {
+			rdoc := convertMapJavascript(doc)
+			r, err = fc.getVM().ToValue(rdoc)
 		}
 	}
 	return
