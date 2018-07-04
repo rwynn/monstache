@@ -203,6 +203,7 @@ type configOptions struct {
 	DroppedDatabases         bool   `toml:"dropped-databases"`
 	DroppedCollections       bool   `toml:"dropped-collections"`
 	IndexFiles               bool   `toml:"index-files"`
+	IndexAsUpdate            bool   `toml:"index-as-update"`
 	FileHighlighting         bool   `toml:"file-highlighting"`
 	EnablePatches            bool   `toml:"enable-patches"`
 	FailFast                 bool   `toml:"fail-fast"`
@@ -1022,6 +1023,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.ResumeWriteUnsafe, "resume-write-unsafe", false, "True to speedup writes of the last timestamp synched for resuming at the cost of error checking")
 	flag.BoolVar(&config.Replay, "replay", false, "True to replay all events from the oplog and index them in elasticsearch")
 	flag.BoolVar(&config.IndexFiles, "index-files", false, "True to index gridfs files into elasticsearch. Requires the elasticsearch mapper-attachments (deprecated) or ingest-attachment plugin")
+	flag.BoolVar(&config.IndexAsUpdate, "index-as-update", false, "True to index documents as updates instead of overwrites")
 	flag.BoolVar(&config.FileHighlighting, "file-highlighting", false, "True to enable the ability to highlight search times for a file query")
 	flag.BoolVar(&config.EnablePatches, "enable-patches", false, "True to include an json-patch field on updates")
 	flag.BoolVar(&config.FailFast, "fail-fast", false, "True to exit if a single _bulk request fails")
@@ -1292,6 +1294,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if !config.IndexFiles && tomlConfig.IndexFiles {
 			config.IndexFiles = true
+		}
+		if !config.IndexAsUpdate && tomlConfig.IndexAsUpdate {
+			config.IndexAsUpdate = true
 		}
 		if !config.FileHighlighting && tomlConfig.FileHighlighting {
 			config.FileHighlighting = true
@@ -1783,43 +1788,67 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 			}
 		}
 	}
-	req := elastic.NewBulkIndexRequest()
+	if config.IndexAsUpdate && meta.Pipeline == "" && ingestAttachment == false {
+		req := elastic.NewBulkUpdateRequest()
+		req.UseEasyJSON(config.EnableEasyJSON)
+		req.Id(objectID)
+		req.Index(indexType.Index)
+		req.Type(indexType.Type)
+		req.Doc(op.Data)
+		req.DocAsUpsert(true)
+		if meta.Index != "" {
+			req.Index(meta.Index)
+		}
+		if meta.Type != "" {
+			req.Type(meta.Type)
+		}
+		if meta.Routing != "" {
+			req.Routing(meta.Routing)
+		}
+		if meta.Parent != "" {
+			req.Parent(meta.Parent)
+		}
+		if meta.RetryOnConflict != 0 {
+			req.RetryOnConflict(meta.RetryOnConflict)
+		}
+		bulk.Add(req)
+	} else {
+		req := elastic.NewBulkIndexRequest()
+		req.UseEasyJSON(config.EnableEasyJSON)
+		req.Id(objectID)
+		req.Index(indexType.Index)
+		req.Type(indexType.Type)
+		req.Doc(op.Data)
+		if meta.Index != "" {
+			req.Index(meta.Index)
+		}
+		if meta.Type != "" {
+			req.Type(meta.Type)
+		}
+		if meta.Routing != "" {
+			req.Routing(meta.Routing)
+		}
+		if meta.Parent != "" {
+			req.Parent(meta.Parent)
+		}
+		if meta.Version != 0 {
+			req.Version(meta.Version)
+		}
+		if meta.VersionType != "" {
+			req.VersionType(meta.VersionType)
+		}
+		if meta.Pipeline != "" {
+			req.Pipeline(meta.Pipeline)
+		}
+		if meta.RetryOnConflict != 0 {
+			req.RetryOnConflict(meta.RetryOnConflict)
+		}
+		if ingestAttachment {
+			req.Pipeline("attachment")
+		}
+		bulk.Add(req)
+	}
 
-	req.UseEasyJSON(config.EnableEasyJSON)
-	req.Id(objectID)
-	req.Index(indexType.Index)
-	req.Type(indexType.Type)
-	req.Doc(op.Data)
-
-	if meta.Index != "" {
-		req.Index(meta.Index)
-	}
-	if meta.Type != "" {
-		req.Type(meta.Type)
-	}
-	if meta.Routing != "" {
-		req.Routing(meta.Routing)
-	}
-	if meta.Parent != "" {
-		req.Parent(meta.Parent)
-	}
-	if meta.Version != 0 {
-		req.Version(meta.Version)
-	}
-	if meta.VersionType != "" {
-		req.VersionType(meta.VersionType)
-	}
-	if meta.Pipeline != "" {
-		req.Pipeline(meta.Pipeline)
-	}
-	if meta.RetryOnConflict != 0 {
-		req.RetryOnConflict(meta.RetryOnConflict)
-	}
-	if ingestAttachment {
-		req.Pipeline("attachment")
-	}
-
-	bulk.Add(req)
 	if meta.shouldSave(config) {
 		if e := setIndexMeta(mongo, op.Namespace, objectID, meta); e != nil {
 			errorLog.Printf("Unable to save routing info: %s", e)
@@ -1845,7 +1874,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 				data["_oplog_ts"] = op.Timestamp
 				data["_oplog_date"] = t.Format("2006/01/02 15:04:05")
 			}
-			req = elastic.NewBulkIndexRequest()
+			req := elastic.NewBulkIndexRequest()
 			req.UseEasyJSON(config.EnableEasyJSON)
 			req.Index(tmIndex(indexType.Index))
 			req.Type(indexType.Type)
