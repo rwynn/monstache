@@ -184,7 +184,9 @@ type configOptions struct {
 	ElasticVersion           string               `toml:"elasticsearch-version"`
 	ResumeName               string               `toml:"resume-name"`
 	NsRegex                  string               `toml:"namespace-regex"`
+	NsDropRegex              string               `toml:"namespace-drop-regex"`
 	NsExcludeRegex           string               `toml:"namespace-exclude-regex"`
+	NsDropExcludeRegex       string               `toml:"namespace-drop-exclude-regex"`
 	ClusterName              string               `toml:"cluster-name"`
 	Print                    bool                 `toml:"print-config"`
 	Version                  bool
@@ -835,7 +837,22 @@ func notSystem(op *gtm.Op) bool {
 func filterWithRegex(regex string) gtm.OpFilter {
 	var validNameSpace = regexp.MustCompile(regex)
 	return func(op *gtm.Op) bool {
-		return validNameSpace.MatchString(op.Namespace)
+		if op.IsDrop() {
+			return true
+		} else {
+			return validNameSpace.MatchString(op.Namespace)
+		}
+	}
+}
+
+func filterDropWithRegex(regex string) gtm.OpFilter {
+	var validNameSpace = regexp.MustCompile(regex)
+	return func(op *gtm.Op) bool {
+		if op.IsDrop() {
+			return validNameSpace.MatchString(op.Namespace)
+		} else {
+			return true
+		}
 	}
 }
 
@@ -895,7 +912,22 @@ func filterWithScript() gtm.OpFilter {
 func filterInverseWithRegex(regex string) gtm.OpFilter {
 	var invalidNameSpace = regexp.MustCompile(regex)
 	return func(op *gtm.Op) bool {
-		return !invalidNameSpace.MatchString(op.Namespace)
+		if op.IsDrop() {
+			return true
+		} else {
+			return !invalidNameSpace.MatchString(op.Namespace)
+		}
+	}
+}
+
+func filterDropInverseWithRegex(regex string) gtm.OpFilter {
+	var invalidNameSpace = regexp.MustCompile(regex)
+	return func(op *gtm.Op) bool {
+		if op.IsDrop() {
+			return !invalidNameSpace.MatchString(op.Namespace)
+		} else {
+			return true
+		}
 	}
 }
 
@@ -1035,7 +1067,9 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.Worker, "worker", "", "The name of this worker in a multi-worker configuration")
 	flag.StringVar(&config.MapperPluginPath, "mapper-plugin-path", "", "The path to a .so file to load as a document mapper plugin")
 	flag.StringVar(&config.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
+	flag.StringVar(&config.NsDropRegex, "namespace-drop-regex", "", "A regex which is matched against a drop operation's namespace (<database>.<collection>).  Only drop operations which match are synched to elasticsearch")
 	flag.StringVar(&config.NsExcludeRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
+	flag.StringVar(&config.NsDropExcludeRegex, "namespace-drop-exclude-regex", "", "A regex which is matched against a drop operation's namespace (<database>.<collection>).  Only drop operations which do not match are synched to elasticsearch")
 	flag.Var(&config.DirectReadNs, "direct-read-namespace", "A list of direct read namespaces")
 	flag.IntVar(&config.DirectReadSplitMax, "direct-read-split-max", 0, "Max number of times to split a collection for direct reads")
 	flag.Var(&config.RoutingNamespaces, "routing-namespace", "A list of namespaces that override routing information")
@@ -1340,8 +1374,14 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.NsRegex == "" {
 			config.NsRegex = tomlConfig.NsRegex
 		}
+		if config.NsDropRegex == "" {
+			config.NsDropRegex = tomlConfig.NsDropRegex
+		}
 		if config.NsExcludeRegex == "" {
 			config.NsExcludeRegex = tomlConfig.NsExcludeRegex
+		}
+		if config.NsDropExcludeRegex == "" {
+			config.NsDropExcludeRegex = tomlConfig.NsDropExcludeRegex
 		}
 		if config.IndexFiles {
 			if len(config.FileNamespaces) == 0 {
@@ -2651,8 +2691,14 @@ func main() {
 	if config.NsRegex != "" {
 		filterChain = append(filterChain, filterWithRegex(config.NsRegex))
 	}
+	if config.NsDropRegex != "" {
+		filterChain = append(filterChain, filterDropWithRegex(config.NsDropRegex))
+	}
 	if config.NsExcludeRegex != "" {
 		filterChain = append(filterChain, filterInverseWithRegex(config.NsExcludeRegex))
+	}
+	if config.NsDropExcludeRegex != "" {
+		filterChain = append(filterChain, filterDropInverseWithRegex(config.NsDropExcludeRegex))
 	}
 	if config.Worker != "" {
 		workerFilter, err := consistent.ConsistentHashFilter(config.Worker, config.Workers)
