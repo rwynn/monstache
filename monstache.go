@@ -1140,11 +1140,11 @@ func (config *configOptions) loadFilters() {
 				if script, err := ioutil.ReadFile(s.Path); err == nil {
 					s.Script = string(script[:])
 				} else {
-					errorLog.Panicf("Unable to load filter at path %s: %s", s.Path, err)
+					panic(fmt.Sprintf("Unable to load filter at path %s: %s", s.Path, err))
 				}
 			}
 			if _, exists := filterEnvs[s.Namespace]; exists {
-				errorLog.Panicf("Multiple filters with namespace: %s", s.Namespace)
+				panic(fmt.Sprintf("Multiple filters with namespace: %s", s.Namespace))
 			}
 			env := &executionEnv{
 				VM:     otto.New(),
@@ -1180,11 +1180,11 @@ func (config *configOptions) loadScripts() {
 				if script, err := ioutil.ReadFile(s.Path); err == nil {
 					s.Script = string(script[:])
 				} else {
-					errorLog.Panicf("Unable to load script at path %s: %s", s.Path, err)
+					panic(fmt.Sprintf("Unable to load script at path %s: %s", s.Path, err))
 				}
 			}
 			if _, exists := mapEnvs[s.Namespace]; exists {
-				errorLog.Panicf("Multiple scripts with namespace: %s", s.Namespace)
+				panic(fmt.Sprintf("Multiple scripts with namespace: %s", s.Namespace))
 			}
 			env := &executionEnv{
 				VM:     otto.New(),
@@ -1216,17 +1216,17 @@ func (config *configOptions) loadPlugins() *configOptions {
 	if config.MapperPluginPath != "" {
 		p, err := plugin.Open(config.MapperPluginPath)
 		if err != nil {
-			errorLog.Panicf("Unable to load mapper plugin %s: %s", config.MapperPluginPath, err)
+			panic(fmt.Sprintf("Unable to load mapper plugin %s: %s", config.MapperPluginPath, err))
 		}
 		mapper, err := p.Lookup("Map")
 		if err != nil {
-			errorLog.Panicf("Unable to find symbol 'Map' in mapper plugin: %s", err)
+			panic(fmt.Sprintf("Unable to find symbol 'Map' in mapper plugin: %s", err))
 		}
 		switch mapper.(type) {
 		case func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error):
 			mapperPlugin = mapper.(func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error))
 		default:
-			errorLog.Panicf("Plugin 'Map' function must be typed %T", mapperPlugin)
+			panic(fmt.Sprintf("Plugin 'Map' function must be typed %T", mapperPlugin))
 		}
 		filter, err := p.Lookup("Filter")
 		if err == nil {
@@ -1234,7 +1234,7 @@ func (config *configOptions) loadPlugins() *configOptions {
 			case func(*monstachemap.MapperPluginInput) (bool, error):
 				filterPlugin = filter.(func(*monstachemap.MapperPluginInput) (bool, error))
 			default:
-				errorLog.Panicf("Plugin 'Filter' function must be typed %T", filterPlugin)
+				panic(fmt.Sprintf("Plugin 'Filter' function must be typed %T", filterPlugin))
 			}
 
 		}
@@ -2461,7 +2461,7 @@ func (ctx *httpServerCtx) serveHttp() {
 	ctx.started = time.Now()
 	err := s.ListenAndServe()
 	if !ctx.shutdown {
-		errorLog.Panicf("Unable to serve http at address %s: %s", s.Addr, err)
+		panic(fmt.Sprintf("Unable to serve http at address %s: %s", s.Addr, err))
 	}
 }
 
@@ -2590,8 +2590,18 @@ func shutdown(timeout int, exitStatus int, hsc *httpServerCtx, bulk *elastic.Bul
 	os.Exit(exitStatus)
 }
 
+func handlePanic() {
+	if r := recover(); r != nil {
+		errorLog.Println(r)
+		infoLog.Println("Shutting down with exit status 1 after panic.")
+		time.Sleep(3 * time.Second)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	enabled := true
+	defer handlePanic()
 	config := &configOptions{
 		MongoDialSettings:    mongoDialSettings{Timeout: -1},
 		MongoSessionSettings: mongoSessionSettings{SocketTimeout: -1, SyncTimeout: -1},
@@ -2620,7 +2630,7 @@ func main() {
 
 	mongo, err := config.dialMongo(config.MongoURL)
 	if err != nil {
-		errorLog.Panicf("Unable to connect to mongodb using URL %s: %s", config.MongoURL, err)
+		panic(fmt.Sprintf("Unable to connect to mongodb using URL %s: %s", config.MongoURL, err))
 	}
 	if mongoInfo, err := mongo.BuildInfo(); err == nil {
 		infoLog.Printf("Successfully connected to MongoDB version %s", mongoInfo.Version)
@@ -2633,28 +2643,28 @@ func main() {
 
 	elasticClient, err := config.newElasticClient()
 	if err != nil {
-		errorLog.Panicf("Unable to create elasticsearch client: %s", err)
+		panic(fmt.Sprintf("Unable to create elasticsearch client: %s", err))
 	}
 	if config.ElasticVersion == "" {
 		if err := config.testElasticsearchConn(elasticClient); err != nil {
-			errorLog.Panicf("Unable to validate connection to elasticsearch using client %s: %s",
-				elasticClient, err)
+			panic(fmt.Sprintf("Unable to validate connection to elasticsearch using client %s: %s",
+				elasticClient, err))
 		}
 	} else {
 		if err := config.parseElasticsearchVersion(config.ElasticVersion); err != nil {
-			errorLog.Panicf("Elasticsearch version must conform to major.minor.fix: %s", err)
+			panic(fmt.Sprintf("Elasticsearch version must conform to major.minor.fix: %s", err))
 		}
 	}
 	bulk, err := config.newBulkProcessor(elasticClient)
 	if err != nil {
-		errorLog.Panicf("Unable to start bulk processor: %s", err)
+		panic(fmt.Sprintf("Unable to start bulk processor: %s", err))
 	}
 	defer bulk.Stop()
 	var bulkStats *elastic.BulkProcessor
 	if config.IndexStats {
 		bulkStats, err = config.newStatsBulkProcessor(elasticClient)
 		if err != nil {
-			errorLog.Panicf("Unable to start stats bulk processor: %s", err)
+			panic(fmt.Sprintf("Unable to start stats bulk processor: %s", err))
 		}
 		defer bulkStats.Stop()
 	}
@@ -2737,11 +2747,11 @@ func main() {
 		if err = ensureClusterTTL(mongo); err == nil {
 			infoLog.Printf("Joined cluster %s", config.ClusterName)
 		} else {
-			errorLog.Panicf("Unable to enable cluster mode: %s", err)
+			panic(fmt.Sprintf("Unable to enable cluster mode: %s", err))
 		}
 		enabled, err = enableProcess(mongo, config)
 		if err != nil {
-			errorLog.Panicf("Unable to determine enabled cluster process: %s", err)
+			panic(fmt.Sprintf("Unable to determine enabled cluster process: %s", err))
 		}
 		if !enabled {
 			config.DirectReadNs = stringargs{}
@@ -2749,7 +2759,7 @@ func main() {
 	}
 	gtmBufferDuration, err := time.ParseDuration(config.GtmSettings.BufferDuration)
 	if err != nil {
-		errorLog.Panicf("Unable to parse gtm buffer duration %s: %s", config.GtmSettings.BufferDuration, err)
+		panic(fmt.Sprintf("Unable to parse gtm buffer duration %s: %s", config.GtmSettings.BufferDuration, err))
 	}
 	var mongos []*mgo.Session
 	var configSession *mgo.Session
@@ -2757,7 +2767,7 @@ func main() {
 		// if we have a config server URL then we are running in a sharded cluster
 		configSession, err = config.dialMongo(config.MongoConfigURL)
 		if err != nil {
-			errorLog.Panicf("Unable to connect to mongodb config server using URL %s: %s", config.MongoConfigURL, err)
+			panic(fmt.Sprintf("Unable to connect to mongodb config server using URL %s: %s", config.MongoConfigURL, err))
 		}
 		config.configureMongo(configSession)
 		// get the list of shard servers
@@ -2771,7 +2781,7 @@ func main() {
 			shardURL := config.getAuthURL(shardInfo.GetURL())
 			shard, err := config.dialMongo(shardURL)
 			if err != nil {
-				errorLog.Panicf("Unable to connect to mongodb shard using URL %s: %s", shardURL, err)
+				panic(fmt.Sprintf("Unable to connect to mongodb shard using URL %s: %s", shardURL, err))
 			}
 			defer shard.Close()
 			config.configureMongo(shard)
@@ -2823,7 +2833,7 @@ func main() {
 	if config.StatsDuration != "" {
 		statsTimeout, err = time.ParseDuration(config.StatsDuration)
 		if err != nil {
-			errorLog.Panicf("Unable to parse stats duration: %s", err)
+			panic(fmt.Sprintf("Unable to parse stats duration: %s", err))
 		}
 	}
 	printStats := time.NewTicker(statsTimeout)
