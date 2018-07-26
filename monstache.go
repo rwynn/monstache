@@ -210,6 +210,9 @@ type configOptions struct {
 	EnablePatches            bool   `toml:"enable-patches"`
 	FailFast                 bool   `toml:"fail-fast"`
 	IndexOplogTime           bool   `toml:"index-oplog-time"`
+	OplogTsFieldName         string `toml:"oplog-ts-field-name"`
+	OplogDateFieldName       string `toml:"oplog-date-field-name"`
+	OplogDateFieldFormat     string `toml:"oplog-date-field-format"`
 	ExitAfterDirectReads     bool   `toml:"exit-after-direct-reads"`
 	MergePatchAttr           string `toml:"merge-patch-attribute"`
 	ElasticMaxConns          int    `toml:"elasticsearch-max-conns"`
@@ -749,8 +752,8 @@ func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
 	if config.IndexOplogTime {
 		secs := int64(op.Timestamp >> 32)
 		t := time.Unix(secs, 0).UTC()
-		data["_oplog_ts"] = op.Timestamp
-		data["_oplog_date"] = t.Format("2006/01/02 15:04:05")
+		data[config.OplogTsFieldName] = op.Timestamp
+		data[config.OplogDateFieldName] = t.Format(config.OplogDateFieldFormat)
 	}
 	delete(data, "_id")
 	delete(data, "_meta_monstache")
@@ -1086,6 +1089,9 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.PruneInvalidJSON, "prune-invalid-json", false, "True to omit values which do not serialize to JSON such as +Inf and -Inf and thus cause errors")
 	flag.Var(&config.DeleteStrategy, "delete-strategy", "Stategy to use for deletes. 0=stateless,1=stateful,2=ignore")
 	flag.StringVar(&config.DeleteIndexPattern, "delete-index-pattern", "", "An Elasticsearch index-pattern to restric the scope of stateless deletes")
+	flag.StringVar(&config.OplogTsFieldName, "oplog-ts-field-name", "", "Field name to use for the oplog timestamp")
+	flag.StringVar(&config.OplogDateFieldName, "oplog-date-field-name", "", "Field name to use for the oplog date")
+	flag.StringVar(&config.OplogDateFieldFormat, "oplog-date-field-format", "", "Format to use for the oplog date")
 	flag.Parse()
 	return config
 }
@@ -1362,6 +1368,15 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if !config.IndexOplogTime && tomlConfig.IndexOplogTime {
 			config.IndexOplogTime = true
 		}
+		if config.OplogTsFieldName == "" {
+			config.OplogTsFieldName = tomlConfig.OplogTsFieldName
+		}
+		if config.OplogDateFieldName == "" {
+			config.OplogDateFieldName = tomlConfig.OplogDateFieldName
+		}
+		if config.OplogDateFieldFormat == "" {
+			config.OplogDateFieldFormat = tomlConfig.OplogDateFieldFormat
+		}
 		if !config.ExitAfterDirectReads && tomlConfig.ExitAfterDirectReads {
 			config.ExitAfterDirectReads = true
 		}
@@ -1613,6 +1628,15 @@ func (config *configOptions) setDefaults() *configOptions {
 	}
 	if config.FileDownloaders == 0 {
 		config.FileDownloaders = fileDownloadersDefault
+	}
+	if config.OplogTsFieldName == "" {
+		config.OplogTsFieldName = "oplog_ts"
+	}
+	if config.OplogDateFieldName == "" {
+		config.OplogDateFieldName = "oplog_date"
+	}
+	if config.OplogDateFieldFormat == "" {
+		config.OplogDateFieldFormat = "2006/01/02 15:04:05"
 	}
 	return config
 }
@@ -2352,8 +2376,10 @@ func doDelete(config *configOptions, client *elastic.Client, mongo *mgo.Session,
 	}
 	objectID, indexType, meta := opIDToString(op), mapIndexType(config, op), &indexingMeta{}
 	req.Id(objectID)
-	req.Version(int64(op.Timestamp))
-	req.VersionType("external")
+	if config.IndexAsUpdate == false {
+		req.Version(int64(op.Timestamp))
+		req.VersionType("external")
+	}
 	if config.DeleteStrategy == statefulDeleteStrategy {
 		if routingNamespaces[""] || routingNamespaces[op.Namespace] {
 			meta = getIndexMeta(mongo, op.Namespace, objectID)
