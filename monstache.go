@@ -1935,8 +1935,8 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 			if config.IndexOplogTime == false {
 				secs := int64(op.Timestamp >> 32)
 				t := time.Unix(secs, 0).UTC()
-				data["_oplog_ts"] = op.Timestamp
-				data["_oplog_date"] = t.Format("2006/01/02 15:04:05")
+				data[config.OplogTsFieldName] = op.Timestamp
+				data[config.OplogDateFieldName] = t.Format(config.OplogDateFieldFormat)
 			}
 			req := elastic.NewBulkIndexRequest()
 			req.UseEasyJSON(config.EnableEasyJSON)
