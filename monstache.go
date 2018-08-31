@@ -60,6 +60,7 @@ var routingNamespaces map[string]bool = make(map[string]bool)
 
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
+var exitStatus = 0
 
 const version = "3.16.0"
 const mongoURLDefault string = "localhost"
@@ -2031,6 +2032,30 @@ func doIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 	return
 }
 
+func processOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, fileC chan *gtm.Op) (err error) {
+	if op.IsDrop() {
+		bulk.Flush()
+		err = doDrop(mongo, client, op, config)
+	} else if op.IsDelete() {
+		doDelete(config, client, mongo, bulk, op)
+	} else if op.Data != nil {
+		if hasFileContent(op, config) {
+			fileC <- op
+		} else {
+			err = doIndex(config, mongo, bulk, client, op, false)
+		}
+	}
+	return
+}
+
+func processErr(err error, config *configOptions) {
+	exitStatus = 1
+	errorLog.Println(err)
+	if config.FailFast {
+		os.Exit(exitStatus)
+	}
+}
+
 func doIndexStats(config *configOptions, bulkStats *elastic.BulkProcessor, stats elastic.BulkProcessorStats) (err error) {
 	var hostname string
 	doc := make(map[string]interface{})
@@ -2620,7 +2645,7 @@ func (config *configOptions) makeShardInsertHandler() gtm.ShardInsertHandler {
 	}
 }
 
-func shutdown(timeout int, exitStatus int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulkStats *elastic.BulkProcessor, mongo *mgo.Session, config *configOptions) {
+func shutdown(timeout int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulkStats *elastic.BulkProcessor, mongo *mgo.Session, config *configOptions) {
 	infoLog.Println("Shutting down")
 	closeC := make(chan bool)
 	go func() {
@@ -2912,7 +2937,6 @@ func main() {
 	if config.Stats == false {
 		printStats.Stop()
 	}
-	exitStatus := 0
 	go notifySd(config)
 	var hsc *httpServerCtx
 	if config.EnableHTTPServer {
@@ -2925,13 +2949,14 @@ func main() {
 	}
 	go func() {
 		<-sigs
-		shutdown(10, exitStatus, hsc, bulk, bulkStats, mongo, config)
+		shutdown(10, hsc, bulk, bulkStats, mongo, config)
 	}()
+	drainC := make(chan bool)
 	if len(config.DirectReadNs) > 0 {
 		if config.ExitAfterDirectReads {
 			go func() {
 				gtmCtx.DirectReadWg.Wait()
-				shutdown(30, exitStatus, hsc, bulk, bulkStats, mongo, config)
+				drainC <- true
 			}()
 		}
 	}
@@ -2944,7 +2969,7 @@ func main() {
 			for op := range fileC {
 				err := addFileContent(mongo, op, config)
 				if err != nil {
-					gtmCtx.ErrC <- err
+					processErr(err, config)
 				}
 				fileDoneC <- op
 			}
@@ -2958,7 +2983,7 @@ func main() {
 				if saveTimestamp(mongo, lastTimestamp, config); err == nil {
 					lastSavedTimestamp = lastTimestamp
 				} else {
-					gtmCtx.ErrC <- err
+					processErr(err, config)
 				}
 			}
 		case <-heartBeat.C:
@@ -2981,7 +3006,7 @@ func main() {
 				}
 			}
 			if err != nil {
-				gtmCtx.ErrC <- err
+				processErr(err, config)
 			}
 		case <-printStats.C:
 			if !enabled {
@@ -3000,18 +3025,29 @@ func main() {
 				}
 			}
 		case err = <-gtmCtx.ErrC:
-			exitStatus = 1
-			errorLog.Println(err)
-			if config.FailFast {
-				os.Exit(exitStatus)
-			}
+			processErr(err, config)
 		case op := <-fileDoneC:
 			ingest := config.ElasticMajorVersion >= 5
 			if ingest {
 				ingest = op.Data["file"] != nil
 			}
 			if err = doIndex(config, mongo, bulk, elasticClient, op, ingest); err != nil {
-				gtmCtx.ErrC <- err
+				processErr(err, config)
+			}
+		case <-drainC:
+			if !enabled {
+				break
+			}
+			for {
+				select {
+				case op := <-gtmCtx.OpC:
+					if err = processOp(config, mongo, bulk, elasticClient, op, fileC); err != nil {
+						processErr(err, config)
+					}
+				default:
+					shutdown(30, hsc, bulk, bulkStats, mongo, config)
+					return
+				}
 			}
 		case op := <-gtmCtx.OpC:
 			if !enabled {
@@ -3020,21 +3056,8 @@ func main() {
 			if op.IsSourceOplog() {
 				lastTimestamp = op.Timestamp
 			}
-			if op.IsDrop() {
-				bulk.Flush()
-				if err = doDrop(mongo, elasticClient, op, config); err != nil {
-					gtmCtx.ErrC <- err
-				}
-			} else if op.IsDelete() {
-				doDelete(config, elasticClient, mongo, bulk, op)
-			} else if op.Data != nil {
-				if hasFileContent(op, config) {
-					fileC <- op
-				} else {
-					if err = doIndex(config, mongo, bulk, elasticClient, op, false); err != nil {
-						gtmCtx.ErrC <- err
-					}
-				}
+			if err = processOp(config, mongo, bulk, elasticClient, op, fileC); err != nil {
+				processErr(err, config)
 			}
 		}
 	}
