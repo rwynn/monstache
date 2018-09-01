@@ -2882,25 +2882,19 @@ func main() {
 		hsc.buildServer()
 		go hsc.serveHttp()
 	}
+	doneC := make(chan int)
 	go func() {
 		<-sigs
-		shutdown(10, hsc, bulk, bulkStats, mongo, config)
+		doneC <- 5
 	}()
-	drainC := make(chan bool)
-	if len(config.DirectReadNs) > 0 {
-		if config.ExitAfterDirectReads {
-			go func() {
-				gtmCtx.DirectReadWg.Wait()
-				drainC <- true
-			}()
-		}
-	}
-	infoLog.Println("Entering event loop")
 	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
+	var fileWg sync.WaitGroup
 	fileC := make(chan *gtm.Op)
 	fileDoneC := make(chan *gtm.Op)
 	for i := 0; i < config.FileDownloaders; i++ {
+		fileWg.Add(1)
 		go func() {
+			defer fileWg.Done()
 			for op := range fileC {
 				err := addFileContent(mongo, op, config)
 				if err != nil {
@@ -2910,8 +2904,29 @@ func main() {
 			}
 		}()
 	}
+	if len(config.DirectReadNs) > 0 {
+		if config.ExitAfterDirectReads {
+			go func() {
+				gtmCtx.DirectReadWg.Wait()
+				gtmCtx.Stop()
+				close(gtmCtx.OpC)
+				for op := range gtmCtx.OpC {
+					if err = processOp(config, mongo, bulk, elasticClient, op, fileC); err != nil {
+						processErr(err, config)
+					}
+				}
+				close(fileC)
+				fileWg.Wait()
+				doneC <- 30
+			}()
+		}
+	}
+	infoLog.Println("Entering event loop")
 	for {
 		select {
+		case timeout := <-doneC:
+			shutdown(timeout, hsc, bulk, bulkStats, mongo, config)
+			return
 		case <-timestampTicker.C:
 			if lastTimestamp > lastSavedTimestamp {
 				bulk.Flush()
@@ -2966,23 +2981,8 @@ func main() {
 			if err = doIndex(config, mongo, bulk, elasticClient, op, ingest); err != nil {
 				processErr(err, config)
 			}
-		case <-drainC:
-			if !enabled {
-				break
-			}
-			for {
-				select {
-				case op := <-gtmCtx.OpC:
-					if err = processOp(config, mongo, bulk, elasticClient, op, fileC); err != nil {
-						processErr(err, config)
-					}
-				default:
-					shutdown(30, hsc, bulk, bulkStats, mongo, config)
-					return
-				}
-			}
-		case op := <-gtmCtx.OpC:
-			if !enabled {
+		case op, open := <-gtmCtx.OpC:
+			if !enabled || !open {
 				break
 			}
 			if op.IsSourceOplog() {
@@ -2991,6 +2991,7 @@ func main() {
 			if err = processOp(config, mongo, bulk, elasticClient, op, fileC); err != nil {
 				processErr(err, config)
 			}
+
 		}
 	}
 }
