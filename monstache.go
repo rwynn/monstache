@@ -2950,7 +2950,7 @@ func main() {
 	doneC := make(chan int)
 	go func() {
 		<-sigs
-		doneC <- 5
+		shutdown(10, hsc, bulk, bulkStats, mongo, config)
 	}()
 	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
 	var fileWg sync.WaitGroup
@@ -3049,8 +3049,8 @@ func main() {
 			if err = doIndex(config, mongo, bulk, elasticClient, op, ingest); err != nil {
 				processErr(err, config)
 			}
-		case op, open := <-gtmCtx.OpC:
-			if !enabled || !open {
+		case op := <-gtmCtx.OpC:
+			if !enabled || op == nil {
 				break
 			}
 			if op.IsSourceOplog() {
