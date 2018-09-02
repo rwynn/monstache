@@ -109,6 +109,7 @@ type findConf struct {
 	session *mgo.Session
 	byId    bool
 	multi   bool
+	pipe    bool
 }
 
 type findCall struct {
@@ -2216,6 +2217,17 @@ func loadBuiltinFunctions(s *mgo.Session) {
 		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
 			panic(err)
 		}
+		fa = &findConf{
+			session: s,
+			name:    "pipe",
+			vm:      env.VM,
+			ns:      ns,
+			multi:   true,
+			pipe:    true,
+		}
+		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
+			panic(err)
+		}
 	}
 }
 
@@ -2342,6 +2354,10 @@ func (fc *findCall) isMulti() bool {
 	return fc.config.multi
 }
 
+func (fc *findCall) isPipe() bool {
+	return fc.config.pipe
+}
+
 func (fc *findCall) logError(err error) {
 	errorLog.Printf("Error in function %s: %s\n", fc.getFunctionName(), err)
 }
@@ -2376,23 +2392,35 @@ func (fc *findCall) execute() (r otto.Value, err error) {
 	var q *mgo.Query
 	col := fc.getCollection()
 	if fc.isMulti() {
-		q = col.Find(fc.query)
-		if fc.limit > 0 {
-			q.Limit(fc.limit)
-		}
-		if len(fc.sort) > 0 {
-			q.Sort(fc.sort...)
-		}
-		if len(fc.sel) > 0 {
-			q.Select(fc.sel)
-		}
-		var docs []map[string]interface{}
-		if err = q.All(&docs); err == nil {
-			var rdocs []map[string]interface{}
-			for _, doc := range docs {
-				rdocs = append(rdocs, convertMapJavascript(doc))
+		if fc.isPipe() {
+			pipe := col.Pipe(fc.query)
+			var docs []map[string]interface{}
+			if err = pipe.All(&docs); err == nil {
+				var rdocs []map[string]interface{}
+				for _, doc := range docs {
+					rdocs = append(rdocs, convertMapJavascript(doc))
+				}
+				r, err = fc.getVM().ToValue(rdocs)
 			}
-			r, err = fc.getVM().ToValue(rdocs)
+		} else {
+			q = col.Find(fc.query)
+			if fc.limit > 0 {
+				q.Limit(fc.limit)
+			}
+			if len(fc.sort) > 0 {
+				q.Sort(fc.sort...)
+			}
+			if len(fc.sel) > 0 {
+				q.Select(fc.sel)
+			}
+			var docs []map[string]interface{}
+			if err = q.All(&docs); err == nil {
+				var rdocs []map[string]interface{}
+				for _, doc := range docs {
+					rdocs = append(rdocs, convertMapJavascript(doc))
+				}
+				r, err = fc.getVM().ToValue(rdocs)
+			}
 		}
 	} else {
 		if fc.config.byId {
