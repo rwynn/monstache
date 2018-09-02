@@ -3002,7 +3002,6 @@ func main() {
 			go func() {
 				gtmCtx.DirectReadWg.Wait()
 				gtmCtx.Stop()
-				close(gtmCtx.OpC)
 				for op := range gtmCtx.OpC {
 					if err = processOp(config, mongo, bulk, elasticClient, op, fileC); err != nil {
 						processErr(err, config)
@@ -3068,6 +3067,9 @@ func main() {
 				}
 			}
 		case err = <-gtmCtx.ErrC:
+			if err == nil {
+				break
+			}
 			processErr(err, config)
 		case op := <-fileDoneC:
 			ingest := config.ElasticMajorVersion >= 5
