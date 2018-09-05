@@ -50,13 +50,17 @@ var errorLog = log.New(os.Stderr, "ERROR ", log.Flags())
 
 var mapperPlugin func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error)
 var filterPlugin func(*monstachemap.MapperPluginInput) (bool, error)
+var processPlugin func(*monstachemap.ProcessPluginInput) error
+var pipePlugin func(string) ([]interface{}, error)
 var mapEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var filterEnvs map[string]*executionEnv = make(map[string]*executionEnv)
+var pipeEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var mapIndexTypes map[string]*indexTypeMapping = make(map[string]*indexTypeMapping)
 var fileNamespaces map[string]bool = make(map[string]bool)
 var patchNamespaces map[string]bool = make(map[string]bool)
 var tmNamespaces map[string]bool = make(map[string]bool)
 var routingNamespaces map[string]bool = make(map[string]bool)
+var mux sync.Mutex
 
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
@@ -230,6 +234,7 @@ type configOptions struct {
 	ConfigFile               string
 	Script                   []javascript
 	Filter                   []javascript
+	Pipeline                 []javascript
 	Mapping                  []indexTypeMapping
 	FileNamespaces           stringargs `toml:"file-namespaces"`
 	PatchNamespaces          stringargs `toml:"patch-namespaces"`
@@ -244,6 +249,7 @@ type configOptions struct {
 	TimeMachineIndexPrefix   string         `toml:"time-machine-index-prefix"`
 	TimeMachineIndexSuffix   string         `toml:"time-machine-index-suffix"`
 	TimeMachineDirectReads   bool           `toml:"time-machine-direct-reads"`
+	PipeAllowDisk            bool           `toml:"pipe-allow-disk"`
 	RoutingNamespaces        stringargs     `toml:"routing-namespaces"`
 	DeleteStrategy           deleteStrategy `toml:"delete-strategy"`
 	DeleteIndexPattern       string         `toml:"delete-index-pattern"`
@@ -685,12 +691,22 @@ func deepExportValue(a interface{}) (b interface{}) {
 		}
 	case map[string]interface{}:
 		b = deepExportMap(t)
+	case []map[string]interface{}:
+		b = deepExportMapSlice(t)
 	case []interface{}:
 		b = deepExportSlice(t)
 	default:
 		b = a
 	}
 	return
+}
+
+func deepExportMapSlice(a []map[string]interface{}) []interface{} {
+	var avs []interface{}
+	for _, av := range a {
+		avs = append(avs, deepExportMap(av))
+	}
+	return avs
 }
 
 func deepExportSlice(a []interface{}) []interface{} {
@@ -1140,6 +1156,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.TimeMachineIndexPrefix, "time-machine-index-prefix", "", "A prefix to preprend to time machine indexes")
 	flag.StringVar(&config.TimeMachineIndexSuffix, "time-machine-index-suffix", "", "A suffix to append to time machine indexes")
 	flag.BoolVar(&config.TimeMachineDirectReads, "time-machine-direct-reads", false, "True to index the results of direct reads into the any time machine indexes")
+	flag.BoolVar(&config.PipeAllowDisk, "pipe-allow-disk", false, "True to allow MongoDB to use the disk for pipeline options with lots of results")
 	flag.Var(&config.ElasticUrls, "elasticsearch-url", "A list of Elasticsearch URLs")
 	flag.Var(&config.FileNamespaces, "file-namespace", "A list of file namespaces")
 	flag.Var(&config.PatchNamespaces, "patch-namespace", "A list of patch namespaces")
@@ -1168,6 +1185,46 @@ func (config *configOptions) loadIndexTypes() {
 			} else {
 				panic("Mappings must specify namespace and at least one of index and type")
 			}
+		}
+	}
+}
+
+func (config *configOptions) loadPipelines() {
+	for _, s := range config.Pipeline {
+		if s.Script != "" || s.Path != "" {
+			if s.Path != "" && s.Script != "" {
+				panic("Pipelines must specify path or script but not both")
+			}
+			if s.Path != "" {
+				if script, err := ioutil.ReadFile(s.Path); err == nil {
+					s.Script = string(script[:])
+				} else {
+					panic(fmt.Sprintf("Unable to load pipeline at path %s: %s", s.Path, err))
+				}
+			}
+			if _, exists := filterEnvs[s.Namespace]; exists {
+				panic(fmt.Sprintf("Multiple pipelines with namespace: %s", s.Namespace))
+			}
+			env := &executionEnv{
+				VM:     otto.New(),
+				Script: s.Script,
+				lock:   &sync.Mutex{},
+			}
+			if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
+				panic(err)
+			}
+			if _, err := env.VM.Run(env.Script); err != nil {
+				panic(err)
+			}
+			val, err := env.VM.Run("module.exports")
+			if err != nil {
+				panic(err)
+			} else if !val.IsFunction() {
+				panic("module.exports must be a function")
+			}
+			pipeEnvs[s.Namespace] = env
+		} else {
+			panic("Pipelines must specify path or script attributes")
 		}
 	}
 }
@@ -1279,6 +1336,24 @@ func (config *configOptions) loadPlugins() *configOptions {
 				panic(fmt.Sprintf("Plugin 'Filter' function must be typed %T", filterPlugin))
 			}
 
+		}
+		process, err := p.Lookup("Process")
+		if err == nil {
+			switch process.(type) {
+			case func(*monstachemap.ProcessPluginInput) error:
+				processPlugin = process.(func(*monstachemap.ProcessPluginInput) error)
+			default:
+				panic(fmt.Sprintf("Plugin 'Process' function must be typed %T", processPlugin))
+			}
+		}
+		pipe, err := p.Lookup("Pipeline")
+		if err == nil {
+			switch pipe.(type) {
+			case func(string) ([]interface{}, error):
+				pipePlugin = pipe.(func(string) ([]interface{}, error))
+			default:
+				panic(fmt.Sprintf("Plugin 'Pipeline' function must be typed %T", pipePlugin))
+			}
 		}
 	}
 	return config
@@ -1496,6 +1571,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if !config.TimeMachineDirectReads {
 			config.TimeMachineDirectReads = tomlConfig.TimeMachineDirectReads
 		}
+		if !config.PipeAllowDisk {
+			config.PipeAllowDisk = tomlConfig.PipeAllowDisk
+		}
 		if len(config.DirectReadNs) == 0 {
 			config.DirectReadNs = tomlConfig.DirectReadNs
 		}
@@ -1517,6 +1595,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		config.Logs = tomlConfig.Logs
 		tomlConfig.loadScripts()
 		tomlConfig.loadFilters()
+		tomlConfig.loadPipelines()
 		tomlConfig.loadIndexTypes()
 	}
 	return config
@@ -2033,7 +2112,25 @@ func doIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 	return
 }
 
+func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op) (err error) {
+	session := mongo.Copy()
+	defer session.Close()
+	input := &monstachemap.ProcessPluginInput{
+		ElasticClient:        client,
+		ElasticBulkProcessor: bulk,
+	}
+	input.Document = op.Data
+	input.Namespace = op.Namespace
+	input.Database = op.GetDatabase()
+	input.Collection = op.GetCollection()
+	input.Operation = op.Operation
+	input.Session = session
+	err = processPlugin(input)
+	return
+}
+
 func processOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, fileC chan *gtm.Op) (err error) {
+	postProcess := processPlugin != nil
 	if op.IsDrop() {
 		bulk.Flush()
 		err = doDrop(mongo, client, op, config)
@@ -2041,9 +2138,17 @@ func processOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProc
 		doDelete(config, client, mongo, bulk, op)
 	} else if op.Data != nil {
 		if hasFileContent(op, config) {
+			postProcess = false
 			fileC <- op
 		} else {
 			err = doIndex(config, mongo, bulk, client, op, false)
+		}
+	} else {
+		postProcess = false
+	}
+	if postProcess {
+		if e := runProcessor(mongo, bulk, client, op); e != nil {
+			processErr(e, config)
 		}
 	}
 	return
@@ -2673,6 +2778,49 @@ func (config *configOptions) makeShardInsertHandler() gtm.ShardInsertHandler {
 	}
 }
 
+func buildPipe(config *configOptions) func(string) ([]interface{}, error) {
+	if pipePlugin != nil {
+		return pipePlugin
+	} else if len(pipeEnvs) > 0 {
+		return func(ns string) ([]interface{}, error) {
+			mux.Lock()
+			defer mux.Unlock()
+			if env := pipeEnvs[ns]; env != nil {
+				env.lock.Lock()
+				defer env.lock.Unlock()
+				val, err := env.VM.Call("module.exports", ns, ns)
+				if err != nil {
+					return nil, err
+				}
+				if strings.ToLower(val.Class()) == "array" {
+					data, err := val.Export()
+					if err != nil {
+						return nil, err
+					} else if data == val {
+						return nil, errors.New("Exported pipeline function must return an array")
+					} else {
+						switch data.(type) {
+						case []map[string]interface{}:
+							ds := data.([]map[string]interface{})
+							var is []interface{} = make([]interface{}, len(ds))
+							for i, d := range ds {
+								is[i] = deepExportValue(d)
+							}
+							return is, nil
+						default:
+							panic("Pipeline function must return an array of objects")
+						}
+					}
+				} else {
+					return nil, errors.New("Exported pipeline function must return an array")
+				}
+			}
+			return nil, nil
+		}
+	}
+	return nil
+}
+
 func shutdown(timeout int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulkStats *elastic.BulkProcessor, mongo *mgo.Session, config *configOptions) {
 	infoLog.Println("Shutting down")
 	closeC := make(chan bool)
@@ -2931,6 +3079,8 @@ func main() {
 		DirectReadSplitMax:  config.DirectReadSplitMax,
 		DirectReadFilter:    directReadFilter,
 		Log:                 infoLog,
+		Pipe:                buildPipe(config),
+		PipeAllowDisk:       config.PipeAllowDisk,
 	}
 
 	gtmCtx := gtm.StartMulti(mongos, gtmOpts)
@@ -2975,13 +3125,16 @@ func main() {
 		hsc.buildServer()
 		go hsc.serveHttp()
 	}
-	doneC := make(chan int)
 	go func() {
 		<-sigs
 		shutdown(10, hsc, bulk, bulkStats, mongo, config)
 	}()
 	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
+	var allOpsVisited, allFilesVisited bool
 	var fileWg sync.WaitGroup
+	doneC := make(chan int)
+	opsConsumed := make(chan bool)
+	filesConsumed := make(chan bool)
 	fileC := make(chan *gtm.Op)
 	fileDoneC := make(chan *gtm.Op)
 	for i := 0; i < config.FileDownloaders; i++ {
@@ -3002,13 +3155,10 @@ func main() {
 			go func() {
 				gtmCtx.DirectReadWg.Wait()
 				gtmCtx.Stop()
-				for op := range gtmCtx.OpC {
-					if err = processOp(config, mongo, bulk, elasticClient, op, fileC); err != nil {
-						processErr(err, config)
-					}
-				}
-				close(fileC)
+				<-opsConsumed
 				fileWg.Wait()
+				close(fileDoneC)
+				<-filesConsumed
 				doneC <- 30
 			}()
 		}
@@ -3071,7 +3221,17 @@ func main() {
 				break
 			}
 			processErr(err, config)
-		case op := <-fileDoneC:
+		case op, open := <-fileDoneC:
+			if !enabled {
+				break
+			}
+			if op == nil {
+				if !open && !allFilesVisited {
+					allFilesVisited = true
+					filesConsumed <- true
+				}
+				break
+			}
 			ingest := config.ElasticMajorVersion >= 5
 			if ingest {
 				ingest = op.Data["file"] != nil
@@ -3079,8 +3239,16 @@ func main() {
 			if err = doIndex(config, mongo, bulk, elasticClient, op, ingest); err != nil {
 				processErr(err, config)
 			}
-		case op := <-gtmCtx.OpC:
-			if !enabled || op == nil {
+		case op, open := <-gtmCtx.OpC:
+			if !enabled {
+				break
+			}
+			if op == nil {
+				if !open && !allOpsVisited {
+					allOpsVisited = true
+					close(fileC)
+					opsConsumed <- true
+				}
 				break
 			}
 			if op.IsSourceOplog() {
@@ -3089,7 +3257,6 @@ func main() {
 			if err = processOp(config, mongo, bulk, elasticClient, op, fileC); err != nil {
 				processErr(err, config)
 			}
-
 		}
 	}
 }

@@ -1,6 +1,9 @@
 package monstachemap
 
-import "github.com/globalsign/mgo"
+import (
+	"github.com/globalsign/mgo"
+	elastic "gopkg.in/olivere/elastic.v5"
+)
 
 // plugins must import this package
 // import "github.com/rwynn/monstache/monstachemap"
@@ -35,4 +38,11 @@ type MapperPluginOutput struct {
 	TTL             string                 // the expiration time
 	Pipeline        string                 // the pipeline to index with
 	RetryOnConflict int                    // how many times to retry updates before failing
+}
+
+// ProcessPluginInput is the input to the Process function
+type ProcessPluginInput struct {
+	MapperPluginInput
+	ElasticClient        *elastic.Client
+	ElasticBulkProcessor *elastic.BulkProcessor
 }
