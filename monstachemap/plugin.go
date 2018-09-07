@@ -30,7 +30,7 @@ type MapperPluginOutput struct {
 	Index           string                 // the name of the index to use
 	Type            string                 // the document type
 	Routing         string                 // the routing value to use
-	Drop            bool                   // set to true to indicate that the document should not be indexed
+	Drop            bool                   // set to true to indicate that the document should not be indexed but removed
 	Passthrough     bool                   // set to true to indicate the original document should be indexed unchanged
 	Parent          string                 // the parent id to use
 	Version         int64                  // the version of the document
@@ -38,6 +38,7 @@ type MapperPluginOutput struct {
 	TTL             string                 // the expiration time
 	Pipeline        string                 // the pipeline to index with
 	RetryOnConflict int                    // how many times to retry updates before failing
+	Skip            bool                   // set to true to indicate the the document should be ignored
 }
 
 // ProcessPluginInput is the input to the Process function
