@@ -107,13 +107,14 @@ type indexTypeMapping struct {
 }
 
 type findConf struct {
-	vm      *otto.Otto
-	ns      string
-	name    string
-	session *mgo.Session
-	byId    bool
-	multi   bool
-	pipe    bool
+	vm            *otto.Otto
+	ns            string
+	name          string
+	session       *mgo.Session
+	byId          bool
+	multi         bool
+	pipe          bool
+	pipeAllowDisk bool
 }
 
 type findCall struct {
@@ -144,6 +145,7 @@ type indexingMeta struct {
 	VersionType     string
 	Pipeline        string
 	RetryOnConflict int
+	Skip            bool
 }
 
 type mongoDialSettings struct {
@@ -239,6 +241,7 @@ type configOptions struct {
 	PatchNamespaces          stringargs `toml:"patch-namespaces"`
 	Workers                  stringargs
 	Worker                   string
+	ChangeStreamNs           stringargs     `toml:"change-stream-namespaces"`
 	DirectReadNs             stringargs     `toml:"direct-read-namespaces"`
 	DirectReadSplitMax       int            `toml:"direct-read-split-max"`
 	MapperPluginPath         string         `toml:"mapper-plugin-path"`
@@ -726,6 +729,9 @@ func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
 				op.Data = output.Document
 			}
 			meta := make(map[string]interface{})
+			if output.Skip {
+				meta["skip"] = true
+			}
 			if output.Index != "" {
 				meta["index"] = output.Index
 			}
@@ -1091,6 +1097,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.NsDropRegex, "namespace-drop-regex", "", "A regex which is matched against a drop operation's namespace (<database>.<collection>).  Only drop operations which match are synched to elasticsearch")
 	flag.StringVar(&config.NsExcludeRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
 	flag.StringVar(&config.NsDropExcludeRegex, "namespace-drop-exclude-regex", "", "A regex which is matched against a drop operation's namespace (<database>.<collection>).  Only drop operations which do not match are synched to elasticsearch")
+	flag.Var(&config.ChangeStreamNs, "change-stream-namespace", "A list of change stream namespaces")
 	flag.Var(&config.DirectReadNs, "direct-read-namespace", "A list of direct read namespaces")
 	flag.IntVar(&config.DirectReadSplitMax, "direct-read-split-max", 0, "Max number of times to split a collection for direct reads")
 	flag.Var(&config.RoutingNamespaces, "routing-namespace", "A list of namespaces that override routing information")
@@ -1519,6 +1526,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if len(config.DirectReadNs) == 0 {
 			config.DirectReadNs = tomlConfig.DirectReadNs
 		}
+		if len(config.ChangeStreamNs) == 0 {
+			config.ChangeStreamNs = tomlConfig.ChangeStreamNs
+		}
 		if len(config.ElasticUrls) == 0 {
 			config.ElasticUrls = tomlConfig.ElasticUrls
 		}
@@ -1644,6 +1654,14 @@ func (config *configOptions) parseMongoURL(inURL string) (outURL string) {
 		}
 	}
 	return
+}
+
+func (config *configOptions) validate() {
+	if len(config.ChangeStreamNs) > 0 {
+		if config.Resume || config.Replay {
+			panic("Resume, replay, and clustering options are not supported when using change streams")
+		}
+	}
 }
 
 func (config *configOptions) setDefaults() *configOptions {
@@ -1924,6 +1942,9 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 
 func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, ingestAttachment bool) (err error) {
 	meta := parseIndexMeta(op)
+	if meta.Skip {
+		return
+	}
 	prepareDataForIndexing(config, op)
 	objectID, indexType := opIDToString(op), mapIndexType(config, op)
 	if config.EnablePatches {
@@ -2146,6 +2167,9 @@ func (meta *indexingMeta) load(metaAttrs map[string]interface{}) {
 	var v interface{}
 	var ok bool
 	var s string
+	if _, ok = metaAttrs["skip"]; ok {
+		meta.Skip = true
+	}
 	if v, ok = metaAttrs["routing"]; ok {
 		meta.Routing = fmt.Sprintf("%v", v)
 	}
@@ -2230,7 +2254,7 @@ func getIndexMeta(session *mgo.Session, namespace, id string) (meta *indexingMet
 	return
 }
 
-func loadBuiltinFunctions(s *mgo.Session) {
+func loadBuiltinFunctions(s *mgo.Session, config *configOptions) {
 	for ns, env := range mapEnvs {
 		var fa *findConf
 		fa = &findConf{
@@ -2263,12 +2287,13 @@ func loadBuiltinFunctions(s *mgo.Session) {
 			panic(err)
 		}
 		fa = &findConf{
-			session: s,
-			name:    "pipe",
-			vm:      env.VM,
-			ns:      ns,
-			multi:   true,
-			pipe:    true,
+			session:       s,
+			name:          "pipe",
+			vm:            env.VM,
+			ns:            ns,
+			multi:         true,
+			pipe:          true,
+			pipeAllowDisk: config.PipeAllowDisk,
 		}
 		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
 			panic(err)
@@ -2338,7 +2363,7 @@ func (fc *findCall) setLimit(topts map[string]interface{}) (err error) {
 func (fc *findCall) setQuery(v otto.Value) (err error) {
 	var q interface{}
 	if q, err = v.Export(); err == nil {
-		fc.query = fc.restoreIds(q)
+		fc.query = fc.restoreIds(deepExportValue(q))
 	}
 	return
 }
@@ -2403,6 +2428,10 @@ func (fc *findCall) isPipe() bool {
 	return fc.config.pipe
 }
 
+func (fc *findCall) pipeAllowDisk() bool {
+	return fc.config.pipeAllowDisk
+}
+
 func (fc *findCall) logError(err error) {
 	errorLog.Printf("Error in function %s: %s\n", fc.getFunctionName(), err)
 }
@@ -2415,6 +2444,16 @@ func (fc *findCall) restoreIds(v interface{}) (r interface{}) {
 		} else {
 			r = v
 		}
+	case []map[string]interface{}:
+		var avs []interface{}
+		for _, av := range vt {
+			mvs := make(map[string]interface{})
+			for k, v := range av {
+				mvs[k] = fc.restoreIds(v)
+			}
+			avs = append(avs, mvs)
+		}
+		r = avs
 	case []interface{}:
 		var avs []interface{}
 		for _, av := range vt {
@@ -2439,6 +2478,9 @@ func (fc *findCall) execute() (r otto.Value, err error) {
 	if fc.isMulti() {
 		if fc.isPipe() {
 			pipe := col.Pipe(fc.query)
+			if fc.pipeAllowDisk() {
+				pipe = pipe.AllowDiskUse()
+			}
 			var docs []map[string]interface{}
 			if err = pipe.All(&docs); err == nil {
 				var rdocs []map[string]interface{}
@@ -2831,6 +2873,7 @@ func main() {
 	}
 	config.setupLogging()
 	config.loadPlugins()
+	config.validate()
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
@@ -2846,7 +2889,7 @@ func main() {
 	}
 	defer mongo.Close()
 	config.configureMongo(mongo)
-	loadBuiltinFunctions(mongo)
+	loadBuiltinFunctions(mongo, config)
 
 	elasticClient, err := config.newElasticClient()
 	if err != nil {
@@ -3003,6 +3046,7 @@ func main() {
 		After:               after,
 		Filter:              filter,
 		NamespaceFilter:     nsFilter,
+		OpLogDisabled:       len(config.ChangeStreamNs) > 0,
 		OpLogDatabaseName:   oplogDatabaseName,
 		OpLogCollectionName: oplogCollectionName,
 		ChannelSize:         config.GtmSettings.ChannelSize,
@@ -3016,6 +3060,7 @@ func main() {
 		Log:                 infoLog,
 		Pipe:                buildPipe(config),
 		PipeAllowDisk:       config.PipeAllowDisk,
+		ChangeStreamNs:      config.ChangeStreamNs,
 	}
 
 	gtmCtx := gtm.StartMulti(mongos, gtmOpts)
