@@ -51,7 +51,7 @@ var errorLog = log.New(os.Stderr, "ERROR ", log.Flags())
 var mapperPlugin func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error)
 var filterPlugin func(*monstachemap.MapperPluginInput) (bool, error)
 var processPlugin func(*monstachemap.ProcessPluginInput) error
-var pipePlugin func(string) ([]interface{}, error)
+var pipePlugin func(string, bool) ([]interface{}, error)
 var mapEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var filterEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var pipeEnvs map[string]*executionEnv = make(map[string]*executionEnv)
@@ -1356,8 +1356,8 @@ func (config *configOptions) loadPlugins() *configOptions {
 		pipe, err := p.Lookup("Pipeline")
 		if err == nil {
 			switch pipe.(type) {
-			case func(string) ([]interface{}, error):
-				pipePlugin = pipe.(func(string) ([]interface{}, error))
+			case func(string, bool) ([]interface{}, error):
+				pipePlugin = pipe.(func(string, bool) ([]interface{}, error))
 			default:
 				panic(fmt.Sprintf("Plugin 'Pipeline' function must be typed %T", pipePlugin))
 			}
@@ -2820,41 +2820,44 @@ func (config *configOptions) makeShardInsertHandler() gtm.ShardInsertHandler {
 	}
 }
 
-func buildPipe(config *configOptions) func(string) ([]interface{}, error) {
+func buildPipe(config *configOptions) func(string, bool) ([]interface{}, error) {
 	if pipePlugin != nil {
 		return pipePlugin
 	} else if len(pipeEnvs) > 0 {
-		return func(ns string) ([]interface{}, error) {
+		return func(ns string, changeEvent bool) ([]interface{}, error) {
 			mux.Lock()
 			defer mux.Unlock()
-			if env := pipeEnvs[ns]; env != nil {
-				env.lock.Lock()
-				defer env.lock.Unlock()
-				val, err := env.VM.Call("module.exports", ns, ns)
-				if err != nil {
-					return nil, err
-				}
-				if strings.ToLower(val.Class()) == "array" {
-					data, err := val.Export()
+			nss := []string{"", ns}
+			for _, ns := range nss {
+				if env := pipeEnvs[ns]; env != nil {
+					env.lock.Lock()
+					defer env.lock.Unlock()
+					val, err := env.VM.Call("module.exports", ns, ns, changeEvent)
 					if err != nil {
 						return nil, err
-					} else if data == val {
-						return nil, errors.New("Exported pipeline function must return an array")
-					} else {
-						switch data.(type) {
-						case []map[string]interface{}:
-							ds := data.([]map[string]interface{})
-							var is []interface{} = make([]interface{}, len(ds))
-							for i, d := range ds {
-								is[i] = deepExportValue(d)
-							}
-							return is, nil
-						default:
-							panic("Pipeline function must return an array of objects")
-						}
 					}
-				} else {
-					return nil, errors.New("Exported pipeline function must return an array")
+					if strings.ToLower(val.Class()) == "array" {
+						data, err := val.Export()
+						if err != nil {
+							return nil, err
+						} else if data == val {
+							return nil, errors.New("Exported pipeline function must return an array")
+						} else {
+							switch data.(type) {
+							case []map[string]interface{}:
+								ds := data.([]map[string]interface{})
+								var is []interface{} = make([]interface{}, len(ds))
+								for i, d := range ds {
+									is[i] = deepExportValue(d)
+								}
+								return is, nil
+							default:
+								panic("Pipeline function must return an array of objects")
+							}
+						}
+					} else {
+						return nil, errors.New("Exported pipeline function must return an array")
+					}
 				}
 			}
 			return nil, nil
