@@ -2139,8 +2139,17 @@ func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elast
 	input := &monstachemap.ProcessPluginInput{
 		ElasticClient:        client,
 		ElasticBulkProcessor: bulk,
+		Timestamp:            op.Timestamp,
 	}
-	input.Document = op.Data
+	input.Document = make(map[string]interface{})
+	if op.Data != nil {
+		for k, v := range op.Data {
+			input.Document[k] = v
+		}
+	}
+	if op.Id != nil {
+		input.Document["_id"] = op.Id
+	}
 	input.Namespace = op.Namespace
 	input.Database = op.GetDatabase()
 	input.Collection = op.GetCollection()
@@ -2151,7 +2160,6 @@ func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elast
 }
 
 func processOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, fileC chan *gtm.Op) (err error) {
-	postProcess := processPlugin != nil
 	if op.IsDrop() {
 		bulk.Flush()
 		err = doDrop(mongo, client, op, config)
@@ -2159,15 +2167,12 @@ func processOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProc
 		doDelete(config, client, mongo, bulk, op)
 	} else if op.Data != nil {
 		if hasFileContent(op, config) {
-			postProcess = false
 			fileC <- op
 		} else {
 			err = doIndex(config, mongo, bulk, client, op, false)
 		}
-	} else {
-		postProcess = false
 	}
-	if postProcess {
+	if processPlugin != nil {
 		if e := runProcessor(mongo, bulk, client, op); e != nil {
 			processErr(e, config)
 		}

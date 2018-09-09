@@ -2,6 +2,7 @@ package monstachemap
 
 import (
 	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
 	elastic "gopkg.in/olivere/elastic.v5"
 )
 
@@ -46,4 +47,5 @@ type ProcessPluginInput struct {
 	MapperPluginInput
 	ElasticClient        *elastic.Client
 	ElasticBulkProcessor *elastic.BulkProcessor
+	Timestamp            bson.MongoTimestamp
 }
