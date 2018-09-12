@@ -150,8 +150,10 @@ type indexingMeta struct {
 }
 
 type mongoDialSettings struct {
-	Timeout int
-	Ssl     bool
+	Timeout      int
+	Ssl          bool
+	ReadTimeout  int
+	WriteTimeout int
 }
 
 type mongoSessionSettings struct {
@@ -1371,7 +1373,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		var tomlConfig = configOptions{
 			DroppedDatabases:     true,
 			DroppedCollections:   true,
-			MongoDialSettings:    mongoDialSettings{Timeout: -1},
+			MongoDialSettings:    mongoDialSettings{Timeout: -1, ReadTimeout: -1, WriteTimeout: -1},
 			MongoSessionSettings: mongoSessionSettings{SocketTimeout: -1, SyncTimeout: -1},
 			GtmSettings:          gtmDefaultSettings(),
 		}
@@ -1723,6 +1725,23 @@ func (config *configOptions) validate() {
 }
 
 func (config *configOptions) setDefaults() *configOptions {
+	ds := config.MongoDialSettings
+	ss := config.MongoSessionSettings
+	if ds.Timeout == -1 {
+		config.MongoDialSettings.Timeout = 10
+	}
+	if ds.ReadTimeout == -1 {
+		config.MongoDialSettings.ReadTimeout = 600
+	}
+	if ds.WriteTimeout == -1 {
+		config.MongoDialSettings.WriteTimeout = 30
+	}
+	if ss.SyncTimeout == -1 {
+		config.MongoSessionSettings.SyncTimeout = 600
+	}
+	if ss.SocketTimeout == -1 {
+		config.MongoSessionSettings.SocketTimeout = 600
+	}
 	if config.MongoURL == "" {
 		config.MongoURL = mongoURLDefault
 	}
@@ -1807,19 +1826,15 @@ func (config *configOptions) getAuthURL(inURL string) string {
 	}
 }
 
-func (config *configOptions) configureMongo(session *mgo.Session) {
-	session.SetMode(mgo.Primary, true)
-	if config.MongoSessionSettings.SocketTimeout != -1 {
-		timeOut := time.Duration(config.MongoSessionSettings.SocketTimeout) * time.Second
-		session.SetSocketTimeout(timeOut)
-	}
-	if config.MongoSessionSettings.SyncTimeout != -1 {
-		timeOut := time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Second
-		session.SetSyncTimeout(timeOut)
-	}
-}
-
 func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
+	dialInfo, err := mgo.ParseURL(inURL)
+	if err != nil {
+		return nil, err
+	}
+	dialInfo.Timeout = time.Duration(config.MongoDialSettings.Timeout) * time.Second
+	dialInfo.ReadTimeout = time.Duration(config.MongoDialSettings.ReadTimeout) * time.Second
+	dialInfo.WriteTimeout = time.Duration(config.MongoDialSettings.WriteTimeout) * time.Second
+	dialInfo.AppName = "monstache"
 	ssl := config.MongoDialSettings.Ssl || config.MongoPemFile != ""
 	if ssl {
 		tlsConfig := &tls.Config{}
@@ -1837,14 +1852,6 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 			// Turn off validation
 			tlsConfig.InsecureSkipVerify = true
 		}
-		dialInfo, err := mgo.ParseURL(inURL)
-		if err != nil {
-			return nil, err
-		}
-		dialInfo.Timeout = time.Duration(10) * time.Second
-		if config.MongoDialSettings.Timeout != -1 {
-			dialInfo.Timeout = time.Duration(config.MongoDialSettings.Timeout) * time.Second
-		}
 		dialInfo.DialServer = func(addr *mgo.ServerAddr) (net.Conn, error) {
 			conn, err := tls.Dial("tcp", addr.String(), tlsConfig)
 			if err != nil {
@@ -1852,18 +1859,12 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 			}
 			return conn, err
 		}
-		session, err := mgo.DialWithInfo(dialInfo)
-		if err == nil {
-			session.SetSyncTimeout(1 * time.Minute)
-			session.SetSocketTimeout(1 * time.Minute)
-		}
-		return session, err
 	}
-	if config.MongoDialSettings.Timeout != -1 {
-		return mgo.DialWithTimeout(inURL,
-			time.Duration(config.MongoDialSettings.Timeout)*time.Second)
+	session, err := mgo.DialWithInfo(dialInfo)
+	if err == nil {
+		session.SetSyncTimeout(time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Minute)
 	}
-	return mgo.Dial(inURL)
+	return session, err
 }
 
 func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
@@ -2815,13 +2816,7 @@ func (config *configOptions) makeShardInsertHandler() gtm.ShardInsertHandler {
 	return func(shardInfo *gtm.ShardInfo) (*mgo.Session, error) {
 		infoLog.Printf("Adding shard found at %s\n", shardInfo.GetURL())
 		shardURL := config.getAuthURL(shardInfo.GetURL())
-		shard, err := config.dialMongo(shardURL)
-		if err == nil {
-			config.configureMongo(shard)
-			return shard, nil
-		} else {
-			return nil, err
-		}
+		return config.dialMongo(shardURL)
 	}
 }
 
@@ -2920,7 +2915,7 @@ func main() {
 	enabled := true
 	defer handlePanic()
 	config := &configOptions{
-		MongoDialSettings:    mongoDialSettings{Timeout: -1},
+		MongoDialSettings:    mongoDialSettings{Timeout: -1, ReadTimeout: -1, WriteTimeout: -1},
 		MongoSessionSettings: mongoSessionSettings{SocketTimeout: -1, SyncTimeout: -1},
 		GtmSettings:          gtmDefaultSettings(),
 	}
@@ -2956,7 +2951,6 @@ func main() {
 		infoLog.Println("Successfully connected to MongoDB")
 	}
 	defer mongo.Close()
-	config.configureMongo(mongo)
 	loadBuiltinFunctions(mongo, config)
 
 	elasticClient, err := config.newElasticClient()
@@ -3093,7 +3087,6 @@ func main() {
 		if err != nil {
 			panic(fmt.Sprintf("Unable to connect to mongodb config server using URL %s: %s", config.MongoConfigURL, err))
 		}
-		config.configureMongo(configSession)
 		// get the list of shard servers
 		shardInfos := gtm.GetShards(configSession)
 		if len(shardInfos) == 0 {
@@ -3108,7 +3101,6 @@ func main() {
 				panic(fmt.Sprintf("Unable to connect to mongodb shard using URL %s: %s", shardURL, err))
 			}
 			defer shard.Close()
-			config.configureMongo(shard)
 			mongos = append(mongos, shard)
 		}
 	} else {
