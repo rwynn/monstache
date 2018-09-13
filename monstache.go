@@ -151,8 +151,8 @@ type indexingMeta struct {
 type mongoDialSettings struct {
 	Timeout      int
 	Ssl          bool
-	ReadTimeout  int
-	WriteTimeout int
+	ReadTimeout  int `toml:"read-timeout"`
+	WriteTimeout int `toml:"write-timeout"`
 }
 
 type mongoSessionSettings struct {
