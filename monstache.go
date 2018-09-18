@@ -1032,8 +1032,6 @@ func resumeWork(ctx *gtm.OpCtxMulti, session *mgo.Session, config *configOptions
 
 func saveTimestamp(s *mgo.Session, ts bson.MongoTimestamp, config *configOptions) error {
 	session := s.Copy()
-	session.SetSocketTimeout(time.Duration(5) * time.Second)
-	session.SetSyncTimeout(time.Duration(5) * time.Second)
 	if config.ResumeWriteUnsafe {
 		session.SetSafe(nil)
 	}
@@ -1670,19 +1668,19 @@ func (config *configOptions) setDefaults() *configOptions {
 	ds := config.MongoDialSettings
 	ss := config.MongoSessionSettings
 	if ds.Timeout == -1 {
-		config.MongoDialSettings.Timeout = 10
+		config.MongoDialSettings.Timeout = 15
 	}
 	if ds.ReadTimeout == -1 {
-		config.MongoDialSettings.ReadTimeout = 600
+		config.MongoDialSettings.ReadTimeout = 0
 	}
 	if ds.WriteTimeout == -1 {
-		config.MongoDialSettings.WriteTimeout = 30
+		config.MongoDialSettings.WriteTimeout = 0
 	}
 	if ss.SyncTimeout == -1 {
-		config.MongoSessionSettings.SyncTimeout = 600
+		config.MongoSessionSettings.SyncTimeout = 0
 	}
 	if ss.SocketTimeout == -1 {
-		config.MongoSessionSettings.SocketTimeout = 600
+		config.MongoSessionSettings.SocketTimeout = 0
 	}
 	if config.MongoURL == "" {
 		config.MongoURL = mongoURLDefault
@@ -1773,10 +1771,10 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	dialInfo.Timeout = time.Duration(config.MongoDialSettings.Timeout) * time.Second
+	dialInfo.AppName = "monstache"
+	dialInfo.Timeout = time.Duration(0)
 	dialInfo.ReadTimeout = time.Duration(config.MongoDialSettings.ReadTimeout) * time.Second
 	dialInfo.WriteTimeout = time.Duration(config.MongoDialSettings.WriteTimeout) * time.Second
-	dialInfo.AppName = "monstache"
 	ssl := config.MongoDialSettings.Ssl || config.MongoPemFile != ""
 	if ssl {
 		tlsConfig := &tls.Config{}
@@ -1804,7 +1802,7 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 	}
 	session, err := mgo.DialWithInfo(dialInfo)
 	if err == nil {
-		session.SetSyncTimeout(time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Minute)
+		session.SetSyncTimeout(time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Second)
 	}
 	return session, err
 }
@@ -2880,11 +2878,27 @@ func main() {
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
-
-	mongo, err := config.dialMongo(config.MongoURL)
-	if err != nil {
-		panic(fmt.Sprintf("Unable to connect to mongodb using URL %s: %s", config.MongoURL, err))
+	mongoOk := make(chan bool)
+	if config.MongoDialSettings.Timeout != 0 {
+		go func() {
+			connT := time.NewTicker(time.Duration(config.MongoDialSettings.Timeout) * time.Second)
+			defer connT.Stop()
+			select {
+			case <-mongoOk:
+				return
+			case <-sigs:
+				os.Exit(exitStatus)
+			case <-connT.C:
+				errorLog.Fatalf("Unable to connect to MongoDB using URL %s: timed out after %d seconds", config.MongoURL, config.MongoDialSettings.Timeout)
+			}
+		}()
 	}
+	mongo, err := config.dialMongo(config.MongoURL)
+	close(mongoOk)
+	if err != nil {
+		panic(fmt.Sprintf("Unable to connect to MongoDB using URL %s: %s", config.MongoURL, err))
+	}
+	infoLog.Printf("Started monstache version %s", version)
 	if mongoInfo, err := mongo.BuildInfo(); err == nil {
 		infoLog.Printf("Successfully connected to MongoDB version %s", mongoInfo.Version)
 	} else {
@@ -3143,7 +3157,7 @@ func main() {
 			}()
 		}
 	}
-	infoLog.Println("Entering event loop")
+	infoLog.Println("Listening for events")
 	for {
 		select {
 		case timeout := <-doneC:
