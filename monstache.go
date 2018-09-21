@@ -201,6 +201,7 @@ type configOptions struct {
 	Print                    bool                 `toml:"print-config"`
 	Version                  bool
 	Pprof                    bool
+	DisableChangeEvents      bool `toml:"disable-change-events"`
 	EnableEasyJSON           bool `toml:"enable-easy-json"`
 	Stats                    bool
 	IndexStats               bool   `toml:"index-stats"`
@@ -284,8 +285,8 @@ func (args *stringargs) Set(value string) error {
 	return nil
 }
 
-func (config *configOptions) isSharded() bool {
-	return config.MongoConfigURL != ""
+func (config *configOptions) readShards() bool {
+	return len(config.ChangeStreamNs) == 0 && config.MongoConfigURL != ""
 }
 
 func afterBulk(executionId int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
@@ -1072,6 +1073,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.Gzip, "gzip", false, "True to use gzip for requests to elasticsearch")
 	flag.BoolVar(&config.Verbose, "verbose", false, "True to output verbose messages")
 	flag.BoolVar(&config.Pprof, "pprof", false, "True to enable pprof endpoints")
+	flag.BoolVar(&config.DisableChangeEvents, "disable-change-events", false, "True to disable listening for changes.  You must provide direct-reads in this case")
 	flag.BoolVar(&config.EnableEasyJSON, "enable-easy-json", false, "True to enable easy-json serialization")
 	flag.BoolVar(&config.Stats, "stats", false, "True to print out statistics")
 	flag.BoolVar(&config.IndexStats, "index-stats", false, "True to index stats in elasticsearch")
@@ -1407,6 +1409,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if !config.EnableEasyJSON && tomlConfig.EnableEasyJSON {
 			config.EnableEasyJSON = true
 		}
+		if !config.DisableChangeEvents && tomlConfig.DisableChangeEvents {
+			config.DisableChangeEvents = true
+		}
 		if !config.IndexStats && tomlConfig.IndexStats {
 			config.IndexStats = true
 		}
@@ -1660,7 +1665,12 @@ func (config *configOptions) validate() {
 	if len(config.ChangeStreamNs) > 0 {
 		if config.Resume || config.Replay {
 			panic("Resume, replay, and clustering options are not supported when using change streams")
+		} else if config.DisableChangeEvents {
+			panic("Change events must not be disabled if using change streams")
 		}
+	}
+	if config.DisableChangeEvents && len(config.DirectReadNs) == 0 {
+		panic("Direct read namespaces must be specified if change events are disabled")
 	}
 }
 
@@ -1795,12 +1805,31 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 		dialInfo.DialServer = func(addr *mgo.ServerAddr) (net.Conn, error) {
 			conn, err := tls.Dial("tcp", addr.String(), tlsConfig)
 			if err != nil {
-				errorLog.Printf("Unable to dial mongodb: %s", err)
+				errorLog.Printf("Unable to dial MongoDB: %s", err)
 			}
 			return conn, err
 		}
 	}
+	mongoOk := make(chan bool)
+	if config.MongoDialSettings.Timeout != 0 {
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
+		go func() {
+			deadline := time.Duration(config.MongoDialSettings.Timeout) * time.Second
+			connT := time.NewTicker(deadline)
+			defer connT.Stop()
+			select {
+			case <-mongoOk:
+				return
+			case <-sigs:
+				os.Exit(exitStatus)
+			case <-connT.C:
+				errorLog.Fatalf("Unable to connect to MongoDB using URL %s: timed out after %d seconds", inURL, config.MongoDialSettings.Timeout)
+			}
+		}()
+	}
 	session, err := mgo.DialWithInfo(dialInfo)
+	close(mongoOk)
 	if err == nil {
 		session.SetSyncTimeout(time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Second)
 	}
@@ -2878,23 +2907,7 @@ func main() {
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
-	mongoOk := make(chan bool)
-	if config.MongoDialSettings.Timeout != 0 {
-		go func() {
-			connT := time.NewTicker(time.Duration(config.MongoDialSettings.Timeout) * time.Second)
-			defer connT.Stop()
-			select {
-			case <-mongoOk:
-				return
-			case <-sigs:
-				os.Exit(exitStatus)
-			case <-connT.C:
-				errorLog.Fatalf("Unable to connect to MongoDB using URL %s: timed out after %d seconds", config.MongoURL, config.MongoDialSettings.Timeout)
-			}
-		}()
-	}
 	mongo, err := config.dialMongo(config.MongoURL)
-	close(mongoOk)
 	if err != nil {
 		panic(fmt.Sprintf("Unable to connect to MongoDB using URL %s: %s", config.MongoURL, err))
 	}
@@ -2971,7 +2984,7 @@ func main() {
 	var nsFilter, filter, directReadFilter gtm.OpFilter
 	filterChain := []gtm.OpFilter{notMonstache, notSystem, notChunks}
 	filterArray := []gtm.OpFilter{}
-	if config.isSharded() {
+	if config.readShards() {
 		filterChain = append(filterChain, notConfig)
 	}
 	if config.NsRegex != "" {
@@ -3030,7 +3043,7 @@ func main() {
 	}
 	var mongos []*mgo.Session
 	var configSession *mgo.Session
-	if config.isSharded() {
+	if config.readShards() {
 		// if we have a config server URL then we are running in a sharded cluster
 		configSession, err = config.dialMongo(config.MongoConfigURL)
 		if err != nil {
@@ -3060,7 +3073,7 @@ func main() {
 		After:               after,
 		Filter:              filter,
 		NamespaceFilter:     nsFilter,
-		OpLogDisabled:       len(config.ChangeStreamNs) > 0,
+		OpLogDisabled:       config.DisableChangeEvents || len(config.ChangeStreamNs) > 0,
 		OpLogDatabaseName:   oplogDatabaseName,
 		OpLogCollectionName: oplogCollectionName,
 		ChannelSize:         config.GtmSettings.ChannelSize,
@@ -3079,7 +3092,7 @@ func main() {
 
 	gtmCtx := gtm.StartMulti(mongos, gtmOpts)
 
-	if config.isSharded() {
+	if config.readShards() && !config.DisableChangeEvents {
 		gtmCtx.AddShardListener(configSession, gtmOpts, config.makeShardInsertHandler())
 	}
 	if config.ClusterName != "" {
