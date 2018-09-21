@@ -56,6 +56,7 @@ var mapEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var filterEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var pipeEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var mapIndexTypes map[string]*indexTypeMapping = make(map[string]*indexTypeMapping)
+var replaces map[string]*replacement = make(map[string]*replacement)
 var fileNamespaces map[string]bool = make(map[string]bool)
 var patchNamespaces map[string]bool = make(map[string]bool)
 var tmNamespaces map[string]bool = make(map[string]bool)
@@ -76,6 +77,7 @@ const elasticMaxBytesDefault int = 8 * 1024 * 1024
 const gtmChannelSizeDefault int = 512
 const typeFromFuture string = "_doc"
 const fileDownloadersDefault = 10
+const postProcessorsDefault = 10
 
 type deleteStrategy int
 
@@ -98,6 +100,15 @@ type javascript struct {
 	Script    string
 	Path      string
 	Routing   bool
+}
+
+type replacement struct {
+	Namespace     string
+	WithNamespace string `toml:"with-namespace"`
+	SrcField      string `toml:"src-field"`
+	MatchField    string `toml:"match-field"`
+	db            string
+	col           string
 }
 
 type indexTypeMapping struct {
@@ -241,6 +252,7 @@ type configOptions struct {
 	Filter                   []javascript
 	Pipeline                 []javascript
 	Mapping                  []indexTypeMapping
+	Replace                  []replacement
 	FileNamespaces           stringargs `toml:"file-namespaces"`
 	PatchNamespaces          stringargs `toml:"patch-namespaces"`
 	Workers                  stringargs
@@ -260,6 +272,7 @@ type configOptions struct {
 	DeleteStrategy           deleteStrategy `toml:"delete-strategy"`
 	DeleteIndexPattern       string         `toml:"delete-index-pattern"`
 	FileDownloaders          int            `toml:"file-downloaders"`
+	PostProcessors           int            `toml:"post-processors"`
 	PruneInvalidJSON         bool           `toml:"prune-invalid-json"`
 }
 
@@ -826,6 +839,30 @@ func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
 }
 
 func mapData(session *mgo.Session, config *configOptions, op *gtm.Op) error {
+	if r := replaces[op.Namespace]; r != nil {
+		if op.Data[r.SrcField] != nil {
+			s := session.Copy()
+			defer s.Close()
+			sel := bson.M{r.MatchField: op.Data[r.SrcField]}
+			col := session.DB(r.db).C(r.col)
+			q := col.Find(sel)
+			doc := make(map[string]interface{})
+			if err := q.One(doc); err == nil {
+				op.Data = doc
+			} else if err == mgo.ErrNotFound {
+				return fmt.Errorf("Unable to find document for replacement searching namespace %s using query %v", r.WithNamespace, sel)
+			} else {
+				return err
+			}
+		} else {
+			b, err := json.Marshal(op.Data)
+			if err == nil {
+				return fmt.Errorf("Source field %s not found for replacement: %s", r.SrcField, string(b))
+			} else {
+				return fmt.Errorf("Source field %s not found for replacement", r.SrcField)
+			}
+		}
+	}
 	if config.MapperPluginPath != "" {
 		return mapDataGolang(session, op)
 	}
@@ -1117,6 +1154,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.ElasticPemFile, "elasticsearch-pem-file", "", "Path to a PEM file for secure connections to elasticsearch")
 	flag.BoolVar(&config.ElasticValidatePemFile, "elasticsearch-validate-pem-file", true, "Set to boolean false to not validate the Elasticsearch PEM file")
 	flag.IntVar(&config.ElasticMaxConns, "elasticsearch-max-conns", 0, "Elasticsearch max connections")
+	flag.IntVar(&config.PostProcessors, "post-processors", 0, "Number of post-processing go routines")
 	flag.IntVar(&config.FileDownloaders, "file-downloaders", 0, "GridFs download go routines")
 	flag.BoolVar(&config.ElasticRetry, "elasticsearch-retry", false, "True to retry failed request to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxDocs, "elasticsearch-max-docs", 0, "Number of docs to hold before flushing to Elasticsearch")
@@ -1180,6 +1218,37 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.OplogDateFieldFormat, "oplog-date-field-format", "", "Format to use for the oplog date")
 	flag.Parse()
 	return config
+}
+
+func (config *configOptions) loadReplacements() {
+	if config.Replace != nil {
+		for _, r := range config.Replace {
+			if r.Namespace != "" || r.WithNamespace != "" {
+				dbCol := strings.SplitN(r.WithNamespace, ".", 2)
+				if len(dbCol) != 2 {
+					panic("Replacement namespace is invalid: " + r.WithNamespace)
+				}
+				database, collection := dbCol[0], dbCol[1]
+				r := &replacement{
+					Namespace:     r.Namespace,
+					WithNamespace: r.WithNamespace,
+					SrcField:      r.SrcField,
+					MatchField:    r.MatchField,
+					db:            database,
+					col:           collection,
+				}
+				if r.SrcField == "" {
+					r.SrcField = "_id"
+				}
+				if r.MatchField == "" {
+					r.MatchField = "_id"
+				}
+				replaces[r.Namespace] = r
+			} else {
+				panic("Replacements must specify namespace and with-namespace")
+			}
+		}
+	}
 }
 
 func (config *configOptions) loadIndexTypes() {
@@ -1437,8 +1506,14 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.MaxFileSize == 0 {
 			config.MaxFileSize = tomlConfig.MaxFileSize
 		}
+		if !config.IndexFiles {
+			config.IndexFiles = tomlConfig.IndexFiles
+		}
 		if config.FileDownloaders == 0 {
 			config.FileDownloaders = tomlConfig.FileDownloaders
+		}
+		if config.PostProcessors == 0 {
+			config.PostProcessors = tomlConfig.PostProcessors
 		}
 		if config.DeleteStrategy == 0 {
 			config.DeleteStrategy = tomlConfig.DeleteStrategy
@@ -1478,9 +1553,6 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.StatsIndexFormat == "" {
 			config.StatsIndexFormat = tomlConfig.StatsIndexFormat
-		}
-		if !config.IndexFiles && tomlConfig.IndexFiles {
-			config.IndexFiles = true
 		}
 		if !config.IndexAsUpdate && tomlConfig.IndexAsUpdate {
 			config.IndexAsUpdate = true
@@ -1612,6 +1684,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		tomlConfig.loadFilters()
 		tomlConfig.loadPipelines()
 		tomlConfig.loadIndexTypes()
+		tomlConfig.loadReplacements()
 	}
 	return config
 }
@@ -1812,6 +1885,9 @@ func (config *configOptions) setDefaults() *configOptions {
 	}
 	if config.FileDownloaders == 0 {
 		config.FileDownloaders = fileDownloadersDefault
+	}
+	if config.PostProcessors == 0 && processPlugin != nil {
+		config.PostProcessors = postProcessorsDefault
 	}
 	if config.OplogTsFieldName == "" {
 		config.OplogTsFieldName = "oplog_ts"
@@ -2187,7 +2263,7 @@ func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elast
 	return
 }
 
-func processOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, fileC chan *gtm.Op) (err error) {
+func processOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, fileC chan *gtm.Op, processC chan *gtm.Op) (err error) {
 	if op.IsDrop() {
 		bulk.Flush()
 		err = doDrop(mongo, client, op, config)
@@ -2201,9 +2277,7 @@ func processOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProc
 		}
 	}
 	if processPlugin != nil {
-		if e := runProcessor(mongo, bulk, client, op); e != nil {
-			processErr(e, config)
-		}
+		processC <- op
 	}
 	return
 }
@@ -2956,13 +3030,13 @@ func main() {
 	config.loadPatchNamespaces()
 	config.loadGridFsConfig()
 	config.loadConfigFile()
+	config.loadPlugins()
 	config.setDefaults()
 	if config.Print {
 		config.dump()
 		os.Exit(0)
 	}
 	config.setupLogging()
-	config.loadPlugins()
 	config.validate()
 
 	sigs := make(chan os.Signal, 1)
@@ -3204,11 +3278,13 @@ func main() {
 	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
 	var allOpsVisited, allFilesVisited bool
 	var fileWg sync.WaitGroup
+	var processWg sync.WaitGroup
 	doneC := make(chan int)
 	opsConsumed := make(chan bool)
 	filesConsumed := make(chan bool)
 	fileC := make(chan *gtm.Op)
 	fileDoneC := make(chan *gtm.Op)
+	processC := make(chan *gtm.Op)
 	for i := 0; i < config.FileDownloaders; i++ {
 		fileWg.Add(1)
 		go func() {
@@ -3222,6 +3298,17 @@ func main() {
 			}
 		}()
 	}
+	for i := 0; i < config.PostProcessors; i++ {
+		processWg.Add(1)
+		go func() {
+			defer processWg.Done()
+			for op := range processC {
+				if err := runProcessor(mongo, bulk, elasticClient, op); err != nil {
+					processErr(err, config)
+				}
+			}
+		}()
+	}
 	if len(config.DirectReadNs) > 0 {
 		if config.ExitAfterDirectReads {
 			go func() {
@@ -3231,6 +3318,7 @@ func main() {
 				fileWg.Wait()
 				close(fileDoneC)
 				<-filesConsumed
+				processWg.Wait()
 				doneC <- 30
 			}()
 		}
@@ -3319,6 +3407,7 @@ func main() {
 				if !open && !allOpsVisited {
 					allOpsVisited = true
 					close(fileC)
+					close(processC)
 					opsConsumed <- true
 				}
 				break
@@ -3326,7 +3415,7 @@ func main() {
 			if op.IsSourceOplog() {
 				lastTimestamp = op.Timestamp
 			}
-			if err = processOp(config, mongo, bulk, elasticClient, op, fileC); err != nil {
+			if err = processOp(config, mongo, bulk, elasticClient, op, fileC, processC); err != nil {
 				processErr(err, config)
 			}
 		}
