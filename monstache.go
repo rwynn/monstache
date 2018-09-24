@@ -108,9 +108,9 @@ type relation struct {
 	WithNamespace string `toml:"with-namespace"`
 	SrcField      string `toml:"src-field"`
 	MatchField    string `toml:"match-field"`
+	KeepSrc       bool   `toml:"keep-src"`
 	db            string
 	col           string
-	keepSrc       bool `toml:"keep-src"`
 }
 
 type indexTypeMapping struct {
