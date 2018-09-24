@@ -56,7 +56,7 @@ var mapEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var filterEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var pipeEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var mapIndexTypes map[string]*indexTypeMapping = make(map[string]*indexTypeMapping)
-var replaces map[string]*replacement = make(map[string]*replacement)
+var relates map[string][]*relation = make(map[string][]*relation)
 var fileNamespaces map[string]bool = make(map[string]bool)
 var patchNamespaces map[string]bool = make(map[string]bool)
 var tmNamespaces map[string]bool = make(map[string]bool)
@@ -77,6 +77,7 @@ const elasticMaxBytesDefault int = 8 * 1024 * 1024
 const gtmChannelSizeDefault int = 512
 const typeFromFuture string = "_doc"
 const fileDownloadersDefault = 10
+const relateThreadsDefault = 10
 const postProcessorsDefault = 10
 
 type deleteStrategy int
@@ -102,13 +103,14 @@ type javascript struct {
 	Routing   bool
 }
 
-type replacement struct {
+type relation struct {
 	Namespace     string
 	WithNamespace string `toml:"with-namespace"`
 	SrcField      string `toml:"src-field"`
 	MatchField    string `toml:"match-field"`
 	db            string
 	col           string
+	keepSrc       bool `toml:"keep-src"`
 }
 
 type indexTypeMapping struct {
@@ -158,6 +160,13 @@ type indexingMeta struct {
 	Pipeline        string
 	RetryOnConflict int
 	Skip            bool
+}
+
+type outputChans struct {
+	indexC   chan *gtm.Op
+	processC chan *gtm.Op
+	fileC    chan *gtm.Op
+	relateC  chan *gtm.Op
 }
 
 type mongoDialSettings struct {
@@ -252,7 +261,7 @@ type configOptions struct {
 	Filter                   []javascript
 	Pipeline                 []javascript
 	Mapping                  []indexTypeMapping
-	Replace                  []replacement
+	Relate                   []relation
 	FileNamespaces           stringargs `toml:"file-namespaces"`
 	PatchNamespaces          stringargs `toml:"patch-namespaces"`
 	Workers                  stringargs
@@ -272,6 +281,7 @@ type configOptions struct {
 	DeleteStrategy           deleteStrategy `toml:"delete-strategy"`
 	DeleteIndexPattern       string         `toml:"delete-index-pattern"`
 	FileDownloaders          int            `toml:"file-downloaders"`
+	RelateThreads            int            `toml:"relate-threads"`
 	PostProcessors           int            `toml:"post-processors"`
 	PruneInvalidJSON         bool           `toml:"prune-invalid-json"`
 }
@@ -748,6 +758,8 @@ func mapDataJavascript(op *gtm.Op) error {
 	names := []string{"", op.Namespace}
 	for _, name := range names {
 		if env := mapEnvs[name]; env != nil {
+			env.lock.Lock()
+			defer env.lock.Unlock()
 			arg := convertMapJavascript(op.Data)
 			val, err := env.VM.Call("module.exports", arg, arg, op.Namespace)
 			if err != nil {
@@ -839,34 +851,84 @@ func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
 }
 
 func mapData(session *mgo.Session, config *configOptions, op *gtm.Op) error {
-	if r := replaces[op.Namespace]; r != nil {
-		if op.Data[r.SrcField] != nil {
-			s := session.Copy()
-			defer s.Close()
-			sel := bson.M{r.MatchField: op.Data[r.SrcField]}
-			col := session.DB(r.db).C(r.col)
-			q := col.Find(sel)
-			doc := make(map[string]interface{})
-			if err := q.One(doc); err == nil {
-				op.Data = doc
-			} else if err == mgo.ErrNotFound {
-				return fmt.Errorf("Unable to find document for replacement searching namespace %s using query %v", r.WithNamespace, sel)
-			} else {
-				return err
-			}
-		} else {
-			b, err := json.Marshal(op.Data)
-			if err == nil {
-				return fmt.Errorf("Source field %s not found for replacement: %s", r.SrcField, string(b))
-			} else {
-				return fmt.Errorf("Source field %s not found for replacement", r.SrcField)
-			}
-		}
-	}
 	if config.MapperPluginPath != "" {
 		return mapDataGolang(session, op)
 	}
 	return mapDataJavascript(op)
+}
+
+func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out *outputChans) (err error) {
+	if op.Data == nil {
+		return nil
+	}
+	rs := relates[op.Namespace]
+	if len(rs) == 0 {
+		return nil
+	}
+	for _, r := range rs {
+		if op.Data[r.SrcField] == nil {
+			b, e := json.Marshal(op.Data)
+			if e == nil {
+				err = fmt.Errorf("Source field %s not found for relation: %s", r.SrcField, string(b))
+			} else {
+				err = fmt.Errorf("Source field %s not found for relation: $s", r.SrcField, err)
+			}
+			processErr(err, config)
+			continue
+		}
+		s := session.Copy()
+		defer s.Close()
+		sel := bson.M{r.MatchField: op.Data[r.SrcField]}
+		col := session.DB(r.db).C(r.col)
+		q := col.Find(sel)
+		iter := q.Iter()
+		doc := make(map[string]interface{})
+		t := time.Now().UTC().Unix()
+		for iter.Next(doc) {
+			rop := &gtm.Op{
+				Id:        doc["_id"],
+				Data:      doc,
+				Operation: op.Operation,
+				Namespace: r.WithNamespace,
+				Source:    gtm.DirectQuerySource,
+				Timestamp: bson.MongoTimestamp(t << 32),
+			}
+			if processPlugin != nil {
+				out.processC <- rop
+			}
+			skip := false
+			if rs2 := relates[rop.Namespace]; len(rs2) != 0 {
+				allSkip := true
+				for _, r2 := range rs2 {
+					if r2.keepSrc {
+						allSkip = false
+					}
+					if rop.Data[r2.SrcField] != nil {
+						err = processRelated(session, config, rop, out)
+					} else {
+						b, e := json.Marshal(rop.Data)
+						if e == nil {
+							err = fmt.Errorf("Source field %s not found for relation: %s", r2.SrcField, string(b))
+						} else {
+							err = fmt.Errorf("Source field %s not found for relation", r2.SrcField)
+						}
+						processErr(err, config)
+					}
+				}
+				skip = allSkip
+			}
+			if !skip {
+				if hasFileContent(rop, config) {
+					out.fileC <- rop
+				} else {
+					out.indexC <- rop
+				}
+			}
+			doc = make(map[string]interface{})
+		}
+		iter.Close()
+	}
+	return
 }
 
 func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
@@ -1013,6 +1075,7 @@ func filterWithScript() gtm.OpFilter {
 					keep = false
 					arg := convertMapJavascript(op.Data)
 					env.lock.Lock()
+					defer env.lock.Unlock()
 					val, err := env.VM.Call("module.exports", arg, arg, op.Namespace)
 					if err != nil {
 						errorLog.Println(err)
@@ -1023,7 +1086,6 @@ func filterWithScript() gtm.OpFilter {
 							errorLog.Println(err)
 						}
 					}
-					env.lock.Unlock()
 				}
 				if !keep {
 					break
@@ -1156,6 +1218,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.IntVar(&config.ElasticMaxConns, "elasticsearch-max-conns", 0, "Elasticsearch max connections")
 	flag.IntVar(&config.PostProcessors, "post-processors", 0, "Number of post-processing go routines")
 	flag.IntVar(&config.FileDownloaders, "file-downloaders", 0, "GridFs download go routines")
+	flag.IntVar(&config.RelateThreads, "relate-threads", 0, "Number of threads dedicated to processing relationships")
 	flag.BoolVar(&config.ElasticRetry, "elasticsearch-retry", false, "True to retry failed request to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxDocs, "elasticsearch-max-docs", 0, "Number of docs to hold before flushing to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxBytes, "elasticsearch-max-bytes", 0, "Number of bytes to hold before flushing to Elasticsearch")
@@ -1221,15 +1284,15 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 }
 
 func (config *configOptions) loadReplacements() {
-	if config.Replace != nil {
-		for _, r := range config.Replace {
+	if config.Relate != nil {
+		for _, r := range config.Relate {
 			if r.Namespace != "" || r.WithNamespace != "" {
 				dbCol := strings.SplitN(r.WithNamespace, ".", 2)
 				if len(dbCol) != 2 {
 					panic("Replacement namespace is invalid: " + r.WithNamespace)
 				}
 				database, collection := dbCol[0], dbCol[1]
-				r := &replacement{
+				r := &relation{
 					Namespace:     r.Namespace,
 					WithNamespace: r.WithNamespace,
 					SrcField:      r.SrcField,
@@ -1243,9 +1306,9 @@ func (config *configOptions) loadReplacements() {
 				if r.MatchField == "" {
 					r.MatchField = "_id"
 				}
-				replaces[r.Namespace] = r
+				relates[r.Namespace] = append(relates[r.Namespace], r)
 			} else {
-				panic("Replacements must specify namespace and with-namespace")
+				panic("Relates must specify namespace and with-namespace")
 			}
 		}
 	}
@@ -1366,6 +1429,7 @@ func (config *configOptions) loadScripts() {
 			env := &executionEnv{
 				VM:     otto.New(),
 				Script: s.Script,
+				lock:   &sync.Mutex{},
 			}
 			if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
 				panic(err)
@@ -1379,6 +1443,7 @@ func (config *configOptions) loadScripts() {
 			} else if !val.IsFunction() {
 				panic("module.exports must be a function")
 			}
+
 			mapEnvs[s.Namespace] = env
 			if s.Routing {
 				routingNamespaces[s.Namespace] = true
@@ -1680,6 +1745,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		config.MongoSessionSettings = tomlConfig.MongoSessionSettings
 		config.GtmSettings = tomlConfig.GtmSettings
 		config.Logs = tomlConfig.Logs
+		config.Relate = tomlConfig.Relate
 		tomlConfig.loadScripts()
 		tomlConfig.loadFilters()
 		tomlConfig.loadPipelines()
@@ -1885,6 +1951,9 @@ func (config *configOptions) setDefaults() *configOptions {
 	}
 	if config.FileDownloaders == 0 {
 		config.FileDownloaders = fileDownloadersDefault
+	}
+	if config.RelateThreads == 0 {
+		config.RelateThreads = relateThreadsDefault
 	}
 	if config.PostProcessors == 0 && processPlugin != nil {
 		config.PostProcessors = postProcessorsDefault
@@ -2101,7 +2170,7 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 	return
 }
 
-func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, ingestAttachment bool) (err error) {
+func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op) (err error) {
 	meta := parseIndexMeta(op)
 	if meta.Skip {
 		return
@@ -2114,6 +2183,10 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 				errorLog.Printf("Unable to save json-patch info: %s", e)
 			}
 		}
+	}
+	ingestAttachment := false
+	if config.ElasticMajorVersion >= 5 && hasFileContent(op, config) {
+		ingestAttachment = op.Data["file"] != nil
 	}
 	if config.IndexAsUpdate && meta.Pipeline == "" && ingestAttachment == false {
 		req := elastic.NewBulkUpdateRequest()
@@ -2226,10 +2299,10 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 	return
 }
 
-func doIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, ingestAttachment bool) (err error) {
+func doIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op) (err error) {
 	if err = mapData(mongo, config, op); err == nil {
 		if op.Data != nil {
-			err = doIndexing(config, mongo, bulk, client, op, ingestAttachment)
+			err = doIndexing(config, mongo, bulk, client, op)
 		} else if op.IsUpdate() {
 			doDelete(config, client, mongo, bulk, op)
 		}
@@ -2263,26 +2336,56 @@ func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elast
 	return
 }
 
-func processOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, fileC chan *gtm.Op, processC chan *gtm.Op) (err error) {
+func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, out *outputChans) (err error) {
 	if op.IsDrop() {
 		bulk.Flush()
 		err = doDrop(mongo, client, op, config)
 	} else if op.IsDelete() {
 		doDelete(config, client, mongo, bulk, op)
 	} else if op.Data != nil {
-		if hasFileContent(op, config) {
-			fileC <- op
-		} else {
-			err = doIndex(config, mongo, bulk, client, op, false)
+		skip := false
+		if op.IsSourceOplog() && len(config.Relate) > 0 {
+			if rs := relates[op.Namespace]; len(rs) != 0 {
+				allSkip := true
+				for _, r := range rs {
+					if r.keepSrc {
+						allSkip = false
+						break
+					}
+				}
+				skip = allSkip
+				rdata := make(map[string]interface{})
+				for k, v := range op.Data {
+					rdata[k] = v
+				}
+				rop := &gtm.Op{
+					Id:        op.Id,
+					Operation: op.Operation,
+					Namespace: op.Namespace,
+					Source:    op.Source,
+					Timestamp: op.Timestamp,
+					Data:      rdata,
+				}
+				out.relateC <- rop
+			}
+		}
+		if !skip {
+			if hasFileContent(op, config) {
+				out.fileC <- op
+			} else {
+				out.indexC <- op
+			}
 		}
 	}
 	if processPlugin != nil {
-		processC <- op
+		out.processC <- op
 	}
 	return
 }
 
 func processErr(err error, config *configOptions) {
+	mux.Lock()
+	defer mux.Unlock()
 	exitStatus = 1
 	errorLog.Println(err)
 	if config.FailFast {
@@ -3276,25 +3379,48 @@ func main() {
 		shutdown(10, hsc, bulk, bulkStats, mongo, config)
 	}()
 	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
-	var allOpsVisited, allFilesVisited bool
-	var fileWg sync.WaitGroup
-	var processWg sync.WaitGroup
+	var allOpsVisited bool
+	var fileWg, indexWg, processWg, relateWg sync.WaitGroup
 	doneC := make(chan int)
 	opsConsumed := make(chan bool)
-	filesConsumed := make(chan bool)
-	fileC := make(chan *gtm.Op)
-	fileDoneC := make(chan *gtm.Op)
-	processC := make(chan *gtm.Op)
+	outputChs := &outputChans{
+		indexC:   make(chan *gtm.Op),
+		processC: make(chan *gtm.Op),
+		fileC:    make(chan *gtm.Op),
+		relateC:  make(chan *gtm.Op),
+	}
+	if len(config.Relate) > 0 {
+		for i := 0; i < config.RelateThreads; i++ {
+			relateWg.Add(1)
+			go func() {
+				defer relateWg.Done()
+				for op := range outputChs.relateC {
+					if err := processRelated(mongo, config, op, outputChs); err != nil {
+						processErr(err, config)
+					}
+				}
+			}()
+		}
+	}
+	indexWg.Add(1)
+	go func() {
+		defer indexWg.Done()
+		for op := range outputChs.indexC {
+			if err = doIndex(config, mongo, bulk, elasticClient, op); err != nil {
+				processErr(err, config)
+			}
+		}
+	}()
 	for i := 0; i < config.FileDownloaders; i++ {
 		fileWg.Add(1)
 		go func() {
 			defer fileWg.Done()
-			for op := range fileC {
+			for op := range outputChs.fileC {
 				err := addFileContent(mongo, op, config)
 				if err != nil {
 					processErr(err, config)
 				}
-				fileDoneC <- op
+				outputChs.indexC <- op
 			}
 		}()
 	}
@@ -3302,7 +3428,7 @@ func main() {
 		processWg.Add(1)
 		go func() {
 			defer processWg.Done()
-			for op := range processC {
+			for op := range outputChs.processC {
 				if err := runProcessor(mongo, bulk, elasticClient, op); err != nil {
 					processErr(err, config)
 				}
@@ -3315,9 +3441,13 @@ func main() {
 				gtmCtx.DirectReadWg.Wait()
 				gtmCtx.Stop()
 				<-opsConsumed
+				close(outputChs.relateC)
+				relateWg.Wait()
+				close(outputChs.fileC)
 				fileWg.Wait()
-				close(fileDoneC)
-				<-filesConsumed
+				close(outputChs.indexC)
+				indexWg.Wait()
+				close(outputChs.processC)
 				processWg.Wait()
 				doneC <- 30
 			}()
@@ -3381,24 +3511,6 @@ func main() {
 				break
 			}
 			processErr(err, config)
-		case op, open := <-fileDoneC:
-			if !enabled {
-				break
-			}
-			if op == nil {
-				if !open && !allFilesVisited {
-					allFilesVisited = true
-					filesConsumed <- true
-				}
-				break
-			}
-			ingest := config.ElasticMajorVersion >= 5
-			if ingest {
-				ingest = op.Data["file"] != nil
-			}
-			if err = doIndex(config, mongo, bulk, elasticClient, op, ingest); err != nil {
-				processErr(err, config)
-			}
 		case op, open := <-gtmCtx.OpC:
 			if !enabled {
 				break
@@ -3406,8 +3518,6 @@ func main() {
 			if op == nil {
 				if !open && !allOpsVisited {
 					allOpsVisited = true
-					close(fileC)
-					close(processC)
 					opsConsumed <- true
 				}
 				break
@@ -3415,7 +3525,7 @@ func main() {
 			if op.IsSourceOplog() {
 				lastTimestamp = op.Timestamp
 			}
-			if err = processOp(config, mongo, bulk, elasticClient, op, fileC, processC); err != nil {
+			if err = routeOp(config, mongo, bulk, elasticClient, op, outputChs); err != nil {
 				processErr(err, config)
 			}
 		}
