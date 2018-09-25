@@ -871,7 +871,7 @@ func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out
 			if e == nil {
 				err = fmt.Errorf("Source field %s not found for relation: %s", r.SrcField, string(b))
 			} else {
-				err = fmt.Errorf("Source field %s not found for relation: $s", r.SrcField, err)
+				err = fmt.Errorf("Source field %s not found for relation: %s", r.SrcField, err)
 			}
 			processErr(err, config)
 			continue
