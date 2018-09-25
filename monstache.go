@@ -842,7 +842,7 @@ func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out
 			if rs2 := relates[rop.Namespace]; len(rs2) != 0 {
 				allSkip := true
 				for _, r2 := range rs2 {
-					if r2.keepSrc {
+					if r2.KeepSrc {
 						allSkip = false
 					}
 					if rop.Data[r2.SrcField] != nil {
@@ -2291,7 +2291,7 @@ func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 			if rs := relates[op.Namespace]; len(rs) != 0 {
 				allSkip := true
 				for _, r := range rs {
-					if r.keepSrc {
+					if r.KeepSrc {
 						allSkip = false
 						break
 					}
