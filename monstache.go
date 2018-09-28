@@ -3454,15 +3454,17 @@ func main() {
 			lastCheckM = (e == nil)
 		}
 	}()
-	indexWg.Add(1)
-	go func() {
-		defer indexWg.Done()
-		for op := range outputChs.indexC {
-			if err = doIndex(config, mongo, bulk, elasticClient, op); err != nil {
-				processErr(err, config)
+	for i := 0; i < 5; i++ {
+		indexWg.Add(1)
+		go func() {
+			defer indexWg.Done()
+			for op := range outputChs.indexC {
+				if err = doIndex(config, mongo, bulk, elasticClient, op); err != nil {
+					processErr(err, config)
+				}
 			}
-		}
-	}()
+		}()
+	}
 	for i := 0; i < config.FileDownloaders; i++ {
 		fileWg.Add(1)
 		go func() {
