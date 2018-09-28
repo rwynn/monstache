@@ -71,7 +71,7 @@ const version = "3.17.2"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
-const elasticClientTimeoutDefault int = 60
+const elasticClientTimeoutDefault int = 0
 const elasticMaxDocsDefault int = -1
 const elasticMaxBytesDefault int = 8 * 1024 * 1024
 const gtmChannelSizeDefault int = 512
@@ -313,30 +313,6 @@ func (config *configOptions) readShards() bool {
 	return len(config.ChangeStreamNs) == 0 && config.MongoConfigURL != ""
 }
 
-func afterBulk(executionId int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
-	if err != nil {
-		errorLog.Printf("Bulk index request with execution ID %d failed: %s", executionId, err)
-	}
-	if response != nil && response.Errors {
-		failed := response.Failed()
-		if failed != nil {
-			errorLog.Printf("Bulk index request with execution ID %d has %d line failure/warning(s)", executionId, len(failed))
-			for i, item := range failed {
-				json, err := json.Marshal(item)
-				if err != nil {
-					errorLog.Printf("Unable to marshall failed request line #%d: %s", i, err)
-				} else {
-					if item.Status == 409 {
-						warnLog.Printf("Conflict request line #%d details: %s", i, string(json))
-					} else {
-						errorLog.Printf("Failed request line #%d details: %s", i, string(json))
-					}
-				}
-			}
-		}
-	}
-}
-
 func (config *configOptions) useTypeFromFuture() (use bool) {
 	if config.ElasticMajorVersion > 6 {
 		use = true
@@ -378,7 +354,6 @@ func (config *configOptions) newBulkProcessor(client *elastic.Client) (bulk *ela
 	if config.ElasticRetry == false {
 		bulkService.Backoff(&elastic.StopBackoff{})
 	}
-	bulkService.After(afterBulk)
 	bulkService.FlushInterval(time.Duration(config.ElasticMaxSeconds) * time.Second)
 	return bulkService.Do(context.Background())
 }
@@ -390,7 +365,6 @@ func (config *configOptions) newStatsBulkProcessor(client *elastic.Client) (bulk
 	bulkService.BulkActions(-1)
 	bulkService.BulkSize(-1)
 	bulkService.FlushInterval(time.Duration(5) * time.Second)
-	bulkService.After(afterBulk)
 	return bulkService.Do(context.Background())
 }
 
@@ -438,6 +412,8 @@ func (config *configOptions) newElasticClient() (client *elastic.Client, err err
 		return client, err
 	}
 	clientOptions = append(clientOptions, elastic.SetHttpClient(httpClient))
+	clientOptions = append(clientOptions, elastic.SetHealthcheckTimeoutStartup(time.Duration(15)*time.Second))
+	clientOptions = append(clientOptions, elastic.SetHealthcheckTimeout(time.Duration(5)*time.Second))
 	return elastic.NewClient(clientOptions...)
 }
 
@@ -1229,7 +1205,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.DroppedDatabases, "dropped-databases", true, "True to delete indexes from dropped databases")
 	flag.BoolVar(&config.DroppedCollections, "dropped-collections", true, "True to delete indexes from dropped collections")
 	flag.BoolVar(&config.Version, "v", false, "True to print the version number")
-	flag.BoolVar(&config.Gzip, "gzip", false, "True to use gzip for requests to elasticsearch")
+	flag.BoolVar(&config.Gzip, "gzip", false, "True to enable gzip for requests to Elasticsearch")
 	flag.BoolVar(&config.Verbose, "verbose", false, "True to output verbose messages")
 	flag.BoolVar(&config.Pprof, "pprof", false, "True to enable pprof endpoints")
 	flag.BoolVar(&config.DisableChangeEvents, "disable-change-events", false, "True to disable listening for changes.  You must provide direct-reads in this case")
@@ -3074,14 +3050,16 @@ func shutdown(timeout int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulk
 	infoLog.Println("Shutting down")
 	closeC := make(chan bool)
 	go func() {
-		if config.ClusterName != "" {
+		if mongo != nil && config.ClusterName != "" {
 			resetClusterState(mongo, config)
 		}
 		if hsc != nil {
 			hsc.shutdown = true
 			hsc.httpServer.Shutdown(context.Background())
 		}
-		bulk.Flush()
+		if bulk != nil {
+			bulk.Flush()
+		}
 		if bulkStats != nil {
 			bulkStats.Flush()
 		}
@@ -3376,7 +3354,11 @@ func main() {
 	}
 	go func() {
 		<-sigs
-		shutdown(10, hsc, bulk, bulkStats, mongo, config)
+		if enabled {
+			shutdown(10, hsc, bulk, bulkStats, mongo, config)
+		} else {
+			shutdown(10, hsc, nil, nil, nil, config)
+		}
 	}()
 	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
 	var allOpsVisited bool
@@ -3402,6 +3384,42 @@ func main() {
 			}()
 		}
 	}
+	go func() {
+		lastCheckE, lastCheckM := true, true
+		healthBeat := time.NewTicker(15 * time.Second)
+		for range healthBeat.C {
+			if !enabled {
+				break
+			}
+			nodes := len(config.ElasticUrls)
+			nodesFailed := 0
+			for _, url := range config.ElasticUrls {
+				_, err = elasticClient.ElasticsearchVersion(url)
+				if err != nil {
+					nodesFailed++
+				}
+			}
+			if nodesFailed == 0 {
+				if lastCheckE == false {
+					infoLog.Println("Elasticsearch connection recovered")
+				}
+			} else {
+				errorLog.Printf("Elasticsearch connection failed for %d of %d nodes. Will retry in 15s", nodesFailed, nodes)
+			}
+			lastCheckE = (nodesFailed == 0)
+			var e error
+			s := mongo.Copy()
+			if e = s.Ping(); e == nil {
+				if lastCheckM == false {
+					infoLog.Println("MongoDB connection recovered")
+				}
+			} else {
+				errorLog.Println("MongoDB connection failed. Will retry in 15s")
+			}
+			s.Close()
+			lastCheckM = (e == nil)
+		}
+	}()
 	indexWg.Add(1)
 	go func() {
 		defer indexWg.Done()
@@ -3457,9 +3475,17 @@ func main() {
 	for {
 		select {
 		case timeout := <-doneC:
-			shutdown(timeout, hsc, bulk, bulkStats, mongo, config)
+			if enabled {
+				enabled = false
+				shutdown(timeout, hsc, bulk, bulkStats, mongo, config)
+			} else {
+				shutdown(timeout, hsc, nil, nil, nil, config)
+			}
 			return
 		case <-timestampTicker.C:
+			if !enabled {
+				break
+			}
 			if lastTimestamp > lastSavedTimestamp {
 				bulk.Flush()
 				if saveTimestamp(mongo, lastTimestamp, config); err == nil {
