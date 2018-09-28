@@ -1,11 +1,9 @@
-FROM rwynn/monstache-builder:1.0.2
+FROM rwynn/monstache-builder-cache:1.0.7 AS build-app
 
-ARG PLUGIN
-
-WORKDIR /go/src/app
+WORKDIR /go/src/cache-app
 
 COPY . .
 
-RUN go get -d -v ./...
+ARG PLUGIN
 
 RUN go build -buildmode=plugin -o $PLUGIN.so $PLUGIN.go
