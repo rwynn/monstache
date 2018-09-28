@@ -19,10 +19,12 @@ import (
 	_ "github.com/robertkrimen/otto/underscore"
 	"github.com/rwynn/gtm"
 	"github.com/rwynn/gtm/consistent"
+	"github.com/smartystreets/go-aws-auth"
 	"golang.org/x/net/context"
 	"gopkg.in/Graylog2/go-gelf.v2/gelf"
 	"gopkg.in/natefinch/lumberjack.v2"
 	elastic "gopkg.in/olivere/elastic.v5"
+	"gopkg.in/olivere/elastic.v5/aws"
 	"gopkg.in/rwynn/monstache.v3/monstachemap"
 	"io"
 	"io/ioutil"
@@ -89,6 +91,12 @@ const (
 )
 
 type stringargs []string
+
+type awsConnect struct {
+	AccessKey string `toml:"access-key"`
+	SecretKey string `toml:"secret-key"`
+	Region    string
+}
 
 type executionEnv struct {
 	VM     *otto.Otto
@@ -205,6 +213,7 @@ type configOptions struct {
 	MongoDialSettings        mongoDialSettings    `toml:"mongo-dial-settings"`
 	MongoSessionSettings     mongoSessionSettings `toml:"mongo-session-settings"`
 	GtmSettings              gtmSettings          `toml:"gtm-settings"`
+	AWSConnect               awsConnect           `toml:"aws-connect"`
 	Logs                     logFiles             `toml:"logs"`
 	GraylogAddr              string               `toml:"graylog-addr"`
 	ElasticUrls              stringargs           `toml:"elasticsearch-urls"`
@@ -284,6 +293,19 @@ type configOptions struct {
 	RelateThreads            int            `toml:"relate-threads"`
 	PostProcessors           int            `toml:"post-processors"`
 	PruneInvalidJSON         bool           `toml:"prune-invalid-json"`
+}
+
+func (ac *awsConnect) validate() error {
+	if ac.AccessKey == "" && ac.SecretKey == "" {
+		return nil
+	} else if ac.AccessKey != "" && ac.SecretKey != "" {
+		return nil
+	}
+	return errors.New("AWS connect settings must include both access-key and secret-key")
+}
+
+func (ac *awsConnect) enabled() bool {
+	return ac.AccessKey != "" || ac.SecretKey != ""
 }
 
 func (arg *deleteStrategy) String() string {
@@ -1722,6 +1744,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		config.GtmSettings = tomlConfig.GtmSettings
 		config.Logs = tomlConfig.Logs
 		config.Relate = tomlConfig.Relate
+		config.AWSConnect = tomlConfig.AWSConnect
 		tomlConfig.loadScripts()
 		tomlConfig.loadFilters()
 		tomlConfig.loadPipelines()
@@ -1844,6 +1867,11 @@ func (config *configOptions) validate() {
 	}
 	if config.DisableChangeEvents && len(config.DirectReadNs) == 0 {
 		panic("Direct read namespaces must be specified if change events are disabled")
+	}
+	if config.AWSConnect.enabled() {
+		if err := config.AWSConnect.validate(); err != nil {
+			panic(err)
+		}
 	}
 }
 
@@ -2038,6 +2066,12 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 	client = &http.Client{
 		Timeout:   time.Duration(config.ElasticClientTimeout) * time.Second,
 		Transport: transport,
+	}
+	if config.AWSConnect.enabled() {
+		client = aws.NewV4SigningClient(awsauth.Credentials{
+			AccessKeyID: config.AWSConnect.AccessKey,
+			SecretAccessKey: config.AWSConnect.SecretKey,
+		})
 	}
 	return client, err
 }
