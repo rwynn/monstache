@@ -1,10 +1,8 @@
-FROM rwynn/monstache-builder:1.0.2 AS build-app
+FROM rwynn/monstache-builder-cache-rel3:1.0.7 AS build-app
 
-WORKDIR /go/src/app
+WORKDIR /go/src/cache-app
 
 COPY . .
-
-RUN go get -d -v ./...
 
 ARG PLUGIN
 
