@@ -405,7 +405,6 @@ func (config *configOptions) needsSecureScheme() bool {
 func (config *configOptions) newElasticClient() (client *elastic.Client, err error) {
 	var clientOptions []elastic.ClientOptionFunc
 	var httpClient *http.Client
-	clientOptions = append(clientOptions, elastic.SetErrorLog(errorLog))
 	clientOptions = append(clientOptions, elastic.SetSniff(false))
 	if config.needsSecureScheme() {
 		clientOptions = append(clientOptions, elastic.SetScheme("https"))
@@ -417,6 +416,7 @@ func (config *configOptions) newElasticClient() (client *elastic.Client, err err
 	}
 	if config.Verbose {
 		clientOptions = append(clientOptions, elastic.SetTraceLog(traceLog))
+		clientOptions = append(clientOptions, elastic.SetErrorLog(errorLog))
 	}
 	if config.Gzip {
 		clientOptions = append(clientOptions, elastic.SetGzip(true))
