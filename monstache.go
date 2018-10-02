@@ -2165,7 +2165,9 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 		if meta.RetryOnConflict != 0 {
 			req.RetryOnConflict(meta.RetryOnConflict)
 		}
-		bulk.Add(req)
+		if _, err = req.Source(); err == nil {
+			bulk.Add(req)
+		}
 	} else {
 		req := elastic.NewBulkIndexRequest()
 		req.UseEasyJSON(config.EnableEasyJSON)
@@ -2200,7 +2202,9 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 		if ingestAttachment {
 			req.Pipeline("attachment")
 		}
-		bulk.Add(req)
+		if _, err = req.Source(); err == nil {
+			bulk.Add(req)
+		}
 	}
 
 	if meta.shouldSave(config) {
@@ -2246,10 +2250,11 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 			if ingestAttachment {
 				req.Pipeline("attachment")
 			}
-			bulk.Add(req)
+			if _, err = req.Source(); err == nil {
+				bulk.Add(req)
+			}
 		}
 	}
-
 	return
 }
 
@@ -3359,7 +3364,7 @@ func main() {
 		healthBeat := time.NewTicker(15 * time.Second)
 		for range healthBeat.C {
 			if !enabled {
-				break
+				continue
 			}
 			nodes := len(config.ElasticUrls)
 			nodesFailed := 0
