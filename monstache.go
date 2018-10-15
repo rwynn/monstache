@@ -81,6 +81,7 @@ const typeFromFuture string = "_doc"
 const fileDownloadersDefault = 10
 const relateThreadsDefault = 10
 const postProcessorsDefault = 10
+const redact = "REDACTED"
 
 type deleteStrategy int
 
@@ -1766,6 +1767,27 @@ func (config *configOptions) loadGridFsConfig() *configOptions {
 }
 
 func (config *configOptions) dump() {
+	if config.MongoURL != "" {
+		config.MongoURL = cleanMongoURL(config.MongoURL)
+	}
+	if config.MongoConfigURL != "" {
+		config.MongoConfigURL = cleanMongoURL(config.MongoConfigURL)
+	}
+	if config.ElasticUser != "" {
+		config.ElasticUser = redact
+	}
+	if config.ElasticPassword != "" {
+		config.ElasticPassword = redact
+	}
+	if config.AWSConnect.AccessKey != "" {
+		config.AWSConnect.AccessKey = redact
+	}
+	if config.AWSConnect.SecretKey != "" {
+		config.AWSConnect.SecretKey = redact
+	}
+	if config.AWSConnect.Region != "" {
+		config.AWSConnect.Region = redact
+	}
 	json, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		errorLog.Printf("Unable to print configuration: %s", err)
@@ -1925,6 +1947,20 @@ func (config *configOptions) getAuthURL(inURL string) string {
 	}
 }
 
+func cleanMongoURL(inURL string) string {
+	const scheme = "mongodb://"
+	hasScheme := strings.HasPrefix(inURL, scheme)
+	url := strings.TrimPrefix(inURL, scheme)
+	userEnd := strings.IndexAny(url, "@")
+	if userEnd != -1 {
+		url = redact + "@" + url[userEnd+1:]
+	}
+	if hasScheme {
+		url = scheme + url
+	}
+	return url
+}
+
 func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 	dialInfo, err := mgo.ParseURL(inURL)
 	if err != nil {
@@ -1973,7 +2009,7 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 			case <-sigs:
 				os.Exit(exitStatus)
 			case <-connT.C:
-				errorLog.Fatalf("Unable to connect to MongoDB using URL %s: timed out after %d seconds", inURL, config.MongoDialSettings.Timeout)
+				errorLog.Fatalf("Unable to connect to MongoDB using URL %s: timed out after %d seconds", cleanMongoURL(inURL), config.MongoDialSettings.Timeout)
 			}
 		}()
 	}
@@ -3104,7 +3140,7 @@ func main() {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
 	mongo, err := config.dialMongo(config.MongoURL)
 	if err != nil {
-		panic(fmt.Sprintf("Unable to connect to MongoDB using URL %s: %s", config.MongoURL, err))
+		panic(fmt.Sprintf("Unable to connect to MongoDB using URL %s: %s", cleanMongoURL(config.MongoURL), err))
 	}
 	infoLog.Printf("Started monstache version %s", version)
 	if mongoInfo, err := mongo.BuildInfo(); err == nil {
@@ -3117,12 +3153,11 @@ func main() {
 
 	elasticClient, err := config.newElasticClient()
 	if err != nil {
-		panic(fmt.Sprintf("Unable to create elasticsearch client: %s", err))
+		panic(fmt.Sprintf("Unable to create Elasticsearch client: %s", err))
 	}
 	if config.ElasticVersion == "" {
 		if err := config.testElasticsearchConn(elasticClient); err != nil {
-			panic(fmt.Sprintf("Unable to validate connection to elasticsearch using client %s: %s",
-				elasticClient, err))
+			panic(fmt.Sprintf("Unable to validate connection to Elasticsearch: %s", err))
 		}
 	} else {
 		if err := config.parseElasticsearchVersion(config.ElasticVersion); err != nil {
@@ -3242,7 +3277,7 @@ func main() {
 		// if we have a config server URL then we are running in a sharded cluster
 		configSession, err = config.dialMongo(config.MongoConfigURL)
 		if err != nil {
-			panic(fmt.Sprintf("Unable to connect to mongodb config server using URL %s: %s", config.MongoConfigURL, err))
+			panic(fmt.Sprintf("Unable to connect to mongodb config server using URL %s: %s", cleanMongoURL(config.MongoConfigURL), err))
 		}
 		// get the list of shard servers
 		shardInfos := gtm.GetShards(configSession)
@@ -3255,7 +3290,7 @@ func main() {
 			shardURL := config.getAuthURL(shardInfo.GetURL())
 			shard, err := config.dialMongo(shardURL)
 			if err != nil {
-				panic(fmt.Sprintf("Unable to connect to mongodb shard using URL %s: %s", shardURL, err))
+				panic(fmt.Sprintf("Unable to connect to mongodb shard using URL %s: %s", cleanMongoURL(shardURL), err))
 			}
 			defer shard.Close()
 			mongos = append(mongos, shard)
