@@ -1766,7 +1766,7 @@ func (config *configOptions) loadGridFsConfig() *configOptions {
 	return config
 }
 
-func (config *configOptions) dump() {
+func (config configOptions) dump() {
 	if config.MongoURL != "" {
 		config.MongoURL = cleanMongoURL(config.MongoURL)
 	}
