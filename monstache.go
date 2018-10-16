@@ -2105,7 +2105,7 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 	}
 	if config.AWSConnect.enabled() {
 		client = aws.NewV4SigningClient(awsauth.Credentials{
-			AccessKeyID: config.AWSConnect.AccessKey,
+			AccessKeyID:     config.AWSConnect.AccessKey,
 			SecretAccessKey: config.AWSConnect.SecretKey,
 		})
 	}
