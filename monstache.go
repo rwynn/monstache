@@ -1627,7 +1627,6 @@ func (config *configOptions) loadConfigFile() *configOptions {
 			if len(config.FileNamespaces) == 0 {
 				config.FileNamespaces = tomlConfig.FileNamespaces
 			}
-			config.loadGridFsConfig()
 		}
 		if config.Worker == "" {
 			config.Worker = tomlConfig.Worker
@@ -1917,7 +1916,7 @@ func (config *configOptions) setDefaults() *configOptions {
 	if config.DeleteIndexPattern == "" {
 		config.DeleteIndexPattern = "*"
 	}
-	if config.FileDownloaders == 0 {
+	if config.FileDownloaders == 0 && config.IndexFiles {
 		config.FileDownloaders = fileDownloadersDefault
 	}
 	if config.RelateThreads == 0 {
@@ -2313,15 +2312,7 @@ func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elast
 		ElasticBulkProcessor: bulk,
 		Timestamp:            op.Timestamp,
 	}
-	input.Document = make(map[string]interface{})
-	if op.Data != nil {
-		for k, v := range op.Data {
-			input.Document[k] = v
-		}
-	}
-	if op.Id != nil {
-		input.Document["_id"] = op.Id
-	}
+	input.Document = op.Data
 	input.Namespace = op.Namespace
 	input.Database = op.GetDatabase()
 	input.Collection = op.GetCollection()
@@ -2332,6 +2323,27 @@ func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elast
 }
 
 func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, out *outputChans) (err error) {
+	if processPlugin != nil {
+		rop := &gtm.Op{
+			Id:        op.Id,
+			Operation: op.Operation,
+			Namespace: op.Namespace,
+			Source:    op.Source,
+			Timestamp: op.Timestamp,
+		}
+		if op.Data != nil {
+			var data []byte
+			data, err = bson.Marshal(op.Data)
+			if err == nil {
+				var m map[string]interface{}
+				err = bson.Unmarshal(data, &m)
+				if err == nil {
+					rop.Data = m
+				}
+			}
+		}
+		out.processC <- rop
+	}
 	if op.IsDrop() {
 		bulk.Flush()
 		err = doDrop(mongo, client, op, config)
@@ -2371,9 +2383,6 @@ func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 				out.indexC <- op
 			}
 		}
-	}
-	if processPlugin != nil {
-		out.processC <- op
 	}
 	return
 }
@@ -3404,7 +3413,7 @@ func main() {
 			nodes := len(config.ElasticUrls)
 			nodesFailed := 0
 			for _, url := range config.ElasticUrls {
-				_, err = elasticClient.ElasticsearchVersion(url)
+				_, err := elasticClient.ElasticsearchVersion(url)
 				if err != nil {
 					nodesFailed++
 				}
@@ -3435,7 +3444,7 @@ func main() {
 		go func() {
 			defer indexWg.Done()
 			for op := range outputChs.indexC {
-				if err = doIndex(config, mongo, bulk, elasticClient, op); err != nil {
+				if err := doIndex(config, mongo, bulk, elasticClient, op); err != nil {
 					processErr(err, config)
 				}
 			}
