@@ -835,7 +835,23 @@ func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out
 				Timestamp: bson.MongoTimestamp(t << 32),
 			}
 			if processPlugin != nil {
-				out.processC <- rop
+				pop := &gtm.Op{
+					Id:        rop.Id,
+					Operation: rop.Operation,
+					Namespace: rop.Namespace,
+					Source:    rop.Source,
+					Timestamp: rop.Timestamp,
+				}
+				var data []byte
+				data, err = bson.Marshal(rop.Data)
+				if err == nil {
+					var m map[string]interface{}
+					err = bson.Unmarshal(data, &m)
+					if err == nil {
+						pop.Data = m
+					}
+				}
+				out.processC <- pop
 			}
 			skip := false
 			if rs2 := relates[rop.Namespace]; len(rs2) != 0 {
