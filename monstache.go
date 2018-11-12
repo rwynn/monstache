@@ -1464,6 +1464,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		var tomlConfig = configOptions{
 			DroppedDatabases:     true,
 			DroppedCollections:   true,
+			MongoValidatePemFile: true,
 			MongoDialSettings:    mongoDialSettings{Timeout: -1, ReadTimeout: -1, WriteTimeout: -1},
 			MongoSessionSettings: mongoSessionSettings{SocketTimeout: -1, SyncTimeout: -1},
 			GtmSettings:          gtmDefaultSettings(),
@@ -1480,8 +1481,8 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.MongoPemFile == "" {
 			config.MongoPemFile = tomlConfig.MongoPemFile
 		}
-		if config.MongoValidatePemFile && !tomlConfig.MongoValidatePemFile {
-			config.MongoValidatePemFile = false
+		if config.MongoValidatePemFile {
+			config.MongoValidatePemFile = tomlConfig.MongoValidatePemFile
 		}
 		if config.MongoOpLogDatabaseName == "" {
 			config.MongoOpLogDatabaseName = tomlConfig.MongoOpLogDatabaseName
@@ -2330,6 +2331,9 @@ func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elast
 		Timestamp:            op.Timestamp,
 	}
 	input.Document = op.Data
+	if op.IsDelete() {
+		input.Document["_id"] = op.Id
+	}
 	input.Namespace = op.Namespace
 	input.Database = op.GetDatabase()
 	input.Collection = op.GetCollection()
