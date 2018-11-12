@@ -69,7 +69,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
 
-const version = "3.18.5"
+const version = "3.18.6"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
@@ -1701,6 +1701,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.IndexFiles {
 			if len(config.FileNamespaces) == 0 {
 				config.FileNamespaces = tomlConfig.FileNamespaces
+				config.loadGridFsConfig()
 			}
 		}
 		if config.Worker == "" {
@@ -1715,8 +1716,8 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.EnablePatches {
 			if len(config.PatchNamespaces) == 0 {
 				config.PatchNamespaces = tomlConfig.PatchNamespaces
+				config.loadPatchNamespaces()
 			}
-			config.loadPatchNamespaces()
 		}
 		if len(config.RoutingNamespaces) == 0 {
 			config.RoutingNamespaces = tomlConfig.RoutingNamespaces
@@ -2437,19 +2438,27 @@ func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 					}
 				}
 				skip = allSkip
-				rdata := make(map[string]interface{})
-				for k, v := range op.Data {
-					rdata[k] = v
+				if skip {
+					out.relateC <- op
+				} else {
+					rop := &gtm.Op{
+						Id:        op.Id,
+						Operation: op.Operation,
+						Namespace: op.Namespace,
+						Source:    op.Source,
+						Timestamp: op.Timestamp,
+					}
+					var data []byte
+					data, err = bson.Marshal(op.Data)
+					if err == nil {
+						var m map[string]interface{}
+						err = bson.Unmarshal(data, &m)
+						if err == nil {
+							rop.Data = m
+						}
+					}
+					out.relateC <- rop
 				}
-				rop := &gtm.Op{
-					Id:        op.Id,
-					Operation: op.Operation,
-					Namespace: op.Namespace,
-					Source:    op.Source,
-					Timestamp: op.Timestamp,
-					Data:      rdata,
-				}
-				out.relateC <- rop
 			}
 		}
 		if !skip {
