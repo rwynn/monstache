@@ -2350,7 +2350,9 @@ func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elast
 	}
 	input.Document = op.Data
 	if op.IsDelete() {
-		input.Document["_id"] = op.Id
+		input.Document = map[string]interface{}{
+			"_id": op.Id,
+		}
 	}
 	input.Namespace = op.Namespace
 	input.Database = op.GetDatabase()
