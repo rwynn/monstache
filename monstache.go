@@ -335,6 +335,22 @@ func (config *configOptions) readShards() bool {
 	return len(config.ChangeStreamNs) == 0 && config.MongoConfigURL != ""
 }
 
+func afterBulk(executionId int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
+	if response != nil && response.Errors {
+		failed := response.Failed()
+		if failed != nil {
+			for _, item := range failed {
+				json, err := json.Marshal(item)
+				if err != nil {
+					errorLog.Printf("Unable to marshal bulk response item: %s", err)
+				} else {
+					errorLog.Printf("Bulk response item: %s", string(json))
+				}
+			}
+		}
+	}
+}
+
 func (config *configOptions) useTypeFromFuture() (use bool) {
 	if config.ElasticMajorVersion > 6 {
 		use = true
@@ -376,6 +392,7 @@ func (config *configOptions) newBulkProcessor(client *elastic.Client) (bulk *ela
 	if config.ElasticRetry == false {
 		bulkService.Backoff(&elastic.StopBackoff{})
 	}
+	bulkService.After(afterBulk)
 	bulkService.FlushInterval(time.Duration(config.ElasticMaxSeconds) * time.Second)
 	return bulkService.Do(context.Background())
 }
@@ -386,6 +403,7 @@ func (config *configOptions) newStatsBulkProcessor(client *elastic.Client) (bulk
 	bulkService.Stats(false)
 	bulkService.BulkActions(-1)
 	bulkService.BulkSize(-1)
+	bulkService.After(afterBulk)
 	bulkService.FlushInterval(time.Duration(5) * time.Second)
 	return bulkService.Do(context.Background())
 }
