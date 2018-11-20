@@ -1,1 +1,1 @@
-rwynn/monstache:4.11.8
+rwynn/monstache:4.11.9
