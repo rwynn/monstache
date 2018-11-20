@@ -1872,6 +1872,25 @@ func (config *configOptions) validate() {
 			panic(err)
 		}
 	}
+	ds := config.MongoDialSettings
+	ss := config.MongoSessionSettings
+	if ds.ReadTimeout < 1 {
+		panic("MongoDB read timeout must be greater than 0")
+	}
+	if ds.WriteTimeout < 1 {
+		panic("MongoDB write timeout must be greater than 0")
+	}
+	if ss.SyncTimeout < 1 {
+		panic("MongoDB sync timeout must be greater than 0")
+	}
+	if len(config.DirectReadNs) > 0 {
+		if config.ElasticMaxSeconds < 5 {
+			warnLog.Println("Direct read performance degrades with small values for elasticsearch-max-seconds. Set to 5s or greater to remove this warning.")
+		}
+		if config.ElasticMaxDocs > 0 {
+			warnLog.Println("For performance reasons it is recommended to use elasticsearch-max-bytes instead of elasticsearch-max-docs since doc size may vary")
+		}
+	}
 }
 
 func (config *configOptions) setDefaults() *configOptions {
@@ -1881,13 +1900,13 @@ func (config *configOptions) setDefaults() *configOptions {
 		config.MongoDialSettings.Timeout = 15
 	}
 	if ds.ReadTimeout == -1 {
-		config.MongoDialSettings.ReadTimeout = 0
+		config.MongoDialSettings.ReadTimeout = 7
 	}
 	if ds.WriteTimeout == -1 {
-		config.MongoDialSettings.WriteTimeout = 0
+		config.MongoDialSettings.WriteTimeout = 7
 	}
 	if ss.SyncTimeout == -1 {
-		config.MongoSessionSettings.SyncTimeout = 0
+		config.MongoSessionSettings.SyncTimeout = 7
 	}
 	if ss.SocketTimeout == -1 {
 		config.MongoSessionSettings.SocketTimeout = 0
@@ -1896,18 +1915,16 @@ func (config *configOptions) setDefaults() *configOptions {
 		config.MongoURL = mongoURLDefault
 	}
 	if config.ClusterName != "" {
-		if config.ClusterName != "" && config.Worker != "" {
+		if config.Worker != "" {
 			config.ResumeName = fmt.Sprintf("%s:%s", config.ClusterName, config.Worker)
 		} else {
 			config.ResumeName = config.ClusterName
 		}
 		config.Resume = true
-	} else if config.ResumeName == "" {
-		if config.Worker != "" {
-			config.ResumeName = config.Worker
-		} else {
-			config.ResumeName = resumeNameDefault
-		}
+	} else if config.Worker != "" {
+		config.ResumeName = config.Worker
+	} else {
+		config.ResumeName = resumeNameDefault
 	}
 	if config.ElasticMaxConns == 0 {
 		config.ElasticMaxConns = elasticMaxConnsDefault
@@ -3452,42 +3469,6 @@ func main() {
 			}()
 		}
 	}
-	go func() {
-		lastCheckE, lastCheckM := true, true
-		healthBeat := time.NewTicker(15 * time.Second)
-		for range healthBeat.C {
-			if !enabled {
-				continue
-			}
-			nodes := len(config.ElasticUrls)
-			nodesFailed := 0
-			for _, url := range config.ElasticUrls {
-				_, err := elasticClient.ElasticsearchVersion(url)
-				if err != nil {
-					nodesFailed++
-				}
-			}
-			if nodesFailed == 0 {
-				if lastCheckE == false {
-					infoLog.Println("Elasticsearch connection recovered")
-				}
-			} else {
-				errorLog.Printf("Elasticsearch connection failed for %d of %d nodes. Will retry in 15s", nodesFailed, nodes)
-			}
-			lastCheckE = (nodesFailed == 0)
-			var e error
-			s := mongo.Copy()
-			if e = s.Ping(); e == nil {
-				if lastCheckM == false {
-					infoLog.Println("MongoDB connection recovered")
-				}
-			} else {
-				errorLog.Println("MongoDB connection failed. Will retry in 15s")
-			}
-			s.Close()
-			lastCheckM = (e == nil)
-		}
-	}()
 	for i := 0; i < 5; i++ {
 		indexWg.Add(1)
 		go func() {
