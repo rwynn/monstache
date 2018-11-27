@@ -41,6 +41,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"text/template"
 	"time"
 )
 
@@ -205,6 +206,8 @@ type httpServerCtx struct {
 }
 
 type configOptions struct {
+	EnableTemplate           bool
+	EnvDelimiter             string
 	MongoURL                 string               `toml:"mongo-url"`
 	MongoConfigURL           string               `toml:"mongo-config-url"`
 	MongoPemFile             string               `toml:"mongo-pem-file"`
@@ -294,6 +297,10 @@ type configOptions struct {
 	RelateThreads            int            `toml:"relate-threads"`
 	PostProcessors           int            `toml:"post-processors"`
 	PruneInvalidJSON         bool           `toml:"prune-invalid-json"`
+}
+
+func (l *logFiles) enabled() bool {
+	return l.Info != "" || l.Warn != "" || l.Error != "" || l.Trace != "" || l.Stats != ""
 }
 
 func (ac *awsConnect) validate() error {
@@ -1236,6 +1243,8 @@ func saveTimestamp(s *mgo.Session, ts bson.MongoTimestamp, config *configOptions
 
 func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.Print, "print-config", false, "Print the configuration and then exit")
+	flag.BoolVar(&config.EnableTemplate, "tpl", false, "True to interpret the config file as a template")
+	flag.StringVar(&config.EnvDelimiter, "env-delimiter", ",", "A delimiter to use when splitting environment variable values")
 	flag.StringVar(&config.MongoURL, "mongo-url", "", "MongoDB server or router server connection URL")
 	flag.StringVar(&config.MongoConfigURL, "mongo-config-url", "", "MongoDB config server connection URL")
 	flag.StringVar(&config.MongoPemFile, "mongo-pem-file", "", "Path to a PEM file for secure connections to MongoDB")
@@ -1535,9 +1544,36 @@ func (config *configOptions) loadPlugins() *configOptions {
 	return config
 }
 
+func (config *configOptions) decodeAsTemplate() *configOptions {
+	env := map[string]string{}
+	for _, e := range os.Environ() {
+		pair := strings.Split(e, "=")
+		if len(pair) < 2 {
+			continue
+		}
+		name, val := pair[0], pair[1]
+		env[name] = val
+	}
+	tpl, err := ioutil.ReadFile(config.ConfigFile)
+	if err != nil {
+		panic(err)
+	}
+	var t = template.Must(template.New("config").Parse(string(tpl)))
+	var b bytes.Buffer
+	err = t.Execute(&b, env)
+	if err != nil {
+		panic(err)
+	}
+	if _, err := toml.Decode(b.String(), config); err != nil {
+		panic(err)
+	}
+	return config
+}
+
 func (config *configOptions) loadConfigFile() *configOptions {
 	if config.ConfigFile != "" {
 		var tomlConfig = configOptions{
+			ConfigFile:           config.ConfigFile,
 			DroppedDatabases:     true,
 			DroppedCollections:   true,
 			MongoValidatePemFile: true,
@@ -1545,8 +1581,12 @@ func (config *configOptions) loadConfigFile() *configOptions {
 			MongoSessionSettings: mongoSessionSettings{SocketTimeout: -1, SyncTimeout: -1},
 			GtmSettings:          gtmDefaultSettings(),
 		}
-		if _, err := toml.DecodeFile(config.ConfigFile, &tomlConfig); err != nil {
-			panic(err)
+		if config.EnableTemplate {
+			tomlConfig.decodeAsTemplate()
+		} else {
+			if _, err := toml.DecodeFile(tomlConfig.ConfigFile, &tomlConfig); err != nil {
+				panic(err)
+			}
 		}
 		if config.MongoURL == "" {
 			config.MongoURL = tomlConfig.MongoURL
@@ -1775,12 +1815,16 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.HTTPServerAddr == "" {
 			config.HTTPServerAddr = tomlConfig.HTTPServerAddr
 		}
+		if !config.AWSConnect.enabled() {
+			config.AWSConnect = tomlConfig.AWSConnect
+		}
+		if !config.Logs.enabled() {
+			config.Logs = tomlConfig.Logs
+		}
 		config.MongoDialSettings = tomlConfig.MongoDialSettings
 		config.MongoSessionSettings = tomlConfig.MongoSessionSettings
 		config.GtmSettings = tomlConfig.GtmSettings
-		config.Logs = tomlConfig.Logs
 		config.Relate = tomlConfig.Relate
-		config.AWSConnect = tomlConfig.AWSConnect
 		tomlConfig.loadScripts()
 		tomlConfig.loadFilters()
 		tomlConfig.loadPipelines()
@@ -1826,6 +1870,154 @@ func (config *configOptions) setupLogging() *configOptions {
 		}
 		if logs.Stats != "" {
 			statsLog.SetOutput(config.newLogger(logs.Stats))
+		}
+	}
+	return config
+}
+
+func (config *configOptions) loadEnvironment() *configOptions {
+	del := config.EnvDelimiter
+	if del == "" {
+		del = ","
+	}
+	for _, e := range os.Environ() {
+		pair := strings.Split(e, "=")
+		if len(pair) < 2 {
+			continue
+		}
+		name, val := pair[0], pair[1]
+		if val == "" {
+			continue
+		}
+		switch name {
+		case "MONSTACHE_MONGO_URL":
+			if config.MongoURL == "" {
+				config.MongoURL = val
+			}
+			break
+		case "MONSTACHE_MONGO_CONFIG_URL":
+			if config.MongoURL == "" {
+				config.MongoConfigURL = val
+			}
+			break
+		case "MONSTACHE_MONGO_PEM":
+			if config.MongoPemFile == "" {
+				config.MongoPemFile = val
+			}
+			break
+		case "MONSTACHE_MONGO_OPLOG_DB":
+			if config.MongoOpLogDatabaseName == "" {
+				config.MongoOpLogDatabaseName = val
+			}
+			break
+		case "MONSTACHE_MONGO_OPLOG_COL":
+			if config.MongoOpLogCollectionName == "" {
+				config.MongoOpLogCollectionName = val
+			}
+			break
+		case "MONSTACHE_ES_URLS":
+			if len(config.ElasticUrls) == 0 {
+				config.ElasticUrls = strings.Split(val, del)
+			}
+			break
+		case "MONSTACHE_ES_USER":
+			if config.ElasticUser == "" {
+				config.ElasticUser = val
+			}
+			break
+		case "MONSTACHE_ES_PASS":
+			if config.ElasticPassword == "" {
+				config.ElasticPassword = val
+			}
+			break
+		case "MONSTACHE_ES_PEM":
+			if config.ElasticPemFile == "" {
+				config.ElasticPemFile = val
+			}
+			break
+		case "MONSTACHE_WORKER":
+			if config.Worker == "" {
+				config.Worker = val
+			}
+			break
+		case "MONSTACHE_CLUSTER":
+			if config.ClusterName == "" {
+				config.ClusterName = val
+			}
+			break
+		case "MONSTACHE_DIRECT_READ_NS":
+			if len(config.DirectReadNs) == 0 {
+				config.DirectReadNs = strings.Split(val, del)
+			}
+			break
+		case "MONSTACHE_CHANGE_STREAM_NS":
+			if len(config.ChangeStreamNs) == 0 {
+				config.ChangeStreamNs = strings.Split(val, del)
+			}
+			break
+		case "MONSTACHE_NS_REGEX":
+			if config.NsRegex == "" {
+				config.NsRegex = val
+			}
+			break
+		case "MONSTACHE_NS_EXCLUDE_REGEX":
+			if config.NsExcludeRegex == "" {
+				config.NsExcludeRegex = val
+			}
+			break
+		case "MONSTACHE_NS_DROP_REGEX":
+			if config.NsDropRegex == "" {
+				config.NsDropRegex = val
+			}
+			break
+		case "MONSTACHE_NS_DROP_EXCLUDE_REGEX":
+			if config.NsDropExcludeRegex == "" {
+				config.NsDropExcludeRegex = val
+			}
+			break
+		case "MONSTACHE_GRAYLOG_ADDR":
+			if config.GraylogAddr == "" {
+				config.GraylogAddr = val
+			}
+			break
+		case "MONSTACHE_AWS_ACCESS_KEY":
+			config.AWSConnect.AccessKey = val
+			break
+		case "MONSTACHE_AWS_SECRET_KEY":
+			config.AWSConnect.SecretKey = val
+			break
+		case "MONSTACHE_AWS_REGION":
+			config.AWSConnect.Region = val
+			break
+		case "MONSTACHE_LOG_DIR":
+			config.Logs.Info = val + "/info.log"
+			config.Logs.Warn = val + "/warn.log"
+			config.Logs.Error = val + "/error.log"
+			config.Logs.Trace = val + "/trace.log"
+			config.Logs.Stats = val + "/stats.log"
+			break
+		case "MONSTACHE_HTTP_ADDR":
+			if config.HTTPServerAddr == "" {
+				config.HTTPServerAddr = val
+			}
+			break
+		case "MONSTACHE_FILE_NS":
+			if len(config.FileNamespaces) == 0 {
+				config.FileNamespaces = strings.Split(val, del)
+			}
+			break
+		case "MONSTACHE_PATCH_NS":
+			if len(config.PatchNamespaces) == 0 {
+				config.PatchNamespaces = strings.Split(val, del)
+			}
+			break
+		case "MONSTACHE_TIME_MACHINE_NS":
+			if len(config.TimeMachineNamespaces) == 0 {
+				config.TimeMachineNamespaces = strings.Split(val, del)
+			}
+			break
+		default:
+			continue
 		}
 	}
 	return config
@@ -1918,8 +2110,6 @@ func (config *configOptions) validate() {
 	if len(config.ChangeStreamNs) > 0 {
 		if config.Resume || config.Replay {
 			panic("Resume, replay, and clustering options are not supported when using change streams")
-		} else if config.DisableChangeEvents {
-			panic("Change events must not be disabled if using change streams")
 		}
 	}
 	if config.DisableChangeEvents && len(config.DirectReadNs) == 0 {
@@ -3256,6 +3446,7 @@ func main() {
 		fmt.Println(version)
 		os.Exit(0)
 	}
+	config.loadEnvironment()
 	config.loadTimeMachineNamespaces()
 	config.loadRoutingNamespaces()
 	config.loadPatchNamespaces()
@@ -3438,6 +3629,11 @@ func main() {
 		mongos = append(mongos, mongo)
 	}
 
+	changeStreamNs := config.ChangeStreamNs
+	if config.DisableChangeEvents {
+		changeStreamNs = []string{}
+	}
+
 	gtmOpts := &gtm.Options{
 		After:               after,
 		Filter:              filter,
@@ -3456,7 +3652,7 @@ func main() {
 		Log:                 infoLog,
 		Pipe:                buildPipe(config),
 		PipeAllowDisk:       config.PipeAllowDisk,
-		ChangeStreamNs:      config.ChangeStreamNs,
+		ChangeStreamNs:      changeStreamNs,
 	}
 
 	gtmCtx := gtm.StartMulti(mongos, gtmOpts)
