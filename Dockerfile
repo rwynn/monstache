@@ -2,7 +2,7 @@
 # Step 1: Build the app
 ####################################################################################################
 
-FROM rwynn/monstache-builder-cache:1.0.10 AS build-app
+FROM rwynn/monstache-builder-cache:1.0.11 AS build-app
 
 WORKDIR /go/src/cache-app
 
@@ -17,7 +17,7 @@ RUN make release
 # Step 2: Copy output build file to an alpine image
 ####################################################################################################
 
-FROM quadric/alpine-certs:3.7
+FROM rwynn/monstache-alpine:3.8
 
 ENTRYPOINT ["/bin/monstache"]
 
