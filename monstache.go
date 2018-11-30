@@ -1838,7 +1838,7 @@ func (config *configOptions) loadEnvironment() *configOptions {
 			}
 			break
 		case "MONSTACHE_MONGO_CONFIG_URL":
-			if config.MongoURL == "" {
+			if config.MongoConfigURL == "" {
 				config.MongoConfigURL = val
 			}
 			break
