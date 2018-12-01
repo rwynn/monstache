@@ -1547,7 +1547,7 @@ func (config *configOptions) loadPlugins() *configOptions {
 func (config *configOptions) decodeAsTemplate() *configOptions {
 	env := map[string]string{}
 	for _, e := range os.Environ() {
-		pair := strings.Split(e, "=")
+		pair := strings.SplitN(e, "=", 2)
 		if len(pair) < 2 {
 			continue
 		}
@@ -1881,7 +1881,7 @@ func (config *configOptions) loadEnvironment() *configOptions {
 		del = ","
 	}
 	for _, e := range os.Environ() {
-		pair := strings.Split(e, "=")
+		pair := strings.SplitN(e, "=", 2)
 		if len(pair) < 2 {
 			continue
 		}
