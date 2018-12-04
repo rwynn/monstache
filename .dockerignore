@@ -1,2 +1,6 @@
 monstache
 build
+images
+docker/local
+docker/release
+docker/test

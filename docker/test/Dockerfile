@@ -1,5 +1,9 @@
-FROM rwynn/monstache-builder-cache-rel3:1.0.12
+FROM rwynn/monstache-builder-cache-rel3:1.0.13
 
-WORKDIR /go/src/cache-app
+RUN mkdir /app
+
+WORKDIR /app
 
 COPY . .
+
+RUN go mod download
