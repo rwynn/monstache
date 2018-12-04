@@ -13,7 +13,7 @@ docker run \
 --rm \
 -d \
 monstache-build \
-tail -f /go/src/app/monstache.go
+tail -f /app/monstache.go
 
 # Get the container id of the last created container
 CONTAINER_ID=$(docker ps -l -q)
@@ -26,7 +26,7 @@ if [ -d docker-build ] ; then
 fi
 
 # Copy the build folder from the last created container to the folder docker-build locally
-docker cp "$CONTAINER_ID":/go/src/app/build ./docker-build
+docker cp "$CONTAINER_ID":/app/build ./docker-build
 # docker cp "$CONTAINER_ID":/tmp/build ./docker-build
 
 # Stop the container (it'll be removed automatically once stopped, as we used `--rm`)

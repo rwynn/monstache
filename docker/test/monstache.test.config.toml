@@ -1,113 +1,17 @@
-# https://rwynn.github.io/monstache-site/start/#usage
-
-# # generate indexing statistics
-# # https://rwynn.github.io/monstache-site/config/#stats
-# stats = true
-
-# # index statistics into Elasticsearch
-# index-stats = true
-
-# compress requests to Elasticsearch
-# https://rwynn.github.io/monstache-site/config/#gzip
 gzip = true
 
-# https://rwynn.github.io/monstache-site/config/#fail-fast
-# fail-fast = true
-
-# https://rwynn.github.io/monstache-site/config/#prune-invalid-json
-# prune-invalid-json = true
-
-# connect to MongoDB using the following URL
-# mongo-url = "mongodb://mongo-0:27017"
 mongo-url = "mongodb://root-user:password@mongo-0:27017"
 
-# # use the following PEM file for connections to MongoDB
-# mongo-pem-file = "/path/to/mongoCert.pem"
-
-
-
-# # disable PEM validation
-# mongo-validate-pem-file = false
-
-
-
-# connect to the Elasticsearch REST API at the following URLs
 elasticsearch-urls = ["http://es6:9200"]
 
-# # use the following user name for Elasticsearch basic auth
-# elasticsearch-user = "someuser"
-# # use the following password for Elasticsearch basic auth
-# elasticsearch-password = "somepassword"
-
-# use 10 go routines concurrently pushing documents to Elasticsearch
 elasticsearch-max-conns = 10
 
 elasticsearch-max-seconds = 1
 
 elasticsearch-max-docs = 1
 
-# # use the following PEM file to connections to Elasticsearch
-# elasticsearch-pem-file = "/path/to/elasticCert.pem"
-# # validate connections to Elasticsearch
-# elastic-validate-pem-file = true
-
-# # propogate dropped collections in MongoDB as index deletes in Elasticsearch
-# dropped-collections = true
-# # propogate dropped databases in MongoDB as index deletes in Elasticsearch
-# dropped-databases = true
-
-# # do not start processing at the beginning of the MongoDB oplog
-# replay = false
-
-# # # resume processing from a timestamp saved in a previous run
-# # TODO double check
-# resume = true
-# # # do not validate that progress timestamps have been saved
-# resume-write-unsafe = true
-# # # override the name under which resume state is saved
-# # resume-name = "default"
-
-# # include documents whose namespace matches the following pattern
-# namespace-regex = '^*(test.test)$'
-# namespace-regex = '^*(test.)*$'
 namespace-regex = '^test\.(test|\$cmd)$'
-# namespace-regex = '^*$'
 
-
-# direct-read-namespaces = [
-#   "test.test"
-# ]
-
-# print detailed information including request traces
 verbose = true
 
-# https://rwynn.github.io/monstache-site/advanced/#http-server
-# https://rwynn.github.io/monstache-site/config/#enable-http-server
 enable-http-server = true
-# http-server-addr = ":8081"
-
-
-
-[mongo-dial-settings]
-ssl = false
-
-
-
-
-# [[script]]
-# # this script does not declare a namespace
-# # it is global to all collections
-# routing = true
-# script = """
-# module.exports = function(doc, ns) {
-#   doc._meta_monstache = { index: ns.split(".")[1] };
-#   return doc;
-# }
-# """
-
-# # TODO double check
-# [logs]
-# # error = "/tmp/logs/errors"
-# # info  = "/tmp/logs/info"
-# trace = "/tmp/logs/trace"
-# stats = "/tmp/logs/stats"

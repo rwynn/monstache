@@ -9,13 +9,13 @@ services:
   monstache:
     image: rwynn/monstache-test
     container_name: c-monstache
-    working_dir: /go/src/cache-app
+    working_dir: /app
     command: -f ./monstache.test.config.toml
     build:
       context: ../..
       dockerfile: ./Dockerfile
     volumes:
-      - $PWD/monstache.test.config.toml:/go/src/cache-app/monstache.test.config.toml
+      - $PWD/monstache.test.config.toml:/app/monstache.test.config.toml
     depends_on:
       mongo-0:
         condition: service_started
@@ -39,9 +39,7 @@ services:
     build:
       context: ../..
       dockerfile: ./docker/test/Dockerfile
-    working_dir: /go/src/cache-app
-    volumes:
-      - $PWD/../..:/go/src/cache-app
+    working_dir: /app
     depends_on:
       mongo-0:
         condition: service_started

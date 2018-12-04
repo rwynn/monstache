@@ -1,9 +1,11 @@
 FROM rwynn/monstache-builder:1.0.3
 
-WORKDIR /go/src/app
+RUN mkdir /app
+
+WORKDIR /app
 
 COPY . .
 
-RUN go get -d -v ./...
+RUN go mod download
 
 RUN make all

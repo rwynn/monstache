@@ -2,11 +2,15 @@
 # Step 1: Build the app
 ####################################################################################################
 
-FROM rwynn/monstache-builder-cache:1.0.12 AS build-app
+FROM rwynn/monstache-builder-cache:1.0.13 AS build-app
 
-WORKDIR /go/src/cache-app
+RUN mkdir /app
+
+WORKDIR /app
 
 COPY . .
+
+RUN go mod download
 
 RUN make release
 
@@ -31,4 +35,4 @@ LABEL org.label-schema.build-date=$BUILD_DATE \
 
 ENTRYPOINT ["/bin/monstache"]
 
-COPY --from=build-app /go/src/cache-app/build/linux-amd64/monstache /bin/monstache
+COPY --from=build-app /app/build/linux-amd64/monstache /bin/monstache
