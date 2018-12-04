@@ -2,7 +2,7 @@
 # Step 1: Build the app
 ####################################################################################################
 
-FROM rwynn/monstache-builder-cache-rel3:1.0.11 AS build-app
+FROM rwynn/monstache-builder-cache-rel3:1.0.12 AS build-app
 
 WORKDIR /go/src/cache-app
 
