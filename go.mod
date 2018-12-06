@@ -1,4 +1,4 @@
-module github.com/rwynn/monstache
+module gopkg.in/rwynn/monstache.v3
 
 require (
 	github.com/BurntSushi/toml v0.3.1
@@ -17,7 +17,6 @@ require (
 	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
 	gopkg.in/olivere/elastic.v5 v5.0.76
-	gopkg.in/rwynn/monstache.v3 v3.19.3
 	gopkg.in/sourcemap.v1 v1.0.5 // indirect
 	gopkg.in/yaml.v2 v2.2.2 // indirect
 )
