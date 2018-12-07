@@ -38,6 +38,8 @@ github.com/rwynn/gtm v0.0.0-20181120162323-63fca2f4249a h1:Dq2LNQcTPlvyGNv0kC5Tg
 github.com/rwynn/gtm v0.0.0-20181120162323-63fca2f4249a/go.mod h1:LYXeTMjbA7l9k9oEM+NUBuu0BgvNrD5nQuo8seLsar0=
 github.com/rwynn/gtm v0.0.0-20181206170552-af24a9d5be20 h1:CjbRSwLDtNgesbVjWqv+F9ZbHUPVYYT042Im3qlKsrE=
 github.com/rwynn/gtm v0.0.0-20181206170552-af24a9d5be20/go.mod h1:LYXeTMjbA7l9k9oEM+NUBuu0BgvNrD5nQuo8seLsar0=
+github.com/rwynn/gtm v0.0.0-20181207025155-f34793d18cf9 h1:bYzClP2lZBxJQCYEvmEeBUngwuk033oVCpXaBEYAQoI=
+github.com/rwynn/gtm v0.0.0-20181207025155-f34793d18cf9/go.mod h1:LYXeTMjbA7l9k9oEM+NUBuu0BgvNrD5nQuo8seLsar0=
 github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908 h1:RRpyb4kheanCQVyYfOhkZoD/cwClvn12RzHex2ZmHxw=
 github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908/go.mod h1:/yeG0My1xr/u+HZrFQ1tOQQQQrOawfyMUH13ai5brBc=
 github.com/stretchr/testify v1.2.2 h1:bSDNvY7ZPG5RlJ8otE/7V6gMiyenm9RtJ7IUVIAoJ1w=
