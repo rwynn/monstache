@@ -83,6 +83,7 @@ const fileDownloadersDefault = 10
 const relateThreadsDefault = 10
 const postProcessorsDefault = 10
 const redact = "REDACTED"
+const configDatabaseNameDefault = "monstache"
 
 type deleteStrategy int
 
@@ -293,6 +294,7 @@ type configOptions struct {
 	RoutingNamespaces        stringargs     `toml:"routing-namespaces"`
 	DeleteStrategy           deleteStrategy `toml:"delete-strategy"`
 	DeleteIndexPattern       string         `toml:"delete-index-pattern"`
+	ConfigDatabaseName       string         `toml:"config-database-name"`
 	FileDownloaders          int            `toml:"file-downloaders"`
 	RelateThreads            int            `toml:"relate-threads"`
 	PostProcessors           int            `toml:"post-processors"`
@@ -1045,8 +1047,11 @@ func addFileContent(s *mgo.Session, op *gtm.Op, config *configOptions) (err erro
 	return
 }
 
-func notMonstache(op *gtm.Op) bool {
-	return op.GetDatabase() != "monstache"
+func notMonstache(config *configOptions) gtm.OpFilter {
+	db := config.ConfigDatabaseName
+	return func(op *gtm.Op) bool {
+		return op.GetDatabase() != db
+	}
 }
 
 func notChunks(op *gtm.Op) bool {
@@ -1158,8 +1163,8 @@ func filterDropInverseWithRegex(regex string) gtm.OpFilter {
 	}
 }
 
-func ensureClusterTTL(session *mgo.Session) error {
-	col := session.DB("monstache").C("cluster")
+func ensureClusterTTL(session *mgo.Session, config *configOptions) error {
+	col := session.DB(config.ConfigDatabaseName).C("cluster")
 	return col.EnsureIndex(mgo.Index{
 		Key:         []string{"expireAt"},
 		Background:  true,
@@ -1170,7 +1175,7 @@ func ensureClusterTTL(session *mgo.Session) error {
 func enableProcess(s *mgo.Session, config *configOptions) (bool, error) {
 	session := s.Copy()
 	defer session.Close()
-	col := session.DB("monstache").C("cluster")
+	col := session.DB(config.ConfigDatabaseName).C("cluster")
 	doc := make(map[string]interface{})
 	doc["_id"] = config.ResumeName
 	doc["expireAt"] = time.Now().UTC()
@@ -1191,14 +1196,14 @@ func enableProcess(s *mgo.Session, config *configOptions) (bool, error) {
 }
 
 func resetClusterState(session *mgo.Session, config *configOptions) error {
-	col := session.DB("monstache").C("cluster")
+	col := session.DB(config.ConfigDatabaseName).C("cluster")
 	return col.RemoveId(config.ResumeName)
 }
 
 func ensureEnabled(s *mgo.Session, config *configOptions) (enabled bool, err error) {
 	session := s.Copy()
 	defer session.Close()
-	col := session.DB("monstache").C("cluster")
+	col := session.DB(config.ConfigDatabaseName).C("cluster")
 	doc := make(map[string]interface{})
 	if err = col.FindId(config.ResumeName).One(doc); err == nil {
 		if doc["pid"] != nil && doc["host"] != nil {
@@ -1218,7 +1223,7 @@ func ensureEnabled(s *mgo.Session, config *configOptions) (enabled bool, err err
 }
 
 func resumeWork(ctx *gtm.OpCtxMulti, session *mgo.Session, config *configOptions) {
-	col := session.DB("monstache").C("monstache")
+	col := session.DB(config.ConfigDatabaseName).C("monstache")
 	doc := make(map[string]interface{})
 	col.FindId(config.ResumeName).One(doc)
 	if doc["ts"] != nil {
@@ -1234,7 +1239,7 @@ func saveTimestamp(s *mgo.Session, ts bson.MongoTimestamp, config *configOptions
 		session.SetSafe(nil)
 	}
 	defer session.Close()
-	col := session.DB("monstache").C("monstache")
+	col := session.DB(config.ConfigDatabaseName).C("monstache")
 	doc := make(map[string]interface{})
 	doc["ts"] = ts
 	_, err := col.UpsertId(config.ResumeName, bson.M{"$set": doc})
@@ -1318,6 +1323,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.PruneInvalidJSON, "prune-invalid-json", false, "True to omit values which do not serialize to JSON such as +Inf and -Inf and thus cause errors")
 	flag.Var(&config.DeleteStrategy, "delete-strategy", "Stategy to use for deletes. 0=stateless,1=stateful,2=ignore")
 	flag.StringVar(&config.DeleteIndexPattern, "delete-index-pattern", "", "An Elasticsearch index-pattern to restric the scope of stateless deletes")
+	flag.StringVar(&config.ConfigDatabaseName, "config-database-name", "", "The MongoDB database name that monstache uses to store metadata")
 	flag.StringVar(&config.OplogTsFieldName, "oplog-ts-field-name", "", "Field name to use for the oplog timestamp")
 	flag.StringVar(&config.OplogDateFieldName, "oplog-date-field-name", "", "Field name to use for the oplog date")
 	flag.StringVar(&config.OplogDateFieldFormat, "oplog-date-field-format", "", "Format to use for the oplog date")
@@ -1734,6 +1740,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.OplogDateFieldFormat == "" {
 			config.OplogDateFieldFormat = tomlConfig.OplogDateFieldFormat
+		}
+		if config.ConfigDatabaseName == "" {
+			config.ConfigDatabaseName = tomlConfig.ConfigDatabaseName
 		}
 		if !config.ExitAfterDirectReads && tomlConfig.ExitAfterDirectReads {
 			config.ExitAfterDirectReads = true
@@ -2171,7 +2180,7 @@ func (config *configOptions) setDefaults() *configOptions {
 		config.Resume = true
 	} else if config.Worker != "" {
 		config.ResumeName = config.Worker
-	} else {
+	} else if config.ResumeName == "" {
 		config.ResumeName = resumeNameDefault
 	}
 	if config.ElasticMaxConns == 0 {
@@ -2234,6 +2243,9 @@ func (config *configOptions) setDefaults() *configOptions {
 	}
 	if config.OplogDateFieldFormat == "" {
 		config.OplogDateFieldFormat = "2006/01/02 15:04:05"
+	}
+	if config.ConfigDatabaseName == "" {
+		config.ConfigDatabaseName = configDatabaseNameDefault
 	}
 	return config
 }
@@ -2358,7 +2370,7 @@ func doDrop(mongo *mgo.Session, elastic *elastic.Client, op *gtm.Op, config *con
 	if db, drop := op.IsDropDatabase(); drop {
 		if config.DroppedDatabases {
 			if err = deleteIndexes(elastic, db, config); err == nil {
-				if e := dropDBMeta(mongo, db); e != nil {
+				if e := dropDBMeta(mongo, db, config); e != nil {
 					errorLog.Printf("Unable to delete metadata for db: %s", e)
 				}
 			}
@@ -2366,7 +2378,7 @@ func doDrop(mongo *mgo.Session, elastic *elastic.Client, op *gtm.Op, config *con
 	} else if col, drop := op.IsDropCollection(); drop {
 		if config.DroppedCollections {
 			if err = deleteIndex(elastic, op.GetDatabase()+"."+col, config); err == nil {
-				if e := dropCollectionMeta(mongo, op.GetDatabase()+"."+col); e != nil {
+				if e := dropCollectionMeta(mongo, op.GetDatabase()+"."+col, config); e != nil {
 					errorLog.Printf("Unable to delete metadata for collection: %s", e)
 				}
 			}
@@ -2542,7 +2554,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 	}
 
 	if meta.shouldSave(config) {
-		if e := setIndexMeta(mongo, op.Namespace, objectID, meta); e != nil {
+		if e := setIndexMeta(mongo, op.Namespace, objectID, meta, config); e != nil {
 			errorLog.Printf("Unable to save routing info: %s", e)
 		}
 	}
@@ -2732,15 +2744,15 @@ func doIndexStats(config *configOptions, bulkStats *elastic.BulkProcessor, stats
 	return
 }
 
-func dropDBMeta(session *mgo.Session, db string) (err error) {
-	col := session.DB("monstache").C("meta")
+func dropDBMeta(session *mgo.Session, db string, config *configOptions) (err error) {
+	col := session.DB(config.ConfigDatabaseName).C("meta")
 	q := bson.M{"db": db}
 	_, err = col.RemoveAll(q)
 	return
 }
 
-func dropCollectionMeta(session *mgo.Session, namespace string) (err error) {
-	col := session.DB("monstache").C("meta")
+func dropCollectionMeta(session *mgo.Session, namespace string, config *configOptions) (err error) {
+	col := session.DB(config.ConfigDatabaseName).C("meta")
 	q := bson.M{"namespace": namespace}
 	_, err = col.RemoveAll(q)
 	return
@@ -2800,8 +2812,8 @@ func (meta *indexingMeta) shouldSave(config *configOptions) bool {
 	}
 }
 
-func setIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta) error {
-	col := session.DB("monstache").C("meta")
+func setIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta, config *configOptions) error {
+	col := session.DB(config.ConfigDatabaseName).C("meta")
 	metaID := fmt.Sprintf("%s.%s", namespace, id)
 	doc := make(map[string]interface{})
 	doc["routing"] = meta.Routing
@@ -2815,9 +2827,9 @@ func setIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta
 	return err
 }
 
-func getIndexMeta(session *mgo.Session, namespace, id string) (meta *indexingMeta) {
+func getIndexMeta(session *mgo.Session, namespace, id string, config *configOptions) (meta *indexingMeta) {
 	meta = &indexingMeta{}
-	col := session.DB("monstache").C("meta")
+	col := session.DB(config.ConfigDatabaseName).C("meta")
 	doc := make(map[string]interface{})
 	metaID := fmt.Sprintf("%s.%s", namespace, id)
 	col.FindId(metaID).One(doc)
@@ -3168,7 +3180,7 @@ func doDelete(config *configOptions, client *elastic.Client, mongo *mgo.Session,
 	}
 	if config.DeleteStrategy == statefulDeleteStrategy {
 		if routingNamespaces[""] || routingNamespaces[op.Namespace] {
-			meta = getIndexMeta(mongo, op.Namespace, objectID)
+			meta = getIndexMeta(mongo, op.Namespace, objectID, config)
 		}
 		req.Index(indexType.Index)
 		req.Type(indexType.Type)
@@ -3512,7 +3524,7 @@ func main() {
 			} else if config.ResumeFromTimestamp != 0 {
 				ts = bson.MongoTimestamp(config.ResumeFromTimestamp)
 			} else {
-				collection := session.DB("monstache").C("monstache")
+				collection := session.DB(config.ConfigDatabaseName).C("monstache")
 				doc := make(map[string]interface{})
 				collection.FindId(config.ResumeName).One(doc)
 				if doc["ts"] != nil {
@@ -3542,7 +3554,7 @@ func main() {
 	}
 
 	var nsFilter, filter, directReadFilter gtm.OpFilter
-	filterChain := []gtm.OpFilter{notMonstache, notSystem, notChunks}
+	filterChain := []gtm.OpFilter{notMonstache(config), notSystem, notChunks}
 	filterArray := []gtm.OpFilter{}
 	if config.readShards() {
 		filterChain = append(filterChain, notConfig)
@@ -3584,7 +3596,7 @@ func main() {
 		oplogCollectionName = &config.MongoOpLogCollectionName
 	}
 	if config.ClusterName != "" {
-		if err = ensureClusterTTL(mongo); err == nil {
+		if err = ensureClusterTTL(mongo, config); err == nil {
 			infoLog.Printf("Joined cluster %s", config.ClusterName)
 		} else {
 			panic(fmt.Sprintf("Unable to enable cluster mode: %s", err))
