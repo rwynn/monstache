@@ -1689,7 +1689,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if !config.ExitAfterDirectReads && tomlConfig.ExitAfterDirectReads {
 			config.ExitAfterDirectReads = true
 		}
-		if config.Resume && config.ResumeName == "" {
+		if config.ResumeName == "" {
 			config.ResumeName = tomlConfig.ResumeName
 		}
 		if config.ClusterName == "" {
