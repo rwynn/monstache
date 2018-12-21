@@ -15,7 +15,7 @@ require (
 	github.com/pkg/errors v0.8.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d
-	github.com/rwynn/gtm v0.0.0-20181207025155-f34793d18cf9
+	github.com/rwynn/gtm v0.0.0-20181221195116-5acade3c36d6
 	github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908 // indirect
 	github.com/stretchr/testify v1.2.2 // indirect
 	golang.org/x/net v0.0.0-20181201002055-351d144fa1fc
