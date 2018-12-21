@@ -178,6 +178,7 @@ type outputChans struct {
 	processC chan *gtm.Op
 	fileC    chan *gtm.Op
 	relateC  chan *gtm.Op
+	filter   gtm.OpFilter
 }
 
 type mongoDialSettings struct {
@@ -190,6 +191,11 @@ type mongoDialSettings struct {
 type mongoSessionSettings struct {
 	SocketTimeout int `toml:"socket-timeout"`
 	SyncTimeout   int `toml:"sync-timeout"`
+}
+
+type mongoX509Settings struct {
+	ClientCertPemFile string `toml:"client-cert-pem-file"`
+	ClientKeyPemFile  string `toml:"client-key-pem-file"`
 }
 
 type gtmSettings struct {
@@ -217,6 +223,7 @@ type configOptions struct {
 	MongoOpLogCollectionName string               `toml:"mongo-oplog-collection-name"`
 	MongoDialSettings        mongoDialSettings    `toml:"mongo-dial-settings"`
 	MongoSessionSettings     mongoSessionSettings `toml:"mongo-session-settings"`
+	MongoX509Settings        mongoX509Settings    `toml:"mongo-x509-settings"`
 	GtmSettings              gtmSettings          `toml:"gtm-settings"`
 	AWSConnect               awsConnect           `toml:"aws-connect"`
 	Logs                     logFiles             `toml:"logs"`
@@ -303,6 +310,21 @@ type configOptions struct {
 
 func (l *logFiles) enabled() bool {
 	return l.Info != "" || l.Warn != "" || l.Error != "" || l.Trace != "" || l.Stats != ""
+}
+
+func (s *mongoX509Settings) enabled() bool {
+	return s.ClientCertPemFile != "" || s.ClientKeyPemFile != ""
+}
+
+func (s *mongoX509Settings) validate() error {
+	if s.ClientCertPemFile != "" || s.ClientKeyPemFile != "" {
+		if s.ClientCertPemFile == "" {
+			return errors.New("Client cert pem file missing for X509 authentication")
+		} else if s.ClientKeyPemFile != "" {
+			return errors.New("Client key pem file missing for X509 authentication")
+		}
+	}
+	return nil
 }
 
 func (ac *awsConnect) validate() error {
@@ -787,7 +809,9 @@ func mapDataJavascript(op *gtm.Op) error {
 			env.lock.Lock()
 			defer env.lock.Unlock()
 			arg := convertMapJavascript(op.Data)
-			val, err := env.VM.Call("module.exports", arg, arg, op.Namespace)
+			arg2 := op.Namespace
+			arg3 := convertMapJavascript(op.UpdateDescription)
+			val, err := env.VM.Call("module.exports", arg, arg, arg2, arg3)
 			if err != nil {
 				return err
 			}
@@ -912,20 +936,26 @@ func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out
 		t := time.Now().UTC().Unix()
 		for iter.Next(doc) {
 			rop := &gtm.Op{
-				Id:        doc["_id"],
-				Data:      doc,
-				Operation: op.Operation,
-				Namespace: r.WithNamespace,
-				Source:    gtm.DirectQuerySource,
-				Timestamp: bson.MongoTimestamp(t << 32),
+				Id:                doc["_id"],
+				Data:              doc,
+				Operation:         op.Operation,
+				Namespace:         r.WithNamespace,
+				Source:            gtm.DirectQuerySource,
+				Timestamp:         bson.MongoTimestamp(t << 32),
+				UpdateDescription: op.UpdateDescription,
+			}
+			doc = map[string]interface{}{}
+			if out.filter != nil && !out.filter(rop) {
+				continue
 			}
 			if processPlugin != nil {
 				pop := &gtm.Op{
-					Id:        rop.Id,
-					Operation: rop.Operation,
-					Namespace: rop.Namespace,
-					Source:    rop.Source,
-					Timestamp: rop.Timestamp,
+					Id:                rop.Id,
+					Operation:         rop.Operation,
+					Namespace:         rop.Namespace,
+					Source:            rop.Source,
+					Timestamp:         rop.Timestamp,
+					UpdateDescription: rop.UpdateDescription,
 				}
 				var data []byte
 				data, err = bson.Marshal(rop.Data)
@@ -966,7 +996,6 @@ func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out
 					out.indexC <- rop
 				}
 			}
-			doc = make(map[string]interface{})
 		}
 		iter.Close()
 	}
@@ -1094,11 +1123,12 @@ func filterWithPlugin() gtm.OpFilter {
 		if (op.IsInsert() || op.IsUpdate()) && op.Data != nil {
 			keep = false
 			input := &monstachemap.MapperPluginInput{
-				Document:   op.Data,
-				Namespace:  op.Namespace,
-				Database:   op.GetDatabase(),
-				Collection: op.GetCollection(),
-				Operation:  op.Operation,
+				Document:          op.Data,
+				Namespace:         op.Namespace,
+				Database:          op.GetDatabase(),
+				Collection:        op.GetCollection(),
+				Operation:         op.Operation,
+				UpdateDescription: op.UpdateDescription,
 			}
 			if ok, err := filterPlugin(input); err == nil {
 				keep = ok
@@ -1119,9 +1149,11 @@ func filterWithScript() gtm.OpFilter {
 				if env := filterEnvs[ns]; env != nil {
 					keep = false
 					arg := convertMapJavascript(op.Data)
+					arg2 := op.Namespace
+					arg3 := convertMapJavascript(op.UpdateDescription)
 					env.lock.Lock()
 					defer env.lock.Unlock()
-					val, err := env.VM.Call("module.exports", arg, arg, op.Namespace)
+					val, err := env.VM.Call("module.exports", arg, arg, arg2, arg3)
 					if err != nil {
 						errorLog.Println(err)
 					} else {
@@ -1832,6 +1864,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		config.MongoDialSettings = tomlConfig.MongoDialSettings
 		config.MongoSessionSettings = tomlConfig.MongoSessionSettings
+		config.MongoX509Settings = tomlConfig.MongoX509Settings
 		config.GtmSettings = tomlConfig.GtmSettings
 		config.Relate = tomlConfig.Relate
 		tomlConfig.loadScripts()
@@ -2129,6 +2162,11 @@ func (config *configOptions) validate() {
 			panic(err)
 		}
 	}
+	if config.MongoX509Settings.enabled() {
+		if err := config.MongoX509Settings.validate(); err != nil {
+			panic(err)
+		}
+	}
 	ds := config.MongoDialSettings
 	ss := config.MongoSessionSettings
 	if ds.ReadTimeout < 1 {
@@ -2273,7 +2311,34 @@ func cleanMongoURL(inURL string) string {
 	return url
 }
 
+func (config *configOptions) readClientCert() (*tls.Certificate, error) {
+	x509Settings := config.MongoX509Settings
+	// Read in the PEM encoded X509 certificate.
+	clientCertPEM, err := ioutil.ReadFile(x509Settings.ClientCertPemFile)
+	if err != nil {
+		return nil, err
+	}
+	// Read in the PEM encoded private key.
+	clientKeyPEM, err := ioutil.ReadFile(x509Settings.ClientKeyPemFile)
+	if err != nil {
+		return nil, err
+	}
+	// Parse the private key, and the public key contained within the
+	// certificate.
+	clientCert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
+	if err != nil {
+		return nil, err
+	}
+	// Parse the actual certificate data
+	clientCert.Leaf, err = x509.ParseCertificate(clientCert.Certificate[0])
+	if err != nil {
+		return nil, err
+	}
+	return &clientCert, nil
+}
+
 func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
+	var x509Cert *x509.Certificate
 	dialInfo, err := mgo.ParseURL(inURL)
 	if err != nil {
 		return nil, err
@@ -2285,8 +2350,13 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 	ssl := config.MongoDialSettings.Ssl || config.MongoPemFile != ""
 	if ssl {
 		tlsConfig := &tls.Config{}
+		// Check to see if we don't need to validate the PEM
+		if config.MongoValidatePemFile == false {
+			// Turn off validation
+			tlsConfig.InsecureSkipVerify = true
+		}
+		certs := x509.NewCertPool()
 		if config.MongoPemFile != "" {
-			certs := x509.NewCertPool()
 			if ca, err := ioutil.ReadFile(config.MongoPemFile); err == nil {
 				certs.AppendCertsFromPEM(ca)
 			} else {
@@ -2294,10 +2364,18 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 			}
 			tlsConfig.RootCAs = certs
 		}
-		// Check to see if we don't need to validate the PEM
-		if config.MongoValidatePemFile == false {
-			// Turn off validation
-			tlsConfig.InsecureSkipVerify = true
+		if config.MongoX509Settings.enabled() {
+			clientCert, err := config.readClientCert()
+			if err != nil {
+				return nil, err
+			}
+			x509Cert = clientCert.Leaf
+			if tlsConfig.InsecureSkipVerify {
+				certs.AddCert(x509Cert)
+				tlsConfig.RootCAs = certs
+			} else {
+				tlsConfig.Certificates = []tls.Certificate{*clientCert}
+			}
 		}
 		dialInfo.DialServer = func(addr *mgo.ServerAddr) (net.Conn, error) {
 			conn, err := tls.Dial("tcp", addr.String(), tlsConfig)
@@ -2329,6 +2407,12 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 	close(mongoOk)
 	if err == nil {
 		session.SetSyncTimeout(time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Second)
+	}
+	if x509Cert != nil {
+		cred := &mgo.Credential{Certificate: x509Cert}
+		if err := session.Login(cred); err != nil {
+			return nil, err
+		}
 	}
 	return session, err
 }
@@ -2641,11 +2725,12 @@ func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elast
 func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, out *outputChans) (err error) {
 	if processPlugin != nil {
 		rop := &gtm.Op{
-			Id:        op.Id,
-			Operation: op.Operation,
-			Namespace: op.Namespace,
-			Source:    op.Source,
-			Timestamp: op.Timestamp,
+			Id:                op.Id,
+			Operation:         op.Operation,
+			Namespace:         op.Namespace,
+			Source:            op.Source,
+			Timestamp:         op.Timestamp,
+			UpdateDescription: op.UpdateDescription,
 		}
 		if op.Data != nil {
 			var data []byte
@@ -2681,11 +2766,12 @@ func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 					out.relateC <- op
 				} else {
 					rop := &gtm.Op{
-						Id:        op.Id,
-						Operation: op.Operation,
-						Namespace: op.Namespace,
-						Source:    op.Source,
-						Timestamp: op.Timestamp,
+						Id:                op.Id,
+						Operation:         op.Operation,
+						Namespace:         op.Namespace,
+						Source:            op.Source,
+						Timestamp:         op.Timestamp,
+						UpdateDescription: op.UpdateDescription,
 					}
 					var data []byte
 					data, err = bson.Marshal(op.Data)
@@ -3449,6 +3535,7 @@ func main() {
 	enabled := true
 	defer handlePanic()
 	config := &configOptions{
+		MongoValidatePemFile: true,
 		MongoDialSettings:    mongoDialSettings{Timeout: -1, ReadTimeout: -1, WriteTimeout: -1},
 		MongoSessionSettings: mongoSessionSettings{SocketTimeout: -1, SyncTimeout: -1},
 		GtmSettings:          gtmDefaultSettings(),
@@ -3553,7 +3640,7 @@ func main() {
 		}
 	}
 
-	var nsFilter, filter, directReadFilter gtm.OpFilter
+	var nsFilter, filter, directReadFilter, pluginFilter gtm.OpFilter
 	filterChain := []gtm.OpFilter{notMonstache(config), notSystem, notChunks}
 	filterArray := []gtm.OpFilter{}
 	if config.readShards() {
@@ -3581,9 +3668,11 @@ func main() {
 		panic("Workers configured but this worker is undefined. worker must be set to one of the workers.")
 	}
 	if filterPlugin != nil {
-		filterArray = append(filterArray, filterWithPlugin())
+		pluginFilter = filterWithPlugin()
+		filterArray = append(filterArray, pluginFilter)
 	} else if len(filterEnvs) > 0 {
-		filterArray = append(filterArray, filterWithScript())
+		pluginFilter = filterWithScript()
+		filterArray = append(filterArray, pluginFilter)
 	}
 	nsFilter = gtm.ChainOpFilters(filterChain...)
 	filter = gtm.ChainOpFilters(filterArray...)
@@ -3727,6 +3816,7 @@ func main() {
 		processC: make(chan *gtm.Op),
 		fileC:    make(chan *gtm.Op),
 		relateC:  make(chan *gtm.Op),
+		filter:   pluginFilter,
 	}
 	if len(config.Relate) > 0 {
 		for i := 0; i < config.RelateThreads; i++ {
