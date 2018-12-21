@@ -17,12 +17,13 @@ import (
 
 // MapperPluginInput is the input to the Map function
 type MapperPluginInput struct {
-	Document   map[string]interface{} // the original document from MongoDB
-	Database   string                 // the origin database in MongoDB
-	Collection string                 // the origin collection in MongoDB
-	Namespace  string                 // the entire namespace for the original document
-	Operation  string                 // "i" for a insert or "u" for update
-	Session    *mgo.Session           // MongoDB session handle
+	Document          map[string]interface{} // the original document from MongoDB
+	Database          string                 // the origin database in MongoDB
+	Collection        string                 // the origin collection in MongoDB
+	Namespace         string                 // the entire namespace for the original document
+	Operation         string                 // "i" for a insert or "u" for update
+	Session           *mgo.Session           // MongoDB session handle
+	UpdateDescription map[string]interface{} // map describing changes to the document
 }
 
 // MapperPluginOutput is the output of the Map function
