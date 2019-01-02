@@ -171,6 +171,7 @@ type indexingMeta struct {
 	Pipeline        string
 	RetryOnConflict int
 	Skip            bool
+	ID              string
 }
 
 type outputChans struct {
@@ -843,12 +844,13 @@ func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
 	session := s.Copy()
 	defer session.Close()
 	input := &monstachemap.MapperPluginInput{
-		Document:   op.Data,
-		Namespace:  op.Namespace,
-		Database:   op.GetDatabase(),
-		Collection: op.GetCollection(),
-		Operation:  op.Operation,
-		Session:    session,
+		Document:          op.Data,
+		Namespace:         op.Namespace,
+		Database:          op.GetDatabase(),
+		Collection:        op.GetCollection(),
+		Operation:         op.Operation,
+		Session:           session,
+		UpdateDescription: op.UpdateDescription,
 	}
 	output, err := mapperPlugin(input)
 	if err != nil {
@@ -867,6 +869,9 @@ func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
 			}
 			if output.Index != "" {
 				meta["index"] = output.Index
+			}
+			if output.ID != "" {
+				meta["id"] = output.ID
 			}
 			if output.Type != "" {
 				meta["type"] = output.Type
@@ -927,9 +932,8 @@ func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out
 			continue
 		}
 		s := session.Copy()
-		defer s.Close()
 		sel := bson.M{r.MatchField: op.Data[r.SrcField]}
-		col := session.DB(r.db).C(r.col)
+		col := s.DB(r.db).C(r.col)
 		q := col.Find(sel)
 		iter := q.Iter()
 		doc := make(map[string]interface{})
@@ -970,10 +974,10 @@ func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out
 			}
 			skip := false
 			if rs2 := relates[rop.Namespace]; len(rs2) != 0 {
-				allSkip := true
+				skip = true
 				for _, r2 := range rs2 {
 					if r2.KeepSrc {
-						allSkip = false
+						skip = false
 					}
 					if rop.Data[r2.SrcField] != nil {
 						err = processRelated(session, config, rop, out)
@@ -982,12 +986,11 @@ func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out
 						if e == nil {
 							err = fmt.Errorf("Source field %s not found for relation: %s", r2.SrcField, string(b))
 						} else {
-							err = fmt.Errorf("Source field %s not found for relation", r2.SrcField)
+							err = fmt.Errorf("Source field %s not found for relation: %s", r2.SrcField, e)
 						}
 						processErr(err, config)
 					}
 				}
-				skip = allSkip
 			}
 			if !skip {
 				if hasFileContent(rop, config) {
@@ -998,6 +1001,7 @@ func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out
 			}
 		}
 		iter.Close()
+		s.Close()
 	}
 	return
 }
@@ -1377,6 +1381,7 @@ func (config *configOptions) loadReplacements() {
 					WithNamespace: r.WithNamespace,
 					SrcField:      r.SrcField,
 					MatchField:    r.MatchField,
+					KeepSrc:       r.KeepSrc,
 					db:            database,
 					col:           collection,
 				}
@@ -2494,6 +2499,9 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 		service.Id(objectID)
 		service.Index(indexType.Index)
 		service.Type(indexType.Type)
+		if meta.ID != "" {
+			service.Id(meta.ID)
+		}
 		if meta.Index != "" {
 			service.Index(meta.Index)
 		}
@@ -2580,6 +2588,9 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 		req.Type(indexType.Type)
 		req.Doc(op.Data)
 		req.DocAsUpsert(true)
+		if meta.ID != "" {
+			req.Id(meta.ID)
+		}
 		if meta.Index != "" {
 			req.Index(meta.Index)
 		}
@@ -2605,6 +2616,9 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 		req.Index(indexType.Index)
 		req.Type(indexType.Type)
 		req.Doc(op.Data)
+		if meta.ID != "" {
+			req.Id(meta.ID)
+		}
 		if meta.Index != "" {
 			req.Index(meta.Index)
 		}
@@ -2718,6 +2732,7 @@ func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elast
 	input.Collection = op.GetCollection()
 	input.Operation = op.Operation
 	input.Session = session
+	input.UpdateDescription = op.UpdateDescription
 	err = processPlugin(input)
 	return
 }
@@ -2749,19 +2764,34 @@ func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 		bulk.Flush()
 		err = doDrop(mongo, client, op, config)
 	} else if op.IsDelete() {
+		if len(config.Relate) > 0 {
+			if rs := relates[op.Namespace]; len(rs) != 0 {
+				deletedDoc := findDeletedSrcDoc(config, client, op)
+				if deletedDoc != nil {
+					rop := &gtm.Op{
+						Id:        op.Id,
+						Operation: op.Operation,
+						Namespace: op.Namespace,
+						Source:    op.Source,
+						Timestamp: op.Timestamp,
+						Data:      deletedDoc,
+					}
+					out.relateC <- rop
+				}
+			}
+		}
 		doDelete(config, client, mongo, bulk, op)
 	} else if op.Data != nil {
 		skip := false
 		if op.IsSourceOplog() && len(config.Relate) > 0 {
 			if rs := relates[op.Namespace]; len(rs) != 0 {
-				allSkip := true
+				skip = true
 				for _, r := range rs {
 					if r.KeepSrc {
-						allSkip = false
+						skip = false
 						break
 					}
 				}
-				skip = allSkip
 				if skip {
 					out.relateC <- op
 				} else {
@@ -2857,6 +2887,12 @@ func (meta *indexingMeta) load(metaAttrs map[string]interface{}) {
 	if v, ok = metaAttrs["index"]; ok {
 		meta.Index = fmt.Sprintf("%v", v)
 	}
+	if v, ok = metaAttrs["id"]; ok {
+		op := &gtm.Op{
+			Id: v,
+		}
+		meta.ID = opIDToString(op)
+	}
 	if v, ok = metaAttrs["type"]; ok {
 		meta.Type = fmt.Sprintf("%v", v)
 	}
@@ -2902,6 +2938,7 @@ func setIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta
 	col := session.DB(config.ConfigDatabaseName).C("meta")
 	metaID := fmt.Sprintf("%s.%s", namespace, id)
 	doc := make(map[string]interface{})
+	doc["id"] = meta.ID
 	doc["routing"] = meta.Routing
 	doc["index"] = meta.Index
 	doc["type"] = meta.Type
@@ -2919,6 +2956,9 @@ func getIndexMeta(session *mgo.Session, namespace, id string, config *configOpti
 	doc := make(map[string]interface{})
 	metaID := fmt.Sprintf("%s.%s", namespace, id)
 	col.FindId(metaID).One(doc)
+	if doc["id"] != nil {
+		meta.ID = doc["id"].(string)
+	}
 	if doc["routing"] != nil {
 		meta.Routing = doc["routing"].(string)
 	}
@@ -3250,6 +3290,42 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 		}
 		return
 	}
+}
+
+func findDeletedSrcDoc(config *configOptions, client *elastic.Client, op *gtm.Op) map[string]interface{} {
+	objectID := opIDToString(op)
+	termQuery := elastic.NewTermQuery("_id", objectID)
+	search := client.Search()
+	searchResult, err := search.Size(1).Index(config.DeleteIndexPattern).Query(termQuery).Do(context.Background())
+	if err != nil {
+		errorLog.Printf("Unable to find deleted document %s: %s", objectID, err)
+		return nil
+	}
+	if searchResult.Hits == nil {
+		errorLog.Printf("Unable to find deleted document %s", objectID)
+		return nil
+	}
+	if searchResult.Hits.TotalHits == 0 {
+		errorLog.Printf("Found no hits for deleted document %s", objectID)
+		return nil
+	}
+	if searchResult.Hits.TotalHits > 1 {
+		errorLog.Printf("Found multiple hits for deleted document %s", objectID)
+		return nil
+	}
+	hit := searchResult.Hits.Hits[0]
+	if hit.Source == nil {
+		errorLog.Printf("Source unavailable for deleted document %s", objectID)
+		return nil
+	}
+	var src map[string]interface{}
+	if err = json.Unmarshal(*hit.Source, &src); err == nil {
+		src["_id"] = op.Id
+		return src
+	} else {
+		errorLog.Printf("Unable to unmarshal deleted document %s: %s", objectID, err)
+	}
+	return nil
 }
 
 func doDelete(config *configOptions, client *elastic.Client, mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
