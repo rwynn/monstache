@@ -40,6 +40,7 @@ type MapperPluginOutput struct {
 	Pipeline        string                 // the pipeline to index with
 	RetryOnConflict int                    // how many times to retry updates before failing
 	Skip            bool                   // set to true to indicate the the document should be ignored
+	ID              string                 // override the _id of the indexed document; not recommended
 }
 
 // ProcessPluginInput is the input to the Process function
