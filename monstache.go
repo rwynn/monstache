@@ -848,7 +848,7 @@ func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
 }
 
 func mapData(session *mgo.Session, config *configOptions, op *gtm.Op) error {
-	if config.MapperPluginPath != "" {
+	if mapperPlugin != nil {
 		return mapDataGolang(session, op)
 	}
 	return mapDataJavascript(op)
@@ -1483,22 +1483,24 @@ func (config *configOptions) loadScripts() {
 
 func (config *configOptions) loadPlugins() *configOptions {
 	if config.MapperPluginPath != "" {
+		funcDefined := false
 		p, err := plugin.Open(config.MapperPluginPath)
 		if err != nil {
 			panic(fmt.Sprintf("Unable to load mapper plugin %s: %s", config.MapperPluginPath, err))
 		}
 		mapper, err := p.Lookup("Map")
-		if err != nil {
-			panic(fmt.Sprintf("Unable to find symbol 'Map' in mapper plugin: %s", err))
-		}
-		switch mapper.(type) {
-		case func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error):
-			mapperPlugin = mapper.(func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error))
-		default:
-			panic(fmt.Sprintf("Plugin 'Map' function must be typed %T", mapperPlugin))
+		if err == nil {
+			funcDefined = true
+			switch mapper.(type) {
+			case func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error):
+				mapperPlugin = mapper.(func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error))
+			default:
+				panic(fmt.Sprintf("Plugin 'Map' function must be typed %T", mapperPlugin))
+			}
 		}
 		filter, err := p.Lookup("Filter")
 		if err == nil {
+			funcDefined = true
 			switch filter.(type) {
 			case func(*monstachemap.MapperPluginInput) (bool, error):
 				filterPlugin = filter.(func(*monstachemap.MapperPluginInput) (bool, error))
@@ -1509,6 +1511,7 @@ func (config *configOptions) loadPlugins() *configOptions {
 		}
 		process, err := p.Lookup("Process")
 		if err == nil {
+			funcDefined = true
 			switch process.(type) {
 			case func(*monstachemap.ProcessPluginInput) error:
 				processPlugin = process.(func(*monstachemap.ProcessPluginInput) error)
@@ -1518,12 +1521,16 @@ func (config *configOptions) loadPlugins() *configOptions {
 		}
 		pipe, err := p.Lookup("Pipeline")
 		if err == nil {
+			funcDefined = true
 			switch pipe.(type) {
 			case func(string, bool) ([]interface{}, error):
 				pipePlugin = pipe.(func(string, bool) ([]interface{}, error))
 			default:
 				panic(fmt.Sprintf("Plugin 'Pipeline' function must be typed %T", pipePlugin))
 			}
+		}
+		if !funcDefined {
+			warnLog.Println("Plugin loaded but did not find a Map, Filter, Process or Pipeline function")
 		}
 	}
 	return config
