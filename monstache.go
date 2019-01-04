@@ -2710,15 +2710,29 @@ func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 	} else if op.IsDelete() {
 		if len(config.Relate) > 0 {
 			if rs := relates[op.Namespace]; len(rs) != 0 {
-				deletedDoc := findDeletedSrcDoc(config, client, op)
-				if deletedDoc != nil {
+				var delData map[string]interface{}
+				useFind := false
+				for _, r := range rs {
+					if r.SrcField != "_id" {
+						useFind = true
+						break
+					}
+				}
+				if useFind {
+					delData = findDeletedSrcDoc(config, client, op)
+				} else {
+					delData = map[string]interface{}{
+						"_id": op.Id,
+					}
+				}
+				if delData != nil {
 					rop := &gtm.Op{
 						Id:        op.Id,
 						Operation: op.Operation,
 						Namespace: op.Namespace,
 						Source:    op.Source,
 						Timestamp: op.Timestamp,
-						Data:      deletedDoc,
+						Data:      delData,
 					}
 					out.relateC <- rop
 				}
