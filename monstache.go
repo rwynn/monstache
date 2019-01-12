@@ -879,15 +879,17 @@ func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out
 		q := col.Find(sel)
 		iter := q.Iter()
 		doc := make(map[string]interface{})
-		t := time.Now().UTC().Unix()
 		for iter.Next(doc) {
+			now := time.Now().UTC()
+			tstamp := bson.MongoTimestamp(now.Unix() << 32)
+			offset := bson.MongoTimestamp(now.Nanosecond())
 			rop := &gtm.Op{
 				Id:                doc["_id"],
 				Data:              doc,
 				Operation:         op.Operation,
 				Namespace:         r.WithNamespace,
 				Source:            gtm.DirectQuerySource,
-				Timestamp:         bson.MongoTimestamp(t << 32),
+				Timestamp:         tstamp | offset,
 				UpdateDescription: op.UpdateDescription,
 			}
 			doc = map[string]interface{}{}
