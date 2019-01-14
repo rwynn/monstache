@@ -3793,9 +3793,6 @@ func main() {
 		if err != nil {
 			panic(fmt.Sprintf("Unable to determine enabled cluster process: %s", err))
 		}
-		if !enabled {
-			config.DirectReadNs = stringargs{}
-		}
 	}
 	gtmBufferDuration, err := time.ParseDuration(config.GtmSettings.BufferDuration)
 	if err != nil {
@@ -3984,6 +3981,19 @@ func main() {
 		}
 	}
 	infoLog.Println("Listening for events")
+	if config.ClusterName != "" && !enabled {
+		gtmCtx.Pause()
+		bulk.Stop()
+		for range heartBeat.C {
+			enabled, err = enableProcess(mongo, config)
+			if enabled {
+				infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
+				bulk.Start(context.Background())
+				resumeWork(gtmCtx, mongo, config)
+				break
+			}
+		}
+	}
 	for {
 		select {
 		case timeout := <-doneC:
@@ -4016,6 +4026,15 @@ func main() {
 					infoLog.Printf("Pausing work for cluster %s", config.ClusterName)
 					gtmCtx.Pause()
 					bulk.Stop()
+					for range heartBeat.C {
+						enabled, err = enableProcess(mongo, config)
+						if enabled {
+							infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
+							bulk.Start(context.Background())
+							resumeWork(gtmCtx, mongo, config)
+							break
+						}
+					}
 				}
 			} else {
 				enabled, err = enableProcess(mongo, config)
