@@ -2314,7 +2314,9 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 		certs := x509.NewCertPool()
 		if config.MongoPemFile != "" {
 			if ca, err := ioutil.ReadFile(config.MongoPemFile); err == nil {
-				certs.AppendCertsFromPEM(ca)
+				if ok := certs.AppendCertsFromPEM(ca); !ok {
+					errorLog.Printf("No certs parsed successfully from %s", config.MongoPemFile)
+				}
 			} else {
 				return nil, err
 			}
@@ -2365,7 +2367,7 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 		session.SetSyncTimeout(time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Second)
 	}
 	if x509Cert != nil {
-		cred := &mgo.Credential{Certificate: x509Cert}
+		cred := &mgo.Credential{Mechanism: "MONGODB-X509", Certificate: x509Cert}
 		if err := session.Login(cred); err != nil {
 			return nil, err
 		}
@@ -3090,7 +3092,7 @@ func (fc *findCall) setOptions(v otto.Value) (err error) {
 
 func (fc *findCall) setDefaults() {
 	if fc.config.ns != "" {
-		ns := strings.Split(fc.config.ns, ".")
+		ns := strings.SplitN(fc.config.ns, ".", 2)
 		fc.db = ns[0]
 		fc.col = ns[1]
 	}
