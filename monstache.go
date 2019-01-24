@@ -3967,9 +3967,10 @@ func main() {
 		}()
 	}
 	if len(config.DirectReadNs) > 0 {
-		if config.ExitAfterDirectReads {
-			go func() {
-				gtmCtx.DirectReadWg.Wait()
+		go func() {
+			gtmCtx.DirectReadWg.Wait()
+			infoLog.Println("Direct reads completed")
+			if config.ExitAfterDirectReads {
 				gtmCtx.Stop()
 				<-opsConsumed
 				close(outputChs.relateC)
@@ -3981,8 +3982,8 @@ func main() {
 				close(outputChs.processC)
 				processWg.Wait()
 				doneC <- 30
-			}()
-		}
+			}
+		}()
 	}
 	infoLog.Println("Listening for events")
 	if config.ClusterName != "" && !enabled {
