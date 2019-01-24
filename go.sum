@@ -31,8 +31,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d h1:1VUlQbCfkoSGv7qP7Y+ro3ap1P1pPZxgdGVqiTVy5C4=
 github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d/go.mod h1:xvqspoSXJTIpemEonrMDFq6XzwHYYgToXWj5eRX1OtY=
-github.com/rwynn/gtm v0.0.0-20190112021028-c64d7aca2b93 h1:mM4SNbewtoUG1BOPqQo7aGBkGA+eyxMvyX12ABZY4ok=
-github.com/rwynn/gtm v0.0.0-20190112021028-c64d7aca2b93/go.mod h1:LYXeTMjbA7l9k9oEM+NUBuu0BgvNrD5nQuo8seLsar0=
+github.com/rwynn/gtm v0.0.0-20190124025931-7f79e86e8369 h1:h8iK4ClCvkyGKPZLENg5MO235nMp6yf+/vXn0M8uwCU=
+github.com/rwynn/gtm v0.0.0-20190124025931-7f79e86e8369/go.mod h1:LYXeTMjbA7l9k9oEM+NUBuu0BgvNrD5nQuo8seLsar0=
 github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908 h1:RRpyb4kheanCQVyYfOhkZoD/cwClvn12RzHex2ZmHxw=
 github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908/go.mod h1:/yeG0My1xr/u+HZrFQ1tOQQQQrOawfyMUH13ai5brBc=
 github.com/stretchr/testify v1.2.2 h1:bSDNvY7ZPG5RlJ8otE/7V6gMiyenm9RtJ7IUVIAoJ1w=
