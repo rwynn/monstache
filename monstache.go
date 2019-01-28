@@ -235,6 +235,8 @@ type configOptions struct {
 	ElasticPemFile           string               `toml:"elasticsearch-pem-file"`
 	ElasticValidatePemFile   bool                 `toml:"elasticsearch-validate-pem-file"`
 	ElasticVersion           string               `toml:"elasticsearch-version"`
+	ElasticHealth0           int                  `toml:"elasticsearch-healthcheck-timeout-startup"`
+	ElasticHealth1           int                  `toml:"elasticsearch-healthcheck-timeout"`
 	ResumeName               string               `toml:"resume-name"`
 	NsRegex                  string               `toml:"namespace-regex"`
 	NsDropRegex              string               `toml:"namespace-drop-regex"`
@@ -485,8 +487,10 @@ func (config *configOptions) newElasticClient() (client *elastic.Client, err err
 		return client, err
 	}
 	clientOptions = append(clientOptions, elastic.SetHttpClient(httpClient))
-	clientOptions = append(clientOptions, elastic.SetHealthcheckTimeoutStartup(time.Duration(15)*time.Second))
-	clientOptions = append(clientOptions, elastic.SetHealthcheckTimeout(time.Duration(5)*time.Second))
+	clientOptions = append(clientOptions,
+		elastic.SetHealthcheckTimeoutStartup(time.Duration(config.ElasticHealth0)*time.Second))
+	clientOptions = append(clientOptions,
+		elastic.SetHealthcheckTimeout(time.Duration(config.ElasticHealth1)*time.Second))
 	return elastic.NewClient(clientOptions...)
 }
 
@@ -1676,6 +1680,12 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.ElasticMaxConns == 0 {
 			config.ElasticMaxConns = tomlConfig.ElasticMaxConns
 		}
+		if config.ElasticHealth0 == 0 {
+			config.ElasticHealth0 = tomlConfig.ElasticHealth0
+		}
+		if config.ElasticHealth1 == 0 {
+			config.ElasticHealth1 = tomlConfig.ElasticHealth1
+		}
 		if config.DirectReadSplitMax == 0 {
 			config.DirectReadSplitMax = tomlConfig.DirectReadSplitMax
 		}
@@ -2256,6 +2266,12 @@ func (config *configOptions) setDefaults() *configOptions {
 	}
 	if config.ElasticMaxBytes == 0 {
 		config.ElasticMaxBytes = elasticMaxBytesDefault
+	}
+	if config.ElasticHealth0 == 0 {
+		config.ElasticHealth0 = 15
+	}
+	if config.ElasticHealth1 == 0 {
+		config.ElasticHealth1 = 5
 	}
 	if config.MongoURL != "" {
 		config.MongoURL = config.parseMongoURL(config.MongoURL)
