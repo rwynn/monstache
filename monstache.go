@@ -3589,6 +3589,12 @@ func buildPipe(config *configOptions) func(string, bool) ([]interface{}, error) 
 									is[i] = deepExportValue(d)
 								}
 								return is, nil
+							case []interface{}:
+								ds := data.([]interface{})
+								if len(ds) > 0 {
+									panic("Pipeline function must return an array of objects")
+								}
+								return nil, nil
 							default:
 								panic("Pipeline function must return an array of objects")
 							}
