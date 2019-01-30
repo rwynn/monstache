@@ -2219,13 +2219,13 @@ func (config *configOptions) setDefaults() *configOptions {
 		config.MongoDialSettings.Timeout = 15
 	}
 	if ds.ReadTimeout == -1 {
-		config.MongoDialSettings.ReadTimeout = 7
+		config.MongoDialSettings.ReadTimeout = 20
 	}
 	if ds.WriteTimeout == -1 {
-		config.MongoDialSettings.WriteTimeout = 7
+		config.MongoDialSettings.WriteTimeout = 20
 	}
 	if ss.SyncTimeout == -1 {
-		config.MongoSessionSettings.SyncTimeout = 7
+		config.MongoSessionSettings.SyncTimeout = 20
 	}
 	if ss.SocketTimeout == -1 {
 		config.MongoSessionSettings.SocketTimeout = 0
@@ -2374,6 +2374,7 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 		return nil, err
 	}
 	dialInfo.AppName = "monstache"
+	dialInfo.FailFast = true
 	dialInfo.Timeout = time.Duration(0)
 	dialInfo.ReadTimeout = time.Duration(config.MongoDialSettings.ReadTimeout) * time.Second
 	dialInfo.WriteTimeout = time.Duration(config.MongoDialSettings.WriteTimeout) * time.Second
