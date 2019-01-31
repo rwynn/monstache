@@ -2161,13 +2161,13 @@ func (config *configOptions) setDefaults() *configOptions {
 		config.MongoDialSettings.Timeout = 15
 	}
 	if ds.ReadTimeout == -1 {
-		config.MongoDialSettings.ReadTimeout = 20
+		config.MongoDialSettings.ReadTimeout = 30
 	}
 	if ds.WriteTimeout == -1 {
-		config.MongoDialSettings.WriteTimeout = 20
+		config.MongoDialSettings.WriteTimeout = 30
 	}
 	if ss.SyncTimeout == -1 {
-		config.MongoSessionSettings.SyncTimeout = 20
+		config.MongoSessionSettings.SyncTimeout = 30
 	}
 	if ss.SocketTimeout == -1 {
 		config.MongoSessionSettings.SocketTimeout = 0
