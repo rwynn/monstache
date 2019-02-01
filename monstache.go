@@ -81,9 +81,11 @@ const gtmChannelSizeDefault int = 512
 const typeFromFuture string = "_doc"
 const fileDownloadersDefault = 10
 const relateThreadsDefault = 10
+const relateBufferDefault = 1000
 const postProcessorsDefault = 10
 const redact = "REDACTED"
 const configDatabaseNameDefault = "monstache"
+const relateQueueOverloadMsg = "Relate queue is full. Skipping relate for %v.(%v) to keep pipeline healthy."
 
 type deleteStrategy int
 
@@ -306,6 +308,7 @@ type configOptions struct {
 	ConfigDatabaseName       string         `toml:"config-database-name"`
 	FileDownloaders          int            `toml:"file-downloaders"`
 	RelateThreads            int            `toml:"relate-threads"`
+	RelateBuffer             int            `toml:"relate-buffer"`
 	PostProcessors           int            `toml:"post-processors"`
 	PruneInvalidJSON         bool           `toml:"prune-invalid-json"`
 }
@@ -1250,6 +1253,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.IntVar(&config.PostProcessors, "post-processors", 0, "Number of post-processing go routines")
 	flag.IntVar(&config.FileDownloaders, "file-downloaders", 0, "GridFs download go routines")
 	flag.IntVar(&config.RelateThreads, "relate-threads", 0, "Number of threads dedicated to processing relationships")
+	flag.IntVar(&config.RelateBuffer, "relate-buffer", 0, "Number of relates to queue before skipping and reporting an error")
 	flag.BoolVar(&config.ElasticRetry, "elasticsearch-retry", false, "True to retry failed request to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxDocs, "elasticsearch-max-docs", 0, "Number of docs to hold before flushing to Elasticsearch")
 	flag.IntVar(&config.ElasticMaxBytes, "elasticsearch-max-bytes", 0, "Number of bytes to hold before flushing to Elasticsearch")
@@ -1654,6 +1658,12 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.FileDownloaders == 0 {
 			config.FileDownloaders = tomlConfig.FileDownloaders
+		}
+		if config.RelateThreads == 0 {
+			config.RelateThreads = tomlConfig.RelateThreads
+		}
+		if config.RelateBuffer == 0 {
+			config.RelateBuffer = tomlConfig.RelateBuffer
 		}
 		if config.PostProcessors == 0 {
 			config.PostProcessors = tomlConfig.PostProcessors
@@ -2242,6 +2252,9 @@ func (config *configOptions) setDefaults() *configOptions {
 	if config.RelateThreads == 0 {
 		config.RelateThreads = relateThreadsDefault
 	}
+	if config.RelateBuffer == 0 {
+		config.RelateBuffer = relateBufferDefault
+	}
 	if config.PostProcessors == 0 && processPlugin != nil {
 		config.PostProcessors = postProcessorsDefault
 	}
@@ -2309,6 +2322,24 @@ func (config *configOptions) readClientCert() (*tls.Certificate, error) {
 	return &clientCert, nil
 }
 
+func (config *configOptions) timeoutConnection(inURL string, mongoOk chan bool) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
+	defer signal.Stop(sigs)
+	deadline := time.Duration(config.MongoDialSettings.Timeout) * time.Second
+	connT := time.NewTicker(deadline)
+	defer connT.Stop()
+	select {
+	case <-mongoOk:
+		return
+	case <-sigs:
+		os.Exit(exitStatus)
+	case <-connT.C:
+		errorLog.Fatalf("Unable to connect to MongoDB using URL %s: timed out after %d seconds",
+			cleanMongoURL(inURL), config.MongoDialSettings.Timeout)
+	}
+}
+
 func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 	var x509Cert *x509.Certificate
 	dialInfo, err := mgo.ParseURL(inURL)
@@ -2316,7 +2347,6 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 		return nil, err
 	}
 	dialInfo.AppName = "monstache"
-	dialInfo.FailFast = true
 	dialInfo.Timeout = time.Duration(0)
 	dialInfo.ReadTimeout = time.Duration(config.MongoDialSettings.ReadTimeout) * time.Second
 	dialInfo.WriteTimeout = time.Duration(config.MongoDialSettings.WriteTimeout) * time.Second
@@ -2362,21 +2392,7 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 	}
 	mongoOk := make(chan bool)
 	if config.MongoDialSettings.Timeout != 0 {
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
-		go func() {
-			deadline := time.Duration(config.MongoDialSettings.Timeout) * time.Second
-			connT := time.NewTicker(deadline)
-			defer connT.Stop()
-			select {
-			case <-mongoOk:
-				return
-			case <-sigs:
-				os.Exit(exitStatus)
-			case <-connT.C:
-				errorLog.Fatalf("Unable to connect to MongoDB using URL %s: timed out after %d seconds", cleanMongoURL(inURL), config.MongoDialSettings.Timeout)
-			}
-		}()
+		go config.timeoutConnection(inURL, mongoOk)
 	}
 	session, err := mgo.DialWithInfo(dialInfo)
 	close(mongoOk)
@@ -2764,7 +2780,11 @@ func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 						Timestamp: op.Timestamp,
 						Data:      delData,
 					}
-					out.relateC <- rop
+					select {
+					case out.relateC <- rop:
+					default:
+						errorLog.Printf(relateQueueOverloadMsg, rop.Namespace, rop.Id)
+					}
 				}
 			}
 		}
@@ -2781,7 +2801,11 @@ func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 					}
 				}
 				if skip {
-					out.relateC <- op
+					select {
+					case out.relateC <- op:
+					default:
+						errorLog.Printf(relateQueueOverloadMsg, op.Namespace, op.Id)
+					}
 				} else {
 					rop := &gtm.Op{
 						Id:                op.Id,
@@ -2800,7 +2824,11 @@ func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 							rop.Data = m
 						}
 					}
-					out.relateC <- rop
+					select {
+					case out.relateC <- rop:
+					default:
+						errorLog.Printf(relateQueueOverloadMsg, rop.Namespace, rop.Id)
+					}
 				}
 			}
 		}
@@ -3874,7 +3902,7 @@ func main() {
 		indexC:   make(chan *gtm.Op),
 		processC: make(chan *gtm.Op),
 		fileC:    make(chan *gtm.Op),
-		relateC:  make(chan *gtm.Op),
+		relateC:  make(chan *gtm.Op, config.RelateBuffer),
 		filter:   pluginFilter,
 	}
 	if len(config.Relate) > 0 {
