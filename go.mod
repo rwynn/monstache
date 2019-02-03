@@ -25,4 +25,4 @@ require (
 	gopkg.in/yaml.v2 v2.2.2 // indirect
 )
 
-replace github.com/globalsign/mgo v0.0.0-20181015135952-eeefdecb41b8 => github.com/rwynn/mgo v0.0.0-20190130173337-9b1257fb3190
+replace github.com/globalsign/mgo v0.0.0-20181015135952-eeefdecb41b8 => github.com/rwynn/mgo v0.0.0-20190203195949-55e8fd85e7e2
