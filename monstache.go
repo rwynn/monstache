@@ -69,6 +69,7 @@ var mux sync.Mutex
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
+var mongoDialInfo *mgo.DialInfo
 
 const version = "3.21.2"
 const mongoURLDefault string = "localhost"
@@ -2183,6 +2184,10 @@ func (config *configOptions) parseMongoURL(inURL string) (outURL string) {
 }
 
 func (config *configOptions) validate() {
+	const schemeSrv = "mongodb+srv://"
+	if strings.HasPrefix(config.MongoURL, schemeSrv) {
+		panic("The mongodb+srv scheme is not yet supported")
+	}
 	if len(config.ChangeStreamNs) > 0 {
 		if config.Resume || config.Replay {
 			panic("Resume, replay, and clustering options are not supported when using change streams")
@@ -2331,25 +2336,21 @@ func (config *configOptions) setDefaults() *configOptions {
 	return config
 }
 
-func (config *configOptions) getAuthURL(inURL string) string {
-	cred := strings.SplitN(config.MongoURL, "@", 2)
-	if len(cred) == 2 {
-		return cred[0] + "@" + inURL
-	} else {
-		return inURL
-	}
-}
-
 func cleanMongoURL(inURL string) string {
 	const scheme = "mongodb://"
+	const schemeSrv = "mongodb+srv://"
 	hasScheme := strings.HasPrefix(inURL, scheme)
+	hasSchemeSrv := strings.HasPrefix(inURL, schemeSrv)
 	url := strings.TrimPrefix(inURL, scheme)
+	url = strings.TrimPrefix(url, schemeSrv)
 	userEnd := strings.IndexAny(url, "@")
 	if userEnd != -1 {
 		url = redact + "@" + url[userEnd+1:]
 	}
 	if hasScheme {
 		url = scheme + url
+	} else if hasSchemeSrv {
+		url = schemeSrv + url
 	}
 	return url
 }
@@ -2403,6 +2404,17 @@ func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
 	dialInfo, err := mgo.ParseURL(inURL)
 	if err != nil {
 		return nil, err
+	}
+	if mongoDialInfo == nil {
+		// save the initial dial info so that it can be reused
+		// if connecting to shards
+		mongoDialInfo = dialInfo.Copy()
+	} else {
+		// copy the initial auth info when connecting to shards
+		dialInfo.Username = mongoDialInfo.Username
+		dialInfo.Password = mongoDialInfo.Password
+		dialInfo.Source = mongoDialInfo.Source
+		dialInfo.Mechanism = mongoDialInfo.Mechanism
 	}
 	dialInfo.AppName = "monstache"
 	dialInfo.Timeout = time.Duration(0)
@@ -3580,8 +3592,8 @@ func notifySd(config *configOptions) {
 
 func (config *configOptions) makeShardInsertHandler() gtm.ShardInsertHandler {
 	return func(shardInfo *gtm.ShardInfo) (*mgo.Session, error) {
-		infoLog.Printf("Adding shard found at %s\n", shardInfo.GetURL())
-		shardURL := config.getAuthURL(shardInfo.GetURL())
+		shardURL := shardInfo.GetURL()
+		infoLog.Printf("Adding shard found at %s\n", cleanMongoURL(shardURL))
 		return config.dialMongo(shardURL)
 	}
 }
@@ -3868,8 +3880,8 @@ func main() {
 		}
 		// add each shard server to the sync list
 		for _, shardInfo := range shardInfos {
-			infoLog.Printf("Adding shard found at %s\n", shardInfo.GetURL())
-			shardURL := config.getAuthURL(shardInfo.GetURL())
+			shardURL := shardInfo.GetURL()
+			infoLog.Printf("Adding shard found at %s\n", cleanMongoURL(shardURL))
 			shard, err := config.dialMongo(shardURL)
 			if err != nil {
 				panic(fmt.Sprintf("Unable to connect to mongodb shard using URL %s: %s", cleanMongoURL(shardURL), err))
