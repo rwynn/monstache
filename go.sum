@@ -33,6 +33,9 @@ github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d h1:1VUlQbCfkoSGv
 github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d/go.mod h1:xvqspoSXJTIpemEonrMDFq6XzwHYYgToXWj5eRX1OtY=
 github.com/rwynn/gtm v0.0.0-20190131014030-4d96eedfb073 h1:OgMl+/XpaQzW5c38u59HAlNgMSt+0MWrv7joLRI47nc=
 github.com/rwynn/gtm v0.0.0-20190131014030-4d96eedfb073/go.mod h1:LYXeTMjbA7l9k9oEM+NUBuu0BgvNrD5nQuo8seLsar0=
+github.com/rwynn/gtm v0.0.0-20190212214112-1e115b148fe8 h1:PaAuA/KkKTNo56dj+zL6fZCgGyD7DczkA0Sw58JKjhQ=
+github.com/rwynn/gtm v0.0.0-20190212214112-1e115b148fe8/go.mod h1:LYXeTMjbA7l9k9oEM+NUBuu0BgvNrD5nQuo8seLsar0=
+github.com/rwynn/mgo v0.0.0-20190203195949-55e8fd85e7e2 h1:+QMMf2dZav3oviMURjgWnNyppc14490oMi43Hd/PffA=
 github.com/rwynn/mgo v0.0.0-20190203195949-55e8fd85e7e2/go.mod h1:OQBK0ebL25cW31topLSUPIWIrSesue7+zTa/haAXccQ=
 github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908 h1:RRpyb4kheanCQVyYfOhkZoD/cwClvn12RzHex2ZmHxw=
 github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908/go.mod h1:/yeG0My1xr/u+HZrFQ1tOQQQQrOawfyMUH13ai5brBc=
