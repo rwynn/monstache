@@ -2130,11 +2130,6 @@ func (config *configOptions) validate() {
 	if strings.HasPrefix(config.MongoURL, schemeSrv) {
 		panic("The mongodb+srv scheme is not yet supported")
 	}
-	if len(config.ChangeStreamNs) > 0 {
-		if config.Resume || config.Replay {
-			panic("Resume, replay, and clustering options are not supported when using change streams")
-		}
-	}
 	if config.DisableChangeEvents && len(config.DirectReadNs) == 0 {
 		panic("Direct read namespaces must be specified if change events are disabled")
 	}
@@ -3710,26 +3705,30 @@ func main() {
 	}
 
 	var after gtm.TimestampGenerator
-	if config.Resume {
+	if config.Replay {
+		if len(config.ChangeStreamNs) > 0 {
+			after = gtm.FirstOpTimestamp
+		} else {
+			after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
+				return bson.MongoTimestamp(0)
+			}
+		}
+	} else if config.ResumeFromTimestamp != 0 {
 		after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
-			ts := gtm.LastOpTimestamp(session, options)
-			if config.Replay {
-				ts = bson.MongoTimestamp(0)
-			} else if config.ResumeFromTimestamp != 0 {
-				ts = bson.MongoTimestamp(config.ResumeFromTimestamp)
+			return bson.MongoTimestamp(config.ResumeFromTimestamp)
+		}
+	} else if config.Resume {
+		after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
+			var ts bson.MongoTimestamp
+			collection := session.DB(config.ConfigDatabaseName).C("monstache")
+			doc := make(map[string]interface{})
+			collection.FindId(config.ResumeName).One(doc)
+			if doc["ts"] != nil {
+				ts = doc["ts"].(bson.MongoTimestamp)
 			} else {
-				collection := session.DB(config.ConfigDatabaseName).C("monstache")
-				doc := make(map[string]interface{})
-				collection.FindId(config.ResumeName).One(doc)
-				if doc["ts"] != nil {
-					ts = doc["ts"].(bson.MongoTimestamp)
-				}
+				ts = gtm.LastOpTimestamp(session, options)
 			}
 			return ts
-		}
-	} else if config.Replay {
-		after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
-			return bson.MongoTimestamp(0)
 		}
 	}
 
