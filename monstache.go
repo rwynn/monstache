@@ -3765,12 +3765,8 @@ func main() {
 
 	var after gtm.TimestampGenerator
 	if config.Replay {
-		if len(config.ChangeStreamNs) > 0 {
-			after = gtm.FirstOpTimestamp
-		} else {
-			after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
-				return bson.MongoTimestamp(0)
-			}
+		after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
+			return bson.MongoTimestamp(0)
 		}
 	} else if config.ResumeFromTimestamp != 0 {
 		after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
