@@ -2328,6 +2328,11 @@ func (config *configOptions) setDefaults() *configOptions {
 	if config.ConfigDatabaseName == "" {
 		config.ConfigDatabaseName = configDatabaseNameDefault
 	}
+	if config.ResumeFromTimestamp > 0 {
+		if config.ResumeFromTimestamp <= math.MaxInt32 {
+			config.ResumeFromTimestamp = config.ResumeFromTimestamp << 32
+		}
+	}
 	return config
 }
 
