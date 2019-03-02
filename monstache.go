@@ -350,14 +350,14 @@ func (arg *deleteStrategy) String() string {
 	return fmt.Sprintf("%d", *arg)
 }
 
-func (arg *deleteStrategy) Set(value string) error {
-	if i, err := strconv.Atoi(value); err != nil {
-		return err
-	} else {
-		ds := deleteStrategy(i)
-		*arg = ds
-		return nil
+func (arg *deleteStrategy) Set(value string) (err error) {
+	var i int
+	if i, err = strconv.Atoi(value); err != nil {
+		return
 	}
+	ds := deleteStrategy(i)
+	*arg = ds
+	return
 }
 
 func (args *stringargs) String() string {
@@ -813,7 +813,12 @@ func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
 		if output.Drop {
 			op.Data = nil
 		} else {
-			if output.Passthrough == false {
+			if output.Skip {
+				op.Data = map[string]interface{}{}
+			} else if output.Passthrough == false {
+				if output.Document == nil {
+					return errors.New("Map function must return a non-nil document")
+				}
 				op.Data = output.Document
 			}
 			meta := make(map[string]interface{})
@@ -1056,9 +1061,8 @@ func filterWithRegex(regex string) gtm.OpFilter {
 	return func(op *gtm.Op) bool {
 		if op.IsDrop() {
 			return true
-		} else {
-			return validNameSpace.MatchString(op.Namespace)
 		}
+		return validNameSpace.MatchString(op.Namespace)
 	}
 }
 
@@ -1067,9 +1071,8 @@ func filterDropWithRegex(regex string) gtm.OpFilter {
 	return func(op *gtm.Op) bool {
 		if op.IsDrop() {
 			return validNameSpace.MatchString(op.Namespace)
-		} else {
-			return true
 		}
+		return true
 	}
 }
 
@@ -1134,9 +1137,8 @@ func filterInverseWithRegex(regex string) gtm.OpFilter {
 	return func(op *gtm.Op) bool {
 		if op.IsDrop() {
 			return true
-		} else {
-			return !invalidNameSpace.MatchString(op.Namespace)
 		}
+		return !invalidNameSpace.MatchString(op.Namespace)
 	}
 }
 
@@ -1145,9 +1147,8 @@ func filterDropInverseWithRegex(regex string) gtm.OpFilter {
 	return func(op *gtm.Op) bool {
 		if op.IsDrop() {
 			return !invalidNameSpace.MatchString(op.Namespace)
-		} else {
-			return true
 		}
+		return true
 	}
 }
 
@@ -1370,41 +1371,40 @@ func (config *configOptions) loadIndexTypes() {
 
 func (config *configOptions) loadPipelines() {
 	for _, s := range config.Pipeline {
-		if s.Script != "" || s.Path != "" {
-			if s.Path != "" && s.Script != "" {
-				panic("Pipelines must specify path or script but not both")
-			}
-			if s.Path != "" {
-				if script, err := ioutil.ReadFile(s.Path); err == nil {
-					s.Script = string(script[:])
-				} else {
-					panic(fmt.Sprintf("Unable to load pipeline at path %s: %s", s.Path, err))
-				}
-			}
-			if _, exists := filterEnvs[s.Namespace]; exists {
-				panic(fmt.Sprintf("Multiple pipelines with namespace: %s", s.Namespace))
-			}
-			env := &executionEnv{
-				VM:     otto.New(),
-				Script: s.Script,
-				lock:   &sync.Mutex{},
-			}
-			if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
-				panic(err)
-			}
-			if _, err := env.VM.Run(env.Script); err != nil {
-				panic(err)
-			}
-			val, err := env.VM.Run("module.exports")
-			if err != nil {
-				panic(err)
-			} else if !val.IsFunction() {
-				panic("module.exports must be a function")
-			}
-			pipeEnvs[s.Namespace] = env
-		} else {
+		if s.Path == "" && s.Script == "" {
 			panic("Pipelines must specify path or script attributes")
 		}
+		if s.Path != "" && s.Script != "" {
+			panic("Pipelines must specify path or script but not both")
+		}
+		if s.Path != "" {
+			if script, err := ioutil.ReadFile(s.Path); err == nil {
+				s.Script = string(script[:])
+			} else {
+				panic(fmt.Sprintf("Unable to load pipeline at path %s: %s", s.Path, err))
+			}
+		}
+		if _, exists := filterEnvs[s.Namespace]; exists {
+			panic(fmt.Sprintf("Multiple pipelines with namespace: %s", s.Namespace))
+		}
+		env := &executionEnv{
+			VM:     otto.New(),
+			Script: s.Script,
+			lock:   &sync.Mutex{},
+		}
+		if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
+			panic(err)
+		}
+		if _, err := env.VM.Run(env.Script); err != nil {
+			panic(err)
+		}
+		val, err := env.VM.Run("module.exports")
+		if err != nil {
+			panic(err)
+		} else if !val.IsFunction() {
+			panic("module.exports must be a function")
+		}
+		pipeEnvs[s.Namespace] = env
 	}
 }
 
@@ -2954,9 +2954,8 @@ func (meta *indexingMeta) shouldSave(config *configOptions) bool {
 			meta.Type != "" ||
 			meta.Parent != "" ||
 			meta.Pipeline != "")
-	} else {
-		return false
 	}
+	return false
 }
 
 func setIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta, config *configOptions) error {
@@ -3347,9 +3346,8 @@ func findDeletedSrcDoc(config *configOptions, client *elastic.Client, op *gtm.Op
 	if err = json.Unmarshal(*hit.Source, &src); err == nil {
 		src["_id"] = op.Id
 		return src
-	} else {
-		errorLog.Printf("Unable to unmarshal deleted document %s: %s", objectID, err)
 	}
+	errorLog.Printf("Unable to unmarshal deleted document %s: %s", objectID, err)
 	return nil
 }
 
