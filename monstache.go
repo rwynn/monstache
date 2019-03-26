@@ -296,6 +296,7 @@ type configOptions struct {
 	ChangeStreamNs           stringargs     `toml:"change-stream-namespaces"`
 	DirectReadNs             stringargs     `toml:"direct-read-namespaces"`
 	DirectReadSplitMax       int            `toml:"direct-read-split-max"`
+	DirectReadConcur         int            `toml:"direct-read-concur"`
 	MapperPluginPath         string         `toml:"mapper-plugin-path"`
 	EnableHTTPServer         bool           `toml:"enable-http-server"`
 	HTTPServerAddr           string         `toml:"http-server-addr"`
@@ -1356,6 +1357,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.Var(&config.ChangeStreamNs, "change-stream-namespace", "A list of change stream namespaces")
 	flag.Var(&config.DirectReadNs, "direct-read-namespace", "A list of direct read namespaces")
 	flag.IntVar(&config.DirectReadSplitMax, "direct-read-split-max", 0, "Max number of times to split a collection for direct reads")
+	flag.IntVar(&config.DirectReadConcur, "direct-read-concur", 0, "Max number of direct-read-namespaces to read concurrently. By default all givne are read concurrently")
 	flag.Var(&config.RoutingNamespaces, "routing-namespace", "A list of namespaces that override routing information")
 	flag.Var(&config.TimeMachineNamespaces, "time-machine-namespace", "A list of direct read namespaces")
 	flag.StringVar(&config.TimeMachineIndexPrefix, "time-machine-index-prefix", "", "A prefix to preprend to time machine indexes")
@@ -1693,6 +1695,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.DirectReadSplitMax == 0 {
 			config.DirectReadSplitMax = tomlConfig.DirectReadSplitMax
+		}
+		if config.DirectReadConcur == 0 {
+			config.DirectReadConcur = tomlConfig.DirectReadConcur
 		}
 		if !config.ElasticRetry && tomlConfig.ElasticRetry {
 			config.ElasticRetry = true
@@ -3910,6 +3915,7 @@ func main() {
 		BufferSize:          config.GtmSettings.BufferSize,
 		DirectReadNs:        config.DirectReadNs,
 		DirectReadSplitMax:  config.DirectReadSplitMax,
+		DirectReadConcur:    config.DirectReadConcur,
 		DirectReadFilter:    directReadFilter,
 		Log:                 infoLog,
 		Pipe:                buildPipe(config),
