@@ -328,7 +328,7 @@ func (s *mongoX509Settings) validate() error {
 	if s.ClientCertPemFile != "" || s.ClientKeyPemFile != "" {
 		if s.ClientCertPemFile == "" {
 			return errors.New("Client cert pem file missing for X509 authentication")
-		} else if s.ClientKeyPemFile != "" {
+		} else if s.ClientKeyPemFile == "" {
 			return errors.New("Client key pem file missing for X509 authentication")
 		}
 	}
