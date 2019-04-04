@@ -635,7 +635,7 @@ func convertMapJavascript(e map[string]interface{}) map[string]interface{} {
 	return o
 }
 
-func fixSlicePruneInvalidJSON(id string, a []interface{}) []interface{} {
+func fixSlicePruneInvalidJSON(id string, key string, a []interface{}) []interface{} {
 	var avs []interface{}
 	for _, av := range a {
 		var avc interface{}
@@ -643,12 +643,12 @@ func fixSlicePruneInvalidJSON(id string, a []interface{}) []interface{} {
 		case map[string]interface{}:
 			avc = fixPruneInvalidJSON(id, achild)
 		case []interface{}:
-			avc = fixSlicePruneInvalidJSON(id, achild)
+			avc = fixSlicePruneInvalidJSON(id, key, achild)
 		case time.Time:
 			year := achild.Year()
 			if year < 0 || year > 9999 {
 				// year outside of valid range
-				warnLog.Printf("Dropping invalid time.Time value: %s for document _id: %s", achild, id)
+				warnLog.Printf("Dropping key %s element: invalid time.Time value: %s for document _id: %s", key, achild, id)
 				continue
 			} else {
 				avc = av
@@ -656,11 +656,11 @@ func fixSlicePruneInvalidJSON(id string, a []interface{}) []interface{} {
 		case float64:
 			if math.IsNaN(achild) {
 				// causes an error in the json serializer
-				warnLog.Printf("Dropping invalid float64 value: %v for document _id: %s", achild, id)
+				warnLog.Printf("Dropping key %s element: invalid float64 value: %v for document _id: %s", key, achild, id)
 				continue
 			} else if math.IsInf(achild, 0) {
 				// causes an error in the json serializer
-				warnLog.Printf("Dropping invalid float64 value: %v for document _id: %s", achild, id)
+				warnLog.Printf("Dropping key %s element: invalid float64 value: %v for document _id: %s", key, achild, id)
 				continue
 			} else {
 				avc = av
@@ -680,12 +680,12 @@ func fixPruneInvalidJSON(id string, e map[string]interface{}) map[string]interfa
 		case map[string]interface{}:
 			o[k] = fixPruneInvalidJSON(id, child)
 		case []interface{}:
-			o[k] = fixSlicePruneInvalidJSON(id, child)
+			o[k] = fixSlicePruneInvalidJSON(id, k, child)
 		case time.Time:
 			year := child.Year()
 			if year < 0 || year > 9999 {
 				// year outside of valid range
-				warnLog.Printf("Dropping invalid time.Time value: %s for document _id: %s", child, id)
+				warnLog.Printf("Dropping key %s: invalid time.Time value: %s for document _id: %s", k, child, id)
 				continue
 			} else {
 				o[k] = v
@@ -693,11 +693,11 @@ func fixPruneInvalidJSON(id string, e map[string]interface{}) map[string]interfa
 		case float64:
 			if math.IsNaN(child) {
 				// causes an error in the json serializer
-				warnLog.Printf("Dropping invalid float64 value: %v for document _id: %s", child, id)
+				warnLog.Printf("Dropping key %s: invalid float64 value: %v for document _id: %s", k, child, id)
 				continue
 			} else if math.IsInf(child, 0) {
 				// causes an error in the json serializer
-				warnLog.Printf("Dropping invalid float64 value: %v for document _id: %s", child, id)
+				warnLog.Printf("Dropping key %s: invalid float64 value: %v for document _id: %s", k, child, id)
 				continue
 			} else {
 				o[k] = v
