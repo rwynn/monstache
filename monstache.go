@@ -314,6 +314,7 @@ type configOptions struct {
 	RelateBuffer             int            `toml:"relate-buffer"`
 	PostProcessors           int            `toml:"post-processors"`
 	PruneInvalidJSON         bool           `toml:"prune-invalid-json"`
+	Debug                    bool
 }
 
 func (l *logFiles) enabled() bool {
@@ -1377,6 +1378,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.OplogTsFieldName, "oplog-ts-field-name", "", "Field name to use for the oplog timestamp")
 	flag.StringVar(&config.OplogDateFieldName, "oplog-date-field-name", "", "Field name to use for the oplog date")
 	flag.StringVar(&config.OplogDateFieldFormat, "oplog-date-field-format", "", "Format to use for the oplog date")
+	flag.BoolVar(&config.Debug, "debug", false, "True to enable verbose debug information")
 	flag.Parse()
 	return config
 }
@@ -1783,6 +1785,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if !config.PruneInvalidJSON && tomlConfig.PruneInvalidJSON {
 			config.PruneInvalidJSON = true
 		}
+		if !config.Debug && tomlConfig.Debug {
+			config.Debug = true
+		}
 		if !config.Replay && tomlConfig.Replay {
 			config.Replay = true
 		}
@@ -1953,6 +1958,10 @@ func (config *configOptions) setupLogging() *configOptions {
 		if logs.Stats != "" {
 			statsLog.SetOutput(config.newLogger(logs.Stats))
 		}
+	}
+	if config.Debug {
+		mgo.SetDebug(true)
+		mgo.SetLogger(traceLog)
 	}
 	return config
 }
