@@ -123,6 +123,7 @@ type relation struct {
 	SrcField      string `toml:"src-field"`
 	MatchField    string `toml:"match-field"`
 	KeepSrc       bool   `toml:"keep-src"`
+	MaxDepth      int    `toml:"max-depth"`
 	db            string
 	col           string
 }
@@ -869,98 +870,148 @@ func mapData(session *mgo.Session, config *configOptions, op *gtm.Op) error {
 	return mapDataJavascript(op)
 }
 
-func processRelated(session *mgo.Session, config *configOptions, op *gtm.Op, out *outputChans) (err error) {
-	if op.Data == nil {
-		return nil
-	}
-	rs := relates[op.Namespace]
-	if len(rs) == 0 {
-		return nil
-	}
-	for _, r := range rs {
-		if op.Data[r.SrcField] == nil {
-			b, e := json.Marshal(op.Data)
-			if e == nil {
-				err = fmt.Errorf("Source field %s not found for relation: %s", r.SrcField, string(b))
+func extractData(srcField string, data map[string]interface{}) (result interface{}, err error) {
+	var cur map[string]interface{} = data
+	fields := strings.Split(srcField, ".")
+	flen := len(fields)
+	for i, field := range fields {
+		if i+1 == flen {
+			result = cur[field]
+		} else {
+			if next, ok := cur[field].(map[string]interface{}); ok {
+				cur = next
 			} else {
-				err = fmt.Errorf("Source field %s not found for relation: %s", r.SrcField, err)
+				break
 			}
-			processErr(err, config)
-			continue
 		}
-		s := session.Copy()
-		sel := bson.M{r.MatchField: op.Data[r.SrcField]}
-		col := s.DB(r.db).C(r.col)
-		q := col.Find(sel)
-		iter := q.Iter()
-		doc := make(map[string]interface{})
-		for iter.Next(doc) {
-			now := time.Now().UTC()
-			tstamp := bson.MongoTimestamp(now.Unix() << 32)
-			offset := bson.MongoTimestamp(now.Nanosecond())
-			rop := &gtm.Op{
-				Id:                doc["_id"],
-				Data:              doc,
-				Operation:         op.Operation,
-				Namespace:         r.WithNamespace,
-				Source:            gtm.DirectQuerySource,
-				Timestamp:         tstamp | offset,
-				UpdateDescription: op.UpdateDescription,
-			}
-			doc = map[string]interface{}{}
-			if out.filter != nil && !out.filter(rop) {
+	}
+	if result == nil {
+		var detail interface{}
+		b, e := json.Marshal(data)
+		if e == nil {
+			detail = string(b)
+		} else {
+			detail = err
+		}
+		err = fmt.Errorf("Source field %s not found in document: %s", srcField, detail)
+	}
+	return
+}
+
+func buildSelector(matchField string, data interface{}) bson.M {
+	sel := bson.M{}
+	var cur bson.M = sel
+	fields := strings.Split(matchField, ".")
+	flen := len(fields)
+	for i, field := range fields {
+		if i+1 == flen {
+			cur[field] = data
+		} else {
+			next := bson.M{}
+			cur[field] = next
+			cur = next
+		}
+	}
+	return sel
+}
+
+func processRelated(session *mgo.Session, config *configOptions, root *gtm.Op, out *outputChans) (err error) {
+	var q []*gtm.Op
+	batch := []*gtm.Op{root}
+	depth := 1
+	s := session.Copy()
+	defer s.Close()
+	for len(batch) > 0 {
+		for _, e := range batch {
+			op := e
+			if op.Data == nil {
 				continue
 			}
-			if processPlugin != nil {
-				pop := &gtm.Op{
-					Id:                rop.Id,
-					Operation:         rop.Operation,
-					Namespace:         rop.Namespace,
-					Source:            rop.Source,
-					Timestamp:         rop.Timestamp,
-					UpdateDescription: rop.UpdateDescription,
-				}
-				var data []byte
-				data, err = bson.Marshal(rop.Data)
-				if err == nil {
-					var m map[string]interface{}
-					err = bson.Unmarshal(data, &m)
-					if err == nil {
-						pop.Data = m
-					}
-				}
-				out.processC <- pop
+			rs := relates[op.Namespace]
+			if len(rs) == 0 {
+				continue
 			}
-			skip := false
-			if rs2 := relates[rop.Namespace]; len(rs2) != 0 {
-				skip = true
-				for _, r2 := range rs2 {
-					if r2.KeepSrc {
-						skip = false
+			for _, r := range rs {
+				if r.MaxDepth > 0 && r.MaxDepth < depth {
+					continue
+				}
+				var srcData interface{}
+				if srcData, err = extractData(r.SrcField, op.Data); err != nil {
+					processErr(err, config)
+					continue
+				}
+				sel := buildSelector(r.MatchField, srcData)
+				col := s.DB(r.db).C(r.col)
+				query := col.Find(sel)
+				iter := query.Iter()
+				doc := map[string]interface{}{}
+				for iter.Next(doc) {
+					now := time.Now().UTC()
+					tstamp := bson.MongoTimestamp(now.Unix() << 32)
+					offset := bson.MongoTimestamp(now.Nanosecond())
+					rop := &gtm.Op{
+						Id:                doc["_id"],
+						Data:              doc,
+						Operation:         root.Operation,
+						Namespace:         r.WithNamespace,
+						Source:            gtm.DirectQuerySource,
+						Timestamp:         tstamp | offset,
+						UpdateDescription: root.UpdateDescription,
 					}
-					if rop.Data[r2.SrcField] != nil {
-						err = processRelated(session, config, rop, out)
-					} else {
-						b, e := json.Marshal(rop.Data)
-						if e == nil {
-							err = fmt.Errorf("Source field %s not found for relation: %s", r2.SrcField, string(b))
-						} else {
-							err = fmt.Errorf("Source field %s not found for relation: %s", r2.SrcField, e)
+					doc = map[string]interface{}{}
+					if out.filter != nil && !out.filter(rop) {
+						continue
+					}
+					if processPlugin != nil {
+						pop := &gtm.Op{
+							Id:                rop.Id,
+							Operation:         rop.Operation,
+							Namespace:         rop.Namespace,
+							Source:            rop.Source,
+							Timestamp:         rop.Timestamp,
+							UpdateDescription: rop.UpdateDescription,
 						}
-						processErr(err, config)
+						var data []byte
+						data, err = bson.Marshal(rop.Data)
+						if err == nil {
+							var m map[string]interface{}
+							err = bson.Unmarshal(data, &m)
+							if err == nil {
+								pop.Data = m
+							}
+						}
+						out.processC <- pop
+					}
+					skip := false
+					if rs2 := relates[rop.Namespace]; len(rs2) != 0 {
+						skip = true
+						visit := false
+						for _, r2 := range rs2 {
+							if r2.KeepSrc {
+								skip = false
+							}
+							if r2.MaxDepth < 1 || r2.MaxDepth >= (depth+1) {
+								visit = true
+							}
+						}
+						if visit {
+							q = append(q, rop)
+						}
+					}
+					if !skip {
+						if hasFileContent(rop, config) {
+							out.fileC <- rop
+						} else {
+							out.indexC <- rop
+						}
 					}
 				}
-			}
-			if !skip {
-				if hasFileContent(rop, config) {
-					out.fileC <- rop
-				} else {
-					out.indexC <- rop
-				}
+				iter.Close()
 			}
 		}
-		iter.Close()
-		s.Close()
+		depth++
+		batch = q
+		q = nil
 	}
 	return
 }
@@ -1340,6 +1391,7 @@ func (config *configOptions) loadReplacements() {
 					SrcField:      r.SrcField,
 					MatchField:    r.MatchField,
 					KeepSrc:       r.KeepSrc,
+					MaxDepth:      r.MaxDepth,
 					db:            database,
 					col:           collection,
 				}

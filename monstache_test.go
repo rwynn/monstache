@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
 	"github.com/olivere/elastic"
 	"github.com/rwynn/gtm"
 	"golang.org/x/net/context"
@@ -98,6 +99,62 @@ func TestParseElasticsearchVersion(t *testing.T) {
 	err = c.parseElasticsearchVersion("0")
 	if err == nil {
 		t.Fatalf("Expected error for invalid version")
+	}
+}
+
+func TestExtractRelateData(t *testing.T) {
+	data, err := extractData("foo", map[string]interface{}{"foo": 1})
+	if err != nil {
+		t.Fatalf("Expected nil error")
+	}
+	if data != 1 {
+		t.Fatalf("Expected extracting foo value of 1")
+	}
+	data, err = extractData("foo.bar", map[string]interface{}{"foo": map[string]interface{}{"bar": 1}})
+	if err != nil {
+		t.Fatalf("Expected nil error")
+	}
+	if data != 1 {
+		t.Fatalf("Expected extracting foo.bar value of 1")
+	}
+	data, err = extractData("foo.bar", map[string]interface{}{"foo": map[string]interface{}{"foo": 1}})
+	if err == nil {
+		t.Fatalf("Expected error for missing key")
+	}
+	data, err = extractData("foo", map[string]interface{}{"bar": 1})
+	if err == nil {
+		t.Fatalf("Expected error for missing key")
+	}
+	data, err = extractData("foo.bar", map[string]interface{}{"foo": []string{"a", "b", "c"}})
+	if err == nil {
+		t.Fatalf("Expected error for missing key")
+	}
+}
+
+func TestBuildRelateSelector(t *testing.T) {
+	sel := buildSelector("foo", 1)
+	if sel == nil {
+		t.Fatalf("Expected non-nil selector")
+	}
+	if len(sel) != 1 {
+		t.Fatalf("Expected 1 foo key in selector")
+	}
+	if sel["foo"] != 1 {
+		t.Fatalf("Expected matching foo to 1: %v", sel)
+	}
+	sel = buildSelector("foo.bar", 1)
+	if sel == nil {
+		t.Fatalf("Expected non-nil selector")
+	}
+	if len(sel) != 1 {
+		t.Fatalf("Expected 1 foo key in selector")
+	}
+	bar, ok := sel["foo"].(bson.M)
+	if !ok {
+		t.Fatalf("Expected nested selector under foo")
+	}
+	if bar["bar"] != 1 {
+		t.Fatalf("Expected matching foo.bar to 1: %v", sel)
 	}
 }
 
