@@ -300,6 +300,7 @@ type configOptions struct {
 	PostProcessors           int            `toml:"post-processors"`
 	PruneInvalidJSON         bool           `toml:"prune-invalid-json"`
 	Debug                    bool
+	mongoClientOptions       *options.ClientOptions
 }
 
 func (l *logFiles) enabled() bool {
@@ -1007,7 +1008,7 @@ func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
 
 func parseIndexMeta(op *gtm.Op) (meta *indexingMeta) {
 	meta = &indexingMeta{
-		Version:     (int64(op.Timestamp.T) << 32) | int64(op.Timestamp.I),
+		Version:     tsVersion(op.Timestamp),
 		VersionType: "external",
 	}
 	if m, ok := op.Data["_meta_monstache"]; ok {
@@ -2320,13 +2321,25 @@ func (config *configOptions) cancelConnection(mongoOk chan bool) {
 }
 
 func (config *configOptions) dialMongo(URL string) (*mongo.Client, error) {
-	rb := bson.NewRegistryBuilder()
-	rb.RegisterTypeMapEntry(bsontype.DateTime, reflect.TypeOf(time.Time{}))
-	reg := rb.Build()
-	clientOptions := options.Client()
-	clientOptions.ApplyURI(URL)
-	clientOptions.SetAppName("monstache")
-	clientOptions.SetRegistry(reg)
+	var clientOptions *options.ClientOptions
+	if config.mongoClientOptions == nil {
+		// use the initial URL to create most of the client options
+		// save the client options for potential use later with shards
+		rb := bson.NewRegistryBuilder()
+		rb.RegisterTypeMapEntry(bsontype.DateTime, reflect.TypeOf(time.Time{}))
+		reg := rb.Build()
+		clientOptions = options.Client()
+		clientOptions.ApplyURI(URL)
+		clientOptions.SetAppName("monstache")
+		clientOptions.SetRegistry(reg)
+		config.mongoClientOptions = clientOptions
+	} else {
+		// subsequent client connections will only be for adding shards
+		// for shards we only have the hostname and replica set
+		// apply the hostname to the previously saved client options
+		clientOptions = config.mongoClientOptions
+		clientOptions.ApplyURI(URL)
+	}
 	client, err := mongo.NewClient(clientOptions)
 	if err != nil {
 		return nil, err
@@ -3293,6 +3306,12 @@ func findDeletedSrcDoc(config *configOptions, client *elastic.Client, op *gtm.Op
 	return nil
 }
 
+func tsVersion(ts primitive.Timestamp) int64 {
+	t, i := int64(ts.T), int64(ts.I)
+	version := (t << 32) | i
+	return version
+}
+
 func doDelete(config *configOptions, client *elastic.Client, mongo *mongo.Client, bulk *elastic.BulkProcessor, op *gtm.Op) {
 	req := elastic.NewBulkDeleteRequest()
 	req.UseEasyJSON(config.EnableEasyJSON)
@@ -3302,7 +3321,7 @@ func doDelete(config *configOptions, client *elastic.Client, mongo *mongo.Client
 	objectID, indexType, meta := opIDToString(op), mapIndexType(config, op), &indexingMeta{}
 	req.Id(objectID)
 	if config.IndexAsUpdate == false {
-		req.Version(int64(op.Timestamp.T))
+		req.Version(tsVersion(op.Timestamp))
 		req.VersionType("external")
 	}
 	if config.DeleteStrategy == statefulDeleteStrategy {
@@ -3917,6 +3936,7 @@ func main() {
 			gtmCtx.DirectReadWg.Wait()
 			infoLog.Println("Direct reads completed")
 			if config.ExitAfterDirectReads {
+				infoLog.Println("Stopping all workers")
 				gtmCtx.Stop()
 				<-opsConsumed
 				close(outputChs.relateC)
