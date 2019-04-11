@@ -14,8 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/coreos/go-systemd/daemon"
 	"github.com/evanphx/json-patch"
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	"github.com/olivere/elastic"
 	aws "github.com/olivere/elastic/aws/v4"
 	"github.com/robertkrimen/otto"
@@ -23,19 +21,24 @@ import (
 	"github.com/rwynn/gtm"
 	"github.com/rwynn/gtm/consistent"
 	"github.com/rwynn/monstache/monstachemap"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/bsontype"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/gridfs"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/net/context"
 	"gopkg.in/Graylog2/go-gelf.v2/gelf"
 	"gopkg.in/natefinch/lumberjack.v2"
-	"io"
 	"io/ioutil"
 	"log"
 	"math"
-	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
 	"os/signal"
 	"plugin"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -69,10 +72,9 @@ var mux sync.Mutex
 var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
-var mongoDialInfo *mgo.DialInfo
 
-const version = "4.16.1"
-const mongoURLDefault string = "localhost"
+const version = "5.0.0-alpha1"
+const mongoURLDefault string = "mongodb://localhost:27017"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
 const elasticClientTimeoutDefault int = 0
@@ -95,6 +97,10 @@ const (
 	statefulDeleteStrategy
 	ignoreDeleteStrategy
 )
+
+type buildInfo struct {
+	Version string
+}
 
 type stringargs []string
 
@@ -138,7 +144,7 @@ type findConf struct {
 	vm            *otto.Otto
 	ns            string
 	name          string
-	session       *mgo.Session
+	client        *mongo.Client
 	byId          bool
 	multi         bool
 	pipe          bool
@@ -146,14 +152,14 @@ type findConf struct {
 }
 
 type findCall struct {
-	config  *findConf
-	session *mgo.Session
-	query   interface{}
-	db      string
-	col     string
-	limit   int
-	sort    []string
-	sel     map[string]int
+	config *findConf
+	client *mongo.Client
+	query  interface{}
+	db     string
+	col    string
+	limit  int
+	sort   map[string]int
+	sel    map[string]int
 }
 
 type logFiles struct {
@@ -185,23 +191,6 @@ type outputChans struct {
 	filter   gtm.OpFilter
 }
 
-type mongoDialSettings struct {
-	Timeout      int
-	Ssl          bool
-	ReadTimeout  int `toml:"read-timeout"`
-	WriteTimeout int `toml:"write-timeout"`
-}
-
-type mongoSessionSettings struct {
-	SocketTimeout int `toml:"socket-timeout"`
-	SyncTimeout   int `toml:"sync-timeout"`
-}
-
-type mongoX509Settings struct {
-	ClientCertPemFile string `toml:"client-cert-pem-file"`
-	ClientKeyPemFile  string `toml:"client-key-pem-file"`
-}
-
 type gtmSettings struct {
 	ChannelSize    int    `toml:"channel-size"`
 	BufferSize     int    `toml:"buffer-size"`
@@ -219,36 +208,32 @@ type httpServerCtx struct {
 type configOptions struct {
 	EnableTemplate           bool
 	EnvDelimiter             string
-	MongoURL                 string               `toml:"mongo-url"`
-	MongoConfigURL           string               `toml:"mongo-config-url"`
-	MongoPemFile             string               `toml:"mongo-pem-file"`
-	MongoValidatePemFile     bool                 `toml:"mongo-validate-pem-file"`
-	MongoOpLogDatabaseName   string               `toml:"mongo-oplog-database-name"`
-	MongoOpLogCollectionName string               `toml:"mongo-oplog-collection-name"`
-	MongoDialSettings        mongoDialSettings    `toml:"mongo-dial-settings"`
-	MongoSessionSettings     mongoSessionSettings `toml:"mongo-session-settings"`
-	MongoX509Settings        mongoX509Settings    `toml:"mongo-x509-settings"`
-	GtmSettings              gtmSettings          `toml:"gtm-settings"`
-	AWSConnect               awsConnect           `toml:"aws-connect"`
-	Logs                     logFiles             `toml:"logs"`
-	GraylogAddr              string               `toml:"graylog-addr"`
-	ElasticUrls              stringargs           `toml:"elasticsearch-urls"`
-	ElasticUser              string               `toml:"elasticsearch-user"`
-	ElasticPassword          string               `toml:"elasticsearch-password"`
-	ElasticPemFile           string               `toml:"elasticsearch-pem-file"`
-	ElasticValidatePemFile   bool                 `toml:"elasticsearch-validate-pem-file"`
-	ElasticVersion           string               `toml:"elasticsearch-version"`
-	ElasticHealth0           int                  `toml:"elasticsearch-healthcheck-timeout-startup"`
-	ElasticHealth1           int                  `toml:"elasticsearch-healthcheck-timeout"`
-	ResumeName               string               `toml:"resume-name"`
-	NsRegex                  string               `toml:"namespace-regex"`
-	NsDropRegex              string               `toml:"namespace-drop-regex"`
-	NsExcludeRegex           string               `toml:"namespace-exclude-regex"`
-	NsDropExcludeRegex       string               `toml:"namespace-drop-exclude-regex"`
-	ClusterName              string               `toml:"cluster-name"`
-	Print                    bool                 `toml:"print-config"`
+	MongoURL                 string      `toml:"mongo-url"`
+	MongoConfigURL           string      `toml:"mongo-config-url"`
+	MongoOpLogDatabaseName   string      `toml:"mongo-oplog-database-name"`
+	MongoOpLogCollectionName string      `toml:"mongo-oplog-collection-name"`
+	GtmSettings              gtmSettings `toml:"gtm-settings"`
+	AWSConnect               awsConnect  `toml:"aws-connect"`
+	Logs                     logFiles    `toml:"logs"`
+	GraylogAddr              string      `toml:"graylog-addr"`
+	ElasticUrls              stringargs  `toml:"elasticsearch-urls"`
+	ElasticUser              string      `toml:"elasticsearch-user"`
+	ElasticPassword          string      `toml:"elasticsearch-password"`
+	ElasticPemFile           string      `toml:"elasticsearch-pem-file"`
+	ElasticValidatePemFile   bool        `toml:"elasticsearch-validate-pem-file"`
+	ElasticVersion           string      `toml:"elasticsearch-version"`
+	ElasticHealth0           int         `toml:"elasticsearch-healthcheck-timeout-startup"`
+	ElasticHealth1           int         `toml:"elasticsearch-healthcheck-timeout"`
+	ResumeName               string      `toml:"resume-name"`
+	NsRegex                  string      `toml:"namespace-regex"`
+	NsDropRegex              string      `toml:"namespace-drop-regex"`
+	NsExcludeRegex           string      `toml:"namespace-exclude-regex"`
+	NsDropExcludeRegex       string      `toml:"namespace-drop-exclude-regex"`
+	ClusterName              string      `toml:"cluster-name"`
+	Print                    bool        `toml:"print-config"`
 	Version                  bool
 	Pprof                    bool
+	EnableOplog              bool `toml:"enable-oplog"`
 	DisableChangeEvents      bool `toml:"disable-change-events"`
 	EnableEasyJSON           bool `toml:"enable-easy-json"`
 	Stats                    bool
@@ -319,21 +304,6 @@ type configOptions struct {
 
 func (l *logFiles) enabled() bool {
 	return l.Info != "" || l.Warn != "" || l.Error != "" || l.Trace != "" || l.Stats != ""
-}
-
-func (s *mongoX509Settings) enabled() bool {
-	return s.ClientCertPemFile != "" || s.ClientKeyPemFile != ""
-}
-
-func (s *mongoX509Settings) validate() error {
-	if s.ClientCertPemFile != "" || s.ClientKeyPemFile != "" {
-		if s.ClientCertPemFile == "" {
-			return errors.New("Client cert pem file missing for X509 authentication")
-		} else if s.ClientKeyPemFile == "" {
-			return errors.New("Client key pem file missing for X509 authentication")
-		}
-	}
-	return nil
 }
 
 func (ac *awsConnect) validate() error {
@@ -579,8 +549,8 @@ func mapIndexType(config *configOptions, op *gtm.Op) *indexTypeMapping {
 func opIDToString(op *gtm.Op) string {
 	var opIDStr string
 	switch op.Id.(type) {
-	case bson.ObjectId:
-		opIDStr = op.Id.(bson.ObjectId).Hex()
+	case primitive.ObjectID:
+		opIDStr = op.Id.(primitive.ObjectID).Hex()
 	case float64:
 		intID := int(op.Id.(float64))
 		if op.Id.(float64) == float64(intID) {
@@ -610,7 +580,7 @@ func convertSliceJavascript(a []interface{}) []interface{} {
 			avc = convertMapJavascript(achild)
 		case []interface{}:
 			avc = convertSliceJavascript(achild)
-		case bson.ObjectId:
+		case primitive.ObjectID:
 			avc = achild.Hex()
 		default:
 			avc = av
@@ -628,7 +598,7 @@ func convertMapJavascript(e map[string]interface{}) map[string]interface{} {
 			o[k] = convertMapJavascript(child)
 		case []interface{}:
 			o[k] = convertSliceJavascript(child)
-		case bson.ObjectId:
+		case primitive.ObjectID:
 			o[k] = child.Hex()
 		default:
 			o[k] = v
@@ -796,16 +766,14 @@ func mapDataJavascript(op *gtm.Op) error {
 	return nil
 }
 
-func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
-	session := s.Copy()
-	defer session.Close()
+func mapDataGolang(client *mongo.Client, op *gtm.Op) error {
 	input := &monstachemap.MapperPluginInput{
 		Document:          op.Data,
 		Namespace:         op.Namespace,
 		Database:          op.GetDatabase(),
 		Collection:        op.GetCollection(),
 		Operation:         op.Operation,
-		Session:           session,
+		MongoClient:       client,
 		UpdateDescription: op.UpdateDescription,
 	}
 	output, err := mapperPlugin(input)
@@ -863,9 +831,9 @@ func mapDataGolang(s *mgo.Session, op *gtm.Op) error {
 	return nil
 }
 
-func mapData(session *mgo.Session, config *configOptions, op *gtm.Op) error {
+func mapData(client *mongo.Client, config *configOptions, op *gtm.Op) error {
 	if mapperPlugin != nil {
-		return mapDataGolang(session, op)
+		return mapDataGolang(client, op)
 	}
 	return mapDataJavascript(op)
 }
@@ -915,12 +883,10 @@ func buildSelector(matchField string, data interface{}) bson.M {
 	return sel
 }
 
-func processRelated(session *mgo.Session, config *configOptions, root *gtm.Op, out *outputChans) (err error) {
+func processRelated(client *mongo.Client, config *configOptions, root *gtm.Op, out *outputChans) (err error) {
 	var q []*gtm.Op
 	batch := []*gtm.Op{root}
 	depth := 1
-	s := session.Copy()
-	defer s.Close()
 	for len(batch) > 0 {
 		for _, e := range batch {
 			op := e
@@ -940,25 +906,33 @@ func processRelated(session *mgo.Session, config *configOptions, root *gtm.Op, o
 					processErr(err, config)
 					continue
 				}
+
+				opts := &options.FindOptions{}
+				col := client.Database(r.db).Collection(r.col)
 				sel := buildSelector(r.MatchField, srcData)
-				col := s.DB(r.db).C(r.col)
-				query := col.Find(sel)
-				iter := query.Iter()
-				doc := map[string]interface{}{}
-				for iter.Next(doc) {
+				cursor, err := col.Find(context.Background(), sel, opts)
+
+				doc := make(map[string]interface{})
+				for cursor.Next(context.Background()) {
+					if err = cursor.Decode(&doc); err != nil {
+						processErr(err, config)
+						continue
+					}
 					now := time.Now().UTC()
-					tstamp := bson.MongoTimestamp(now.Unix() << 32)
-					offset := bson.MongoTimestamp(now.Nanosecond())
+					tstamp := primitive.Timestamp{
+						T: uint32(now.Unix()),
+						I: uint32(now.Nanosecond()),
+					}
 					rop := &gtm.Op{
 						Id:                doc["_id"],
 						Data:              doc,
 						Operation:         root.Operation,
 						Namespace:         r.WithNamespace,
 						Source:            gtm.DirectQuerySource,
-						Timestamp:         tstamp | offset,
+						Timestamp:         tstamp,
 						UpdateDescription: root.UpdateDescription,
 					}
-					doc = map[string]interface{}{}
+					doc = make(map[string]interface{})
 					if out.filter != nil && !out.filter(rop) {
 						continue
 					}
@@ -1006,7 +980,7 @@ func processRelated(session *mgo.Session, config *configOptions, root *gtm.Op, o
 						}
 					}
 				}
-				iter.Close()
+				cursor.Close(context.Background())
 			}
 		}
 		depth++
@@ -1019,8 +993,8 @@ func processRelated(session *mgo.Session, config *configOptions, root *gtm.Op, o
 func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
 	data := op.Data
 	if config.IndexOplogTime {
-		secs := int64(op.Timestamp >> 32)
-		t := time.Unix(secs, 0).UTC()
+		secs := op.Timestamp.T
+		t := time.Unix(int64(secs), 0).UTC()
 		data[config.OplogTsFieldName] = op.Timestamp
 		data[config.OplogDateFieldName] = t.Format(config.OplogDateFieldFormat)
 	}
@@ -1033,7 +1007,7 @@ func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
 
 func parseIndexMeta(op *gtm.Op) (meta *indexingMeta) {
 	meta = &indexingMeta{
-		Version:     int64(op.Timestamp),
+		Version:     (int64(op.Timestamp.T) << 32) | int64(op.Timestamp.I),
 		VersionType: "external",
 	}
 	if m, ok := op.Data["_meta_monstache"]; ok {
@@ -1059,29 +1033,29 @@ func parseIndexMeta(op *gtm.Op) (meta *indexingMeta) {
 	return meta
 }
 
-func addFileContent(s *mgo.Session, op *gtm.Op, config *configOptions) (err error) {
-	session := s.Copy()
-	defer session.Close()
+func addFileContent(client *mongo.Client, op *gtm.Op, config *configOptions) (err error) {
 	op.Data["file"] = ""
 	var gridByteBuffer bytes.Buffer
-	db, bucket :=
-		session.DB(op.GetDatabase()),
+	db, bucketName :=
+		client.Database(op.GetDatabase()),
 		strings.SplitN(op.GetCollection(), ".", 2)[0]
 	encoder := base64.NewEncoder(base64.StdEncoding, &gridByteBuffer)
-	file, err := db.GridFS(bucket).OpenId(op.Id)
+	opts := &options.BucketOptions{}
+	opts.SetName(bucketName)
+	var bucket *gridfs.Bucket
+	bucket, err = gridfs.NewBucket(db, opts)
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	var size int64
+	if size, err = bucket.DownloadToStream(op.Id, encoder); err != nil {
+		return
+	}
 	if config.MaxFileSize > 0 {
-		if file.Size() > config.MaxFileSize {
-			warnLog.Printf("File %s md5(%s) exceeds max file size. file content omitted.",
-				file.Name(), file.MD5())
+		if size > config.MaxFileSize {
+			warnLog.Printf("File size %d exceeds max file size. file content omitted.", size)
 			return
 		}
-	}
-	if _, err = io.Copy(encoder, file); err != nil {
-		return
 	}
 	if err = encoder.Close(); err != nil {
 		return
@@ -1205,20 +1179,24 @@ func filterDropInverseWithRegex(regex string) gtm.OpFilter {
 	}
 }
 
-func ensureClusterTTL(session *mgo.Session, config *configOptions) error {
-	col := session.DB(config.ConfigDatabaseName).C("cluster")
-	return col.EnsureIndex(mgo.Index{
-		Key:         []string{"expireAt"},
-		Background:  true,
-		ExpireAfter: time.Duration(30) * time.Second,
-	})
+func ensureClusterTTL(client *mongo.Client, config *configOptions) error {
+	io := options.Index()
+	io.SetName("expireAt")
+	io.SetBackground(true)
+	io.SetExpireAfterSeconds(30)
+	im := mongo.IndexModel{
+		Keys:    bson.M{"expireAt": 1},
+		Options: io,
+	}
+	col := client.Database(config.ConfigDatabaseName).Collection("cluster")
+	iv := col.Indexes()
+	_, err := iv.CreateOne(context.Background(), im)
+	return err
 }
 
-func enableProcess(s *mgo.Session, config *configOptions) (bool, error) {
-	session := s.Copy()
-	defer session.Close()
-	col := session.DB(config.ConfigDatabaseName).C("cluster")
-	doc := make(map[string]interface{})
+func enableProcess(client *mongo.Client, config *configOptions) (bool, error) {
+	col := client.Database(config.ConfigDatabaseName).Collection("cluster")
+	doc := bson.M{}
 	doc["_id"] = config.ResumeName
 	doc["expireAt"] = time.Now().UTC()
 	doc["pid"] = os.Getpid()
@@ -1227,36 +1205,71 @@ func enableProcess(s *mgo.Session, config *configOptions) (bool, error) {
 	} else {
 		return false, err
 	}
-	err := col.Insert(doc)
+	_, err := col.InsertOne(context.Background(), doc)
 	if err == nil {
 		return true, nil
 	}
-	if mgo.IsDup(err) {
+	if isDup(err) {
 		return false, nil
 	}
 	return false, err
 }
 
-func resetClusterState(session *mgo.Session, config *configOptions) error {
-	col := session.DB(config.ConfigDatabaseName).C("cluster")
-	return col.RemoveId(config.ResumeName)
+func isDup(err error) bool {
+	checkCodeAndMessage := func(code int, message string) bool {
+		return code == 11000 ||
+			code == 11001 ||
+			code == 12582 ||
+			strings.Contains(message, "E11000")
+	}
+	if we, ok := err.(mongo.WriteException); ok {
+		if we.WriteConcernError != nil {
+			wce := we.WriteConcernError
+			code, message := wce.Code, wce.Message
+			if checkCodeAndMessage(code, message) {
+				return true
+			}
+		}
+		if we.WriteErrors != nil {
+			we := we.WriteErrors
+			for _, e := range we {
+				code, message := e.Code, e.Message
+				if checkCodeAndMessage(code, message) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
-func ensureEnabled(s *mgo.Session, config *configOptions) (enabled bool, err error) {
-	session := s.Copy()
-	defer session.Close()
-	col := session.DB(config.ConfigDatabaseName).C("cluster")
-	doc := make(map[string]interface{})
-	if err = col.FindId(config.ResumeName).One(doc); err == nil {
-		if doc["pid"] != nil && doc["host"] != nil {
-			var hostname string
-			pid := doc["pid"].(int)
-			host := doc["host"].(string)
-			if hostname, err = os.Hostname(); err == nil {
-				enabled = (pid == os.Getpid() && host == hostname)
-				if enabled {
-					err = col.UpdateId(config.ResumeName,
-						bson.M{"$set": bson.M{"expireAt": time.Now().UTC()}})
+func resetClusterState(client *mongo.Client, config *configOptions) error {
+	col := client.Database(config.ConfigDatabaseName).Collection("cluster")
+	_, err := col.DeleteOne(context.Background(), bson.M{"_id": config.ResumeName})
+	return err
+}
+
+func ensureEnabled(client *mongo.Client, config *configOptions) (enabled bool, err error) {
+	col := client.Database(config.ConfigDatabaseName).Collection("cluster")
+	result := col.FindOne(context.Background(), bson.M{
+		"_id": config.ResumeName,
+	})
+	if err = result.Err(); err == nil {
+		doc := make(map[string]interface{})
+		if err = result.Decode(&doc); err == nil {
+			if doc["pid"] != nil && doc["host"] != nil {
+				var hostname string
+				pid := doc["pid"].(int32)
+				host := doc["host"].(string)
+				if hostname, err = os.Hostname(); err == nil {
+					enabled = (int(pid) == os.Getpid() && host == hostname)
+					if enabled {
+						_, err = col.UpdateOne(context.Background(), bson.M{
+							"_id": config.ResumeName,
+						}, bson.M{
+							"$set": bson.M{"expireAt": time.Now().UTC()},
+						})
+					}
 				}
 			}
 		}
@@ -1264,27 +1277,35 @@ func ensureEnabled(s *mgo.Session, config *configOptions) (enabled bool, err err
 	return
 }
 
-func resumeWork(ctx *gtm.OpCtxMulti, session *mgo.Session, config *configOptions) {
-	col := session.DB(config.ConfigDatabaseName).C("monstache")
-	doc := make(map[string]interface{})
-	col.FindId(config.ResumeName).One(doc)
-	if doc["ts"] != nil {
-		ts := doc["ts"].(bson.MongoTimestamp)
-		ctx.Since(ts)
+func resumeWork(ctx *gtm.OpCtxMulti, client *mongo.Client, config *configOptions) {
+	col := client.Database(config.ConfigDatabaseName).Collection("monstache")
+	result := col.FindOne(context.Background(), bson.M{
+		"_id": config.ResumeName,
+	})
+	if err := result.Err(); err == nil {
+		doc := make(map[string]interface{})
+		if err = result.Decode(&doc); err == nil {
+			if doc["ts"] != nil {
+				ts := doc["ts"].(primitive.Timestamp)
+				ctx.Since(ts)
+			}
+		}
 	}
 	ctx.Resume()
 }
 
-func saveTimestamp(s *mgo.Session, ts bson.MongoTimestamp, config *configOptions) error {
-	session := s.Copy()
-	if config.ResumeWriteUnsafe {
-		session.SetSafe(nil)
+func saveTimestamp(client *mongo.Client, ts primitive.Timestamp, config *configOptions) error {
+	col := client.Database(config.ConfigDatabaseName).Collection("monstache")
+	doc := map[string]interface{}{
+		"ts": ts,
 	}
-	defer session.Close()
-	col := session.DB(config.ConfigDatabaseName).C("monstache")
-	doc := make(map[string]interface{})
-	doc["ts"] = ts
-	_, err := col.UpsertId(config.ResumeName, bson.M{"$set": doc})
+	opts := options.Update()
+	opts.SetUpsert(true)
+	_, err := col.UpdateOne(context.Background(), bson.M{
+		"_id": config.ResumeName,
+	}, bson.M{
+		"$set": doc,
+	}, opts)
 	return err
 }
 
@@ -1294,8 +1315,6 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.EnvDelimiter, "env-delimiter", ",", "A delimiter to use when splitting environment variable values")
 	flag.StringVar(&config.MongoURL, "mongo-url", "", "MongoDB server or router server connection URL")
 	flag.StringVar(&config.MongoConfigURL, "mongo-config-url", "", "MongoDB config server connection URL")
-	flag.StringVar(&config.MongoPemFile, "mongo-pem-file", "", "Path to a PEM file for secure connections to MongoDB")
-	flag.BoolVar(&config.MongoValidatePemFile, "mongo-validate-pem-file", true, "Set to boolean false to not validate the MongoDB PEM file")
 	flag.StringVar(&config.MongoOpLogDatabaseName, "mongo-oplog-database-name", "", "Override the database name which contains the mongodb oplog")
 	flag.StringVar(&config.MongoOpLogCollectionName, "mongo-oplog-collection-name", "", "Override the collection name which contains the mongodb oplog")
 	flag.StringVar(&config.GraylogAddr, "graylog-addr", "", "Send logs to a Graylog server at this address")
@@ -1322,6 +1341,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.Gzip, "gzip", false, "True to enable gzip for requests to Elasticsearch")
 	flag.BoolVar(&config.Verbose, "verbose", false, "True to output verbose messages")
 	flag.BoolVar(&config.Pprof, "pprof", false, "True to enable pprof endpoints")
+	flag.BoolVar(&config.EnableOplog, "enable-oplog", false, "True to enable direct tailing of the oplog")
 	flag.BoolVar(&config.DisableChangeEvents, "disable-change-events", false, "True to disable listening for changes.  You must provide direct-reads in this case")
 	flag.BoolVar(&config.EnableEasyJSON, "enable-easy-json", false, "True to enable easy-json serialization")
 	flag.BoolVar(&config.Stats, "stats", false, "True to print out statistics")
@@ -1632,13 +1652,10 @@ func (config *configOptions) decodeAsTemplate() *configOptions {
 func (config *configOptions) loadConfigFile() *configOptions {
 	if config.ConfigFile != "" {
 		var tomlConfig = configOptions{
-			ConfigFile:           config.ConfigFile,
-			DroppedDatabases:     true,
-			DroppedCollections:   true,
-			MongoValidatePemFile: true,
-			MongoDialSettings:    mongoDialSettings{Timeout: -1, ReadTimeout: -1, WriteTimeout: -1},
-			MongoSessionSettings: mongoSessionSettings{SocketTimeout: -1, SyncTimeout: -1},
-			GtmSettings:          gtmDefaultSettings(),
+			ConfigFile:         config.ConfigFile,
+			DroppedDatabases:   true,
+			DroppedCollections: true,
+			GtmSettings:        gtmDefaultSettings(),
 		}
 		if config.EnableTemplate {
 			tomlConfig.decodeAsTemplate()
@@ -1652,12 +1669,6 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.MongoConfigURL == "" {
 			config.MongoConfigURL = tomlConfig.MongoConfigURL
-		}
-		if config.MongoPemFile == "" {
-			config.MongoPemFile = tomlConfig.MongoPemFile
-		}
-		if config.MongoValidatePemFile {
-			config.MongoValidatePemFile = tomlConfig.MongoValidatePemFile
 		}
 		if config.MongoOpLogDatabaseName == "" {
 			config.MongoOpLogDatabaseName = tomlConfig.MongoOpLogDatabaseName
@@ -1751,6 +1762,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if !config.Pprof && tomlConfig.Pprof {
 			config.Pprof = true
+		}
+		if !config.EnableOplog && tomlConfig.EnableOplog {
+			config.EnableOplog = true
 		}
 		if !config.EnableEasyJSON && tomlConfig.EnableEasyJSON {
 			config.EnableEasyJSON = true
@@ -1901,9 +1915,6 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if !config.Logs.enabled() {
 			config.Logs = tomlConfig.Logs
 		}
-		config.MongoDialSettings = tomlConfig.MongoDialSettings
-		config.MongoSessionSettings = tomlConfig.MongoSessionSettings
-		config.MongoX509Settings = tomlConfig.MongoX509Settings
 		config.GtmSettings = tomlConfig.GtmSettings
 		config.Relate = tomlConfig.Relate
 		tomlConfig.loadScripts()
@@ -1953,10 +1964,6 @@ func (config *configOptions) setupLogging() *configOptions {
 			statsLog.SetOutput(config.newLogger(logs.Stats))
 		}
 	}
-	if config.Debug {
-		mgo.SetDebug(true)
-		mgo.SetLogger(traceLog)
-	}
 	return config
 }
 
@@ -1983,11 +1990,6 @@ func (config *configOptions) loadEnvironment() *configOptions {
 		case "MONSTACHE_MONGO_CONFIG_URL":
 			if config.MongoConfigURL == "" {
 				config.MongoConfigURL = val
-			}
-			break
-		case "MONSTACHE_MONGO_PEM":
-			if config.MongoPemFile == "" {
-				config.MongoPemFile = val
 			}
 			break
 		case "MONSTACHE_MONGO_OPLOG_DB":
@@ -2166,36 +2168,7 @@ func (config configOptions) dump() {
 	}
 }
 
-/*
-if ssl=true is set on the connection string, remove the option
-from the connection string and enable TLS because the mgo
-driver does not support the option in the connection string
-*/
-func (config *configOptions) parseMongoURL(inURL string) (outURL string) {
-	const queryDelim string = "?"
-	outURL = inURL
-	hostQuery := strings.SplitN(outURL, queryDelim, 2)
-	if len(hostQuery) == 2 {
-		host, query := hostQuery[0], hostQuery[1]
-		r := regexp.MustCompile(`ssl=true&?|&ssl=true$`)
-		qstr := r.ReplaceAllString(query, "")
-		if qstr != query {
-			config.MongoDialSettings.Ssl = true
-			if qstr == "" {
-				outURL = host
-			} else {
-				outURL = strings.Join([]string{host, qstr}, queryDelim)
-			}
-		}
-	}
-	return
-}
-
 func (config *configOptions) validate() {
-	const schemeSrv = "mongodb+srv://"
-	if strings.HasPrefix(config.MongoURL, schemeSrv) {
-		panic("The mongodb+srv scheme is not yet supported")
-	}
 	if config.DisableChangeEvents && len(config.DirectReadNs) == 0 {
 		panic("Direct read namespaces must be specified if change events are disabled")
 	}
@@ -2203,22 +2176,6 @@ func (config *configOptions) validate() {
 		if err := config.AWSConnect.validate(); err != nil {
 			panic(err)
 		}
-	}
-	if config.MongoX509Settings.enabled() {
-		if err := config.MongoX509Settings.validate(); err != nil {
-			panic(err)
-		}
-	}
-	ds := config.MongoDialSettings
-	ss := config.MongoSessionSettings
-	if ds.ReadTimeout < 1 {
-		panic("MongoDB read timeout must be greater than 0")
-	}
-	if ds.WriteTimeout < 1 {
-		panic("MongoDB write timeout must be greater than 0")
-	}
-	if ss.SyncTimeout < 1 {
-		panic("MongoDB sync timeout must be greater than 0")
 	}
 	if len(config.DirectReadNs) > 0 {
 		if config.ElasticMaxSeconds < 5 {
@@ -2231,22 +2188,12 @@ func (config *configOptions) validate() {
 }
 
 func (config *configOptions) setDefaults() *configOptions {
-	ds := config.MongoDialSettings
-	ss := config.MongoSessionSettings
-	if ds.Timeout == -1 {
-		config.MongoDialSettings.Timeout = 15
+	if !config.EnableOplog && len(config.ChangeStreamNs) == 0 {
+		config.ChangeStreamNs = []string{""}
 	}
-	if ds.ReadTimeout == -1 {
-		config.MongoDialSettings.ReadTimeout = 30
-	}
-	if ds.WriteTimeout == -1 {
-		config.MongoDialSettings.WriteTimeout = 30
-	}
-	if ss.SyncTimeout == -1 {
-		config.MongoSessionSettings.SyncTimeout = 30
-	}
-	if ss.SocketTimeout == -1 {
-		config.MongoSessionSettings.SocketTimeout = 0
+	if config.DisableChangeEvents {
+		config.ChangeStreamNs = []string{}
+		config.EnableOplog = false
 	}
 	if config.MongoURL == "" {
 		config.MongoURL = mongoURLDefault
@@ -2290,12 +2237,6 @@ func (config *configOptions) setDefaults() *configOptions {
 	}
 	if config.ElasticHealth1 == 0 {
 		config.ElasticHealth1 = 5
-	}
-	if config.MongoURL != "" {
-		config.MongoURL = config.parseMongoURL(config.MongoURL)
-	}
-	if config.MongoConfigURL != "" {
-		config.MongoConfigURL = config.parseMongoURL(config.MongoConfigURL)
 	}
 	if config.HTTPServerAddr == "" {
 		config.HTTPServerAddr = ":8080"
@@ -2344,12 +2285,15 @@ func (config *configOptions) setDefaults() *configOptions {
 	return config
 }
 
-func cleanMongoURL(inURL string) string {
-	const scheme = "mongodb://"
-	const schemeSrv = "mongodb+srv://"
-	hasScheme := strings.HasPrefix(inURL, scheme)
-	hasSchemeSrv := strings.HasPrefix(inURL, schemeSrv)
-	url := strings.TrimPrefix(inURL, scheme)
+func cleanMongoURL(URL string) string {
+	const (
+		scheme    = "mongodb://"
+		schemeSrv = "mongodb+srv://"
+	)
+	url := URL
+	hasScheme := strings.HasPrefix(url, scheme)
+	hasSchemeSrv := strings.HasPrefix(url, schemeSrv)
+	url = strings.TrimPrefix(url, scheme)
 	url = strings.TrimPrefix(url, schemeSrv)
 	userEnd := strings.IndexAny(url, "@")
 	if userEnd != -1 {
@@ -2363,127 +2307,42 @@ func cleanMongoURL(inURL string) string {
 	return url
 }
 
-func (config *configOptions) readClientCert() (*tls.Certificate, error) {
-	x509Settings := config.MongoX509Settings
-	// Read in the PEM encoded X509 certificate.
-	clientCertPEM, err := ioutil.ReadFile(x509Settings.ClientCertPemFile)
-	if err != nil {
-		return nil, err
-	}
-	// Read in the PEM encoded private key.
-	clientKeyPEM, err := ioutil.ReadFile(x509Settings.ClientKeyPemFile)
-	if err != nil {
-		return nil, err
-	}
-	// Parse the private key, and the public key contained within the
-	// certificate.
-	clientCert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
-	if err != nil {
-		return nil, err
-	}
-	// Parse the actual certificate data
-	clientCert.Leaf, err = x509.ParseCertificate(clientCert.Certificate[0])
-	if err != nil {
-		return nil, err
-	}
-	return &clientCert, nil
-}
-
-func (config *configOptions) timeoutConnection(inURL string, mongoOk chan bool) {
+func (config *configOptions) cancelConnection(mongoOk chan bool) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
 	defer signal.Stop(sigs)
-	deadline := time.Duration(config.MongoDialSettings.Timeout) * time.Second
-	connT := time.NewTicker(deadline)
-	defer connT.Stop()
 	select {
 	case <-mongoOk:
 		return
 	case <-sigs:
 		os.Exit(exitStatus)
-	case <-connT.C:
-		errorLog.Fatalf("Unable to connect to MongoDB using URL %s: timed out after %d seconds",
-			cleanMongoURL(inURL), config.MongoDialSettings.Timeout)
 	}
 }
 
-func (config *configOptions) dialMongo(inURL string) (*mgo.Session, error) {
-	var x509Cert *x509.Certificate
-	dialInfo, err := mgo.ParseURL(inURL)
+func (config *configOptions) dialMongo(URL string) (*mongo.Client, error) {
+	rb := bson.NewRegistryBuilder()
+	rb.RegisterTypeMapEntry(bsontype.DateTime, reflect.TypeOf(time.Time{}))
+	reg := rb.Build()
+	clientOptions := options.Client()
+	clientOptions.ApplyURI(URL)
+	clientOptions.SetAppName("monstache")
+	clientOptions.SetRegistry(reg)
+	client, err := mongo.NewClient(clientOptions)
 	if err != nil {
 		return nil, err
 	}
-	if mongoDialInfo == nil {
-		// save the initial dial info so that it can be reused
-		// if connecting to shards
-		mongoDialInfo = dialInfo.Copy()
-	} else {
-		// copy the initial auth info when connecting to shards
-		dialInfo.Username = mongoDialInfo.Username
-		dialInfo.Password = mongoDialInfo.Password
-		dialInfo.Source = mongoDialInfo.Source
-		dialInfo.Mechanism = mongoDialInfo.Mechanism
-	}
-	dialInfo.AppName = "monstache"
-	dialInfo.Timeout = time.Duration(0)
-	dialInfo.ReadTimeout = time.Duration(config.MongoDialSettings.ReadTimeout) * time.Second
-	dialInfo.WriteTimeout = time.Duration(config.MongoDialSettings.WriteTimeout) * time.Second
-	ssl := config.MongoDialSettings.Ssl || config.MongoPemFile != ""
-	if ssl {
-		tlsConfig := &tls.Config{}
-		// Check to see if we don't need to validate the PEM
-		if config.MongoValidatePemFile == false {
-			// Turn off validation
-			tlsConfig.InsecureSkipVerify = true
-		}
-		certs := x509.NewCertPool()
-		if config.MongoPemFile != "" {
-			if ca, err := ioutil.ReadFile(config.MongoPemFile); err == nil {
-				if ok := certs.AppendCertsFromPEM(ca); !ok {
-					errorLog.Printf("No certs parsed successfully from %s", config.MongoPemFile)
-				}
-			} else {
-				return nil, err
-			}
-			tlsConfig.RootCAs = certs
-		}
-		if config.MongoX509Settings.enabled() {
-			clientCert, err := config.readClientCert()
-			if err != nil {
-				return nil, err
-			}
-			x509Cert = clientCert.Leaf
-			if tlsConfig.InsecureSkipVerify {
-				certs.AddCert(x509Cert)
-				tlsConfig.RootCAs = certs
-			} else {
-				tlsConfig.Certificates = []tls.Certificate{*clientCert}
-			}
-		}
-		dialInfo.DialServer = func(addr *mgo.ServerAddr) (net.Conn, error) {
-			conn, err := tls.Dial("tcp", addr.String(), tlsConfig)
-			if err != nil {
-				errorLog.Printf("Unable to dial MongoDB: %s", err)
-			}
-			return conn, err
-		}
-	}
 	mongoOk := make(chan bool)
-	if config.MongoDialSettings.Timeout != 0 {
-		go config.timeoutConnection(inURL, mongoOk)
+	go config.cancelConnection(mongoOk)
+	err = client.Connect(context.Background())
+	if err != nil {
+		return nil, err
 	}
-	session, err := mgo.DialWithInfo(dialInfo)
+	err = client.Ping(context.Background(), nil)
+	if err != nil {
+		return nil, err
+	}
 	close(mongoOk)
-	if err == nil {
-		session.SetSyncTimeout(time.Duration(config.MongoSessionSettings.SyncTimeout) * time.Second)
-	}
-	if x509Cert != nil {
-		cred := &mgo.Credential{Mechanism: "MONGODB-X509", Certificate: x509Cert}
-		if err := session.Login(cred); err != nil {
-			return nil, err
-		}
-	}
-	return session, err
+	return client, nil
 }
 
 func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
@@ -2493,7 +2352,7 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 		certs := x509.NewCertPool()
 		if ca, err = ioutil.ReadFile(config.ElasticPemFile); err == nil {
 			if ok := certs.AppendCertsFromPEM(ca); !ok {
-				errorLog.Printf("No certs parsed successfully from %s", config.MongoPemFile)
+				errorLog.Printf("No certs parsed successfully from %s", config.ElasticPemFile)
 			}
 			tlsConfig.RootCAs = certs
 		} else {
@@ -2523,11 +2382,11 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 	return client, err
 }
 
-func doDrop(mongo *mgo.Session, elastic *elastic.Client, op *gtm.Op, config *configOptions) (err error) {
+func doDrop(client *mongo.Client, elastic *elastic.Client, op *gtm.Op, config *configOptions) (err error) {
 	if db, drop := op.IsDropDatabase(); drop {
 		if config.DroppedDatabases {
 			if err = deleteIndexes(elastic, db, config); err == nil {
-				if e := dropDBMeta(mongo, db, config); e != nil {
+				if e := dropDBMeta(client, db, config); e != nil {
 					errorLog.Printf("Unable to delete metadata for db: %s", e)
 				}
 			}
@@ -2535,7 +2394,7 @@ func doDrop(mongo *mgo.Session, elastic *elastic.Client, op *gtm.Op, config *con
 	} else if col, drop := op.IsDropCollection(); drop {
 		if config.DroppedCollections {
 			if err = deleteIndex(elastic, op.GetDatabase()+"."+col, config); err == nil {
-				if e := dropCollectionMeta(mongo, op.GetDatabase()+"."+col, config); e != nil {
+				if e := dropCollectionMeta(client, op.GetDatabase()+"."+col, config); e != nil {
 					errorLog.Printf("Unable to delete metadata for collection: %s", e)
 				}
 			}
@@ -2558,7 +2417,7 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 	if op.IsSourceDirect() {
 		return nil
 	}
-	if op.Timestamp == 0 {
+	if op.Timestamp.T == 0 {
 		return nil
 	}
 	if op.IsUpdate() {
@@ -2601,7 +2460,7 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 						if toJSON, err = json.Marshal(op.Data); err == nil {
 							if mergeDoc, err = jsonpatch.CreateMergePatch(fromJSON, toJSON); err == nil {
 								merge := make(map[string]interface{})
-								merge["ts"] = op.Timestamp >> 32
+								merge["ts"] = op.Timestamp.T
 								merge["p"] = string(mergeDoc)
 								merge["v"] = len(merges) + 1
 								merges = append(merges, merge)
@@ -2620,7 +2479,7 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 			if toJSON, err = json.Marshal(op.Data); err == nil {
 				merge := make(map[string]interface{})
 				merge["v"] = 1
-				merge["ts"] = op.Timestamp >> 32
+				merge["ts"] = op.Timestamp.T
 				merge["p"] = string(toJSON)
 				merges = append(merges, merge)
 				op.Data[config.MergePatchAttr] = merges
@@ -2630,7 +2489,7 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 	return
 }
 
-func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op) (err error) {
+func doIndexing(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op) (err error) {
 	meta := parseIndexMeta(op)
 	if meta.Skip {
 		return
@@ -2739,7 +2598,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 			}
 			data["_source_id"] = objectID
 			if config.IndexOplogTime == false {
-				secs := int64(op.Timestamp >> 32)
+				secs := int64(op.Timestamp.T)
 				t := time.Unix(secs, 0).UTC()
 				data[config.OplogTsFieldName] = op.Timestamp
 				data[config.OplogDateFieldName] = t.Format(config.OplogDateFieldFormat)
@@ -2770,7 +2629,7 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 	return
 }
 
-func doIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op) (err error) {
+func doIndex(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op) (err error) {
 	if err = mapData(mongo, config, op); err == nil {
 		if op.Data != nil {
 			err = doIndexing(config, mongo, bulk, client, op)
@@ -2781,9 +2640,7 @@ func doIndex(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProces
 	return
 }
 
-func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op) (err error) {
-	session := mongo.Copy()
-	defer session.Close()
+func runProcessor(mongo *mongo.Client, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op) (err error) {
 	input := &monstachemap.ProcessPluginInput{
 		ElasticClient:        client,
 		ElasticBulkProcessor: bulk,
@@ -2799,13 +2656,13 @@ func runProcessor(mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elast
 	input.Database = op.GetDatabase()
 	input.Collection = op.GetCollection()
 	input.Operation = op.Operation
-	input.Session = session
+	input.MongoClient = mongo
 	input.UpdateDescription = op.UpdateDescription
 	err = processPlugin(input)
 	return
 }
 
-func routeOp(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, out *outputChans) (err error) {
+func routeOp(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op, out *outputChans) (err error) {
 	if processPlugin != nil {
 		rop := &gtm.Op{
 			Id:                op.Id,
@@ -2954,17 +2811,17 @@ func doIndexStats(config *configOptions, bulkStats *elastic.BulkProcessor, stats
 	return
 }
 
-func dropDBMeta(session *mgo.Session, db string, config *configOptions) (err error) {
-	col := session.DB(config.ConfigDatabaseName).C("meta")
+func dropDBMeta(client *mongo.Client, db string, config *configOptions) (err error) {
+	col := client.Database(config.ConfigDatabaseName).Collection("meta")
 	q := bson.M{"db": db}
-	_, err = col.RemoveAll(q)
+	_, err = col.DeleteMany(context.Background(), q)
 	return
 }
 
-func dropCollectionMeta(session *mgo.Session, namespace string, config *configOptions) (err error) {
-	col := session.DB(config.ConfigDatabaseName).C("meta")
+func dropCollectionMeta(client *mongo.Client, namespace string, config *configOptions) (err error) {
+	col := client.Database(config.ConfigDatabaseName).Collection("meta")
 	q := bson.M{"namespace": namespace}
-	_, err = col.RemoveAll(q)
+	_, err = col.DeleteMany(context.Background(), q)
 	return
 }
 
@@ -3024,84 +2881,97 @@ func (meta *indexingMeta) shouldSave(config *configOptions) bool {
 	return false
 }
 
-func setIndexMeta(session *mgo.Session, namespace, id string, meta *indexingMeta, config *configOptions) error {
-	col := session.DB(config.ConfigDatabaseName).C("meta")
+func setIndexMeta(client *mongo.Client, namespace, id string, meta *indexingMeta, config *configOptions) error {
+	col := client.Database(config.ConfigDatabaseName).Collection("meta")
 	metaID := fmt.Sprintf("%s.%s", namespace, id)
-	doc := make(map[string]interface{})
-	doc["id"] = meta.ID
-	doc["routing"] = meta.Routing
-	doc["index"] = meta.Index
-	doc["type"] = meta.Type
-	doc["parent"] = meta.Parent
-	doc["pipeline"] = meta.Pipeline
-	doc["db"] = strings.SplitN(namespace, ".", 2)[0]
-	doc["namespace"] = namespace
-	_, err := col.UpsertId(metaID, bson.M{"$set": doc})
+	doc := map[string]interface{}{
+		"id":        meta.ID,
+		"routing":   meta.Routing,
+		"index":     meta.Index,
+		"type":      meta.Type,
+		"parent":    meta.Parent,
+		"pipeline":  meta.Pipeline,
+		"db":        strings.SplitN(namespace, ".", 2)[0],
+		"namespace": namespace,
+	}
+	opts := options.Update()
+	opts.SetUpsert(true)
+	_, err := col.UpdateOne(context.Background(), bson.M{
+		"_id": metaID,
+	}, bson.M{
+		"$set": doc,
+	}, opts)
 	return err
 }
 
-func getIndexMeta(session *mgo.Session, namespace, id string, config *configOptions) (meta *indexingMeta) {
+func getIndexMeta(client *mongo.Client, namespace, id string, config *configOptions) (meta *indexingMeta) {
 	meta = &indexingMeta{}
-	col := session.DB(config.ConfigDatabaseName).C("meta")
-	doc := make(map[string]interface{})
+	col := client.Database(config.ConfigDatabaseName).Collection("meta")
 	metaID := fmt.Sprintf("%s.%s", namespace, id)
-	col.FindId(metaID).One(doc)
-	if doc["id"] != nil {
-		meta.ID = doc["id"].(string)
+	result := col.FindOne(context.Background(), bson.M{
+		"_id": metaID,
+	})
+	if err := result.Err(); err == nil {
+		doc := make(map[string]interface{})
+		if err = result.Decode(&doc); err == nil {
+			if doc["id"] != nil {
+				meta.ID = doc["id"].(string)
+			}
+			if doc["routing"] != nil {
+				meta.Routing = doc["routing"].(string)
+			}
+			if doc["index"] != nil {
+				meta.Index = strings.ToLower(doc["index"].(string))
+			}
+			if doc["type"] != nil {
+				meta.Type = doc["type"].(string)
+			}
+			if doc["parent"] != nil {
+				meta.Parent = doc["parent"].(string)
+			}
+			if doc["pipeline"] != nil {
+				meta.Pipeline = doc["pipeline"].(string)
+			}
+			col.DeleteOne(context.Background(), bson.M{"_id": metaID})
+		}
 	}
-	if doc["routing"] != nil {
-		meta.Routing = doc["routing"].(string)
-	}
-	if doc["index"] != nil {
-		meta.Index = strings.ToLower(doc["index"].(string))
-	}
-	if doc["type"] != nil {
-		meta.Type = doc["type"].(string)
-	}
-	if doc["parent"] != nil {
-		meta.Parent = doc["parent"].(string)
-	}
-	if doc["pipeline"] != nil {
-		meta.Pipeline = doc["pipeline"].(string)
-	}
-	col.RemoveId(metaID)
 	return
 }
 
-func loadBuiltinFunctions(s *mgo.Session, config *configOptions) {
+func loadBuiltinFunctions(client *mongo.Client, config *configOptions) {
 	for ns, env := range mapEnvs {
 		var fa *findConf
 		fa = &findConf{
-			session: s,
-			name:    "findId",
-			vm:      env.VM,
-			ns:      ns,
-			byId:    true,
+			client: client,
+			name:   "findId",
+			vm:     env.VM,
+			ns:     ns,
+			byId:   true,
 		}
 		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
 			panic(err)
 		}
 		fa = &findConf{
-			session: s,
-			name:    "findOne",
-			vm:      env.VM,
-			ns:      ns,
+			client: client,
+			name:   "findOne",
+			vm:     env.VM,
+			ns:     ns,
 		}
 		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
 			panic(err)
 		}
 		fa = &findConf{
-			session: s,
-			name:    "find",
-			vm:      env.VM,
-			ns:      ns,
-			multi:   true,
+			client: client,
+			name:   "find",
+			vm:     env.VM,
+			ns:     ns,
+			multi:  true,
 		}
 		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
 			panic(err)
 		}
 		fa = &findConf{
-			session:       s,
+			client:        client,
 			name:          "pipe",
 			vm:            env.VM,
 			ns:            ns,
@@ -3154,8 +3024,12 @@ func (fc *findCall) setSelect(topts map[string]interface{}) (err error) {
 
 func (fc *findCall) setSort(topts map[string]interface{}) (err error) {
 	if ov, ok := topts["sort"]; ok {
-		if ovs, ok := ov.([]string); ok {
-			fc.sort = ovs
+		if ovsort, ok := ov.(map[string]interface{}); ok {
+			for k, v := range ovsort {
+				if vi, ok := v.(int64); ok {
+					fc.sort[k] = int(vi)
+				}
+			}
 		} else {
 			err = errors.New("Invalid sort option value")
 		}
@@ -3222,8 +3096,8 @@ func (fc *findCall) setDefaults() {
 	}
 }
 
-func (fc *findCall) getCollection() *mgo.Collection {
-	return fc.session.DB(fc.db).C(fc.col)
+func (fc *findCall) getCollection() *mongo.Collection {
+	return fc.client.Database(fc.db).Collection(fc.col)
 }
 
 func (fc *findCall) getVM() *otto.Otto {
@@ -3253,8 +3127,8 @@ func (fc *findCall) logError(err error) {
 func (fc *findCall) restoreIds(v interface{}) (r interface{}) {
 	switch vt := v.(type) {
 	case string:
-		if bson.IsObjectIdHex(vt) {
-			r = bson.ObjectIdHex(vt)
+		if oi, err := primitive.ObjectIDFromHex(vt); err == nil {
+			r = oi
 		} else {
 			r = v
 		}
@@ -3287,55 +3161,57 @@ func (fc *findCall) restoreIds(v interface{}) (r interface{}) {
 }
 
 func (fc *findCall) execute() (r otto.Value, err error) {
-	var q *mgo.Query
+	var cursor *mongo.Cursor
 	col := fc.getCollection()
+	query := fc.query
 	if fc.isMulti() {
 		if fc.isPipe() {
-			pipe := col.Pipe(fc.query)
-			if fc.pipeAllowDisk() {
-				pipe = pipe.AllowDiskUse()
-			}
-			var docs []map[string]interface{}
-			if err = pipe.All(&docs); err == nil {
-				var rdocs []map[string]interface{}
-				for _, doc := range docs {
-					rdocs = append(rdocs, convertMapJavascript(doc))
-				}
-				r, err = fc.getVM().ToValue(rdocs)
+			ao := options.Aggregate()
+			ao.SetAllowDiskUse(fc.pipeAllowDisk())
+			cursor, err = col.Aggregate(context.Background(), query, ao)
+			if err != nil {
+				return
 			}
 		} else {
-			q = col.Find(fc.query)
+			fo := options.Find()
 			if fc.limit > 0 {
-				q.Limit(fc.limit)
+				fo.SetLimit(int64(fc.limit))
 			}
 			if len(fc.sort) > 0 {
-				q.Sort(fc.sort...)
+				fo.SetSort(fc.sort)
 			}
 			if len(fc.sel) > 0 {
-				q.Select(fc.sel)
+				fo.SetProjection(fc.sel)
 			}
-			var docs []map[string]interface{}
-			if err = q.All(&docs); err == nil {
-				var rdocs []map[string]interface{}
-				for _, doc := range docs {
-					rdocs = append(rdocs, convertMapJavascript(doc))
-				}
-				r, err = fc.getVM().ToValue(rdocs)
+			cursor, err = col.Find(context.Background(), query, fo)
+			if err != nil {
+				return
 			}
 		}
+		var rdocs []map[string]interface{}
+		for cursor.Next(context.Background()) {
+			doc := make(map[string]interface{})
+			if err = cursor.Decode(&doc); err != nil {
+				return
+			}
+			rdocs = append(rdocs, convertMapJavascript(doc))
+		}
+		r, err = fc.getVM().ToValue(rdocs)
 	} else {
+		fo := options.FindOne()
 		if fc.config.byId {
-			q = col.FindId(fc.query)
-		} else {
-			q = col.Find(fc.query)
+			query = bson.M{"_id": query}
 		}
 		if len(fc.sel) > 0 {
-			q.Select(fc.sel)
+			fo.SetProjection(fc.sel)
 		}
-		doc := make(map[string]interface{})
-		if err = q.One(doc); err == nil {
-			rdoc := convertMapJavascript(doc)
-			r, err = fc.getVM().ToValue(rdoc)
+		result := col.FindOne(context.Background(), query, fo)
+		if err = result.Err(); err == nil {
+			doc := make(map[string]interface{})
+			if err = result.Decode(&doc); err == nil {
+				rdoc := convertMapJavascript(doc)
+				r, err = fc.getVM().ToValue(rdoc)
+			}
 		}
 	}
 	return
@@ -3345,11 +3221,11 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 	return func(call otto.FunctionCall) (r otto.Value) {
 		var err error
 		fc := &findCall{
-			config:  fa,
-			session: fa.session.Copy(),
-			sel:     make(map[string]int),
+			config: fa,
+			client: fa.client,
+			sort:   make(map[string]int),
+			sel:    make(map[string]int),
 		}
-		defer fc.session.Close()
 		fc.setDefaults()
 		args := call.ArgumentList
 		argLen := len(args)
@@ -3417,7 +3293,7 @@ func findDeletedSrcDoc(config *configOptions, client *elastic.Client, op *gtm.Op
 	return nil
 }
 
-func doDelete(config *configOptions, client *elastic.Client, mongo *mgo.Session, bulk *elastic.BulkProcessor, op *gtm.Op) {
+func doDelete(config *configOptions, client *elastic.Client, mongo *mongo.Client, bulk *elastic.BulkProcessor, op *gtm.Op) {
 	req := elastic.NewBulkDeleteRequest()
 	req.UseEasyJSON(config.EnableEasyJSON)
 	if config.DeleteStrategy == ignoreDeleteStrategy {
@@ -3426,7 +3302,7 @@ func doDelete(config *configOptions, client *elastic.Client, mongo *mgo.Session,
 	objectID, indexType, meta := opIDToString(op), mapIndexType(config, op), &indexingMeta{}
 	req.Id(objectID)
 	if config.IndexAsUpdate == false {
-		req.Version(int64(op.Timestamp))
+		req.Version(int64(op.Timestamp.T))
 		req.VersionType("external")
 	}
 	if config.DeleteStrategy == statefulDeleteStrategy {
@@ -3596,7 +3472,7 @@ func notifySd(config *configOptions) {
 }
 
 func (config *configOptions) makeShardInsertHandler() gtm.ShardInsertHandler {
-	return func(shardInfo *gtm.ShardInfo) (*mgo.Session, error) {
+	return func(shardInfo *gtm.ShardInfo) (*mongo.Client, error) {
 		shardURL := shardInfo.GetURL()
 		infoLog.Printf("Adding shard found at %s\n", cleanMongoURL(shardURL))
 		return config.dialMongo(shardURL)
@@ -3655,7 +3531,7 @@ func buildPipe(config *configOptions) func(string, bool) ([]interface{}, error) 
 	return nil
 }
 
-func shutdown(timeout int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulkStats *elastic.BulkProcessor, mongo *mgo.Session, config *configOptions) {
+func shutdown(timeout int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulkStats *elastic.BulkProcessor, mongo *mongo.Client, config *configOptions) {
 	infoLog.Println("Shutting down")
 	closeC := make(chan bool)
 	go func() {
@@ -3702,14 +3578,23 @@ func handlePanic() {
 	}
 }
 
+func getBuildInfo(client *mongo.Client) (bi *buildInfo, err error) {
+	db := client.Database("admin")
+	result := db.RunCommand(context.Background(), bson.M{
+		"buildInfo": 1,
+	})
+	if err = result.Err(); err == nil {
+		bi = &buildInfo{}
+		err = result.Decode(bi)
+	}
+	return
+}
+
 func main() {
 	enabled := true
 	defer handlePanic()
 	config := &configOptions{
-		MongoValidatePemFile: true,
-		MongoDialSettings:    mongoDialSettings{Timeout: -1, ReadTimeout: -1, WriteTimeout: -1},
-		MongoSessionSettings: mongoSessionSettings{SocketTimeout: -1, SyncTimeout: -1},
-		GtmSettings:          gtmDefaultSettings(),
+		GtmSettings: gtmDefaultSettings(),
 	}
 	config.parseCommandLineFlags()
 	if config.Version {
@@ -3733,18 +3618,18 @@ func main() {
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
-	mongo, err := config.dialMongo(config.MongoURL)
+	mongoClient, err := config.dialMongo(config.MongoURL)
 	if err != nil {
 		panic(fmt.Sprintf("Unable to connect to MongoDB using URL %s: %s", cleanMongoURL(config.MongoURL), err))
 	}
 	infoLog.Printf("Started monstache version %s", version)
-	if mongoInfo, err := mongo.BuildInfo(); err == nil {
+	if mongoInfo, err := getBuildInfo(mongoClient); err == nil {
 		infoLog.Printf("Successfully connected to MongoDB version %s", mongoInfo.Version)
 	} else {
 		infoLog.Println("Successfully connected to MongoDB")
 	}
-	defer mongo.Close()
-	loadBuiltinFunctions(mongo, config)
+	defer mongoClient.Disconnect(context.Background())
+	loadBuiltinFunctions(mongoClient, config)
 
 	elasticClient, err := config.newElasticClient()
 	if err != nil {
@@ -3775,25 +3660,35 @@ func main() {
 
 	var after gtm.TimestampGenerator
 	if config.Replay {
-		after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
-			return bson.MongoTimestamp(0)
+		after = func(client *mongo.Client, options *gtm.Options) (primitive.Timestamp, error) {
+			return primitive.Timestamp{}, nil
 		}
 	} else if config.ResumeFromTimestamp != 0 {
-		after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
-			return bson.MongoTimestamp(config.ResumeFromTimestamp)
+		after = func(client *mongo.Client, options *gtm.Options) (primitive.Timestamp, error) {
+			return primitive.Timestamp{
+				T: uint32(config.ResumeFromTimestamp >> 32),
+				I: uint32(config.ResumeFromTimestamp),
+			}, nil
 		}
 	} else if config.Resume {
-		after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
-			var ts bson.MongoTimestamp
-			collection := session.DB(config.ConfigDatabaseName).C("monstache")
-			doc := make(map[string]interface{})
-			collection.FindId(config.ResumeName).One(doc)
-			if doc["ts"] != nil {
-				ts = doc["ts"].(bson.MongoTimestamp)
-			} else {
-				ts = gtm.LastOpTimestamp(session, options)
+		after = func(client *mongo.Client, options *gtm.Options) (primitive.Timestamp, error) {
+			var ts primitive.Timestamp
+			col := client.Database(config.ConfigDatabaseName).Collection("monstache")
+			result := col.FindOne(context.Background(), bson.M{
+				"_id": config.ResumeName,
+			})
+			if err = result.Err(); err == nil {
+				doc := make(map[string]interface{})
+				if err = result.Decode(&doc); err == nil {
+					if doc["ts"] != nil {
+						ts = doc["ts"].(primitive.Timestamp)
+					}
+				}
 			}
-			return ts
+			if ts.T == 0 {
+				ts, _ = gtm.LastOpTimestamp(client, options)
+			}
+			return ts, nil
 		}
 	}
 
@@ -3843,20 +3738,13 @@ func main() {
 	nsFilter = gtm.ChainOpFilters(filterChain...)
 	filter = gtm.ChainOpFilters(filterArray...)
 	directReadFilter = gtm.ChainOpFilters(filterArray...)
-	var oplogDatabaseName, oplogCollectionName *string
-	if config.MongoOpLogDatabaseName != "" {
-		oplogDatabaseName = &config.MongoOpLogDatabaseName
-	}
-	if config.MongoOpLogCollectionName != "" {
-		oplogCollectionName = &config.MongoOpLogCollectionName
-	}
 	if config.ClusterName != "" {
-		if err = ensureClusterTTL(mongo, config); err == nil {
+		if err = ensureClusterTTL(mongoClient, config); err == nil {
 			infoLog.Printf("Joined cluster %s", config.ClusterName)
 		} else {
 			panic(fmt.Sprintf("Unable to enable cluster mode: %s", err))
 		}
-		enabled, err = enableProcess(mongo, config)
+		enabled, err = enableProcess(mongoClient, config)
 		if err != nil {
 			panic(fmt.Sprintf("Unable to determine enabled cluster process: %s", err))
 		}
@@ -3865,8 +3753,8 @@ func main() {
 	if err != nil {
 		panic(fmt.Sprintf("Unable to parse gtm buffer duration %s: %s", config.GtmSettings.BufferDuration, err))
 	}
-	var mongos []*mgo.Session
-	var configSession *mgo.Session
+	var mongos []*mongo.Client
+	var configSession *mongo.Client
 	if config.readShards() {
 		// if we have a config server URL then we are running in a sharded cluster
 		configSession, err = config.dialMongo(config.MongoConfigURL)
@@ -3886,38 +3774,32 @@ func main() {
 			if err != nil {
 				panic(fmt.Sprintf("Unable to connect to mongodb shard using URL %s: %s", cleanMongoURL(shardURL), err))
 			}
-			defer shard.Close()
+			defer shard.Disconnect(context.Background())
 			mongos = append(mongos, shard)
 		}
 	} else {
-		mongos = append(mongos, mongo)
-	}
-
-	changeStreamNs := config.ChangeStreamNs
-	if config.DisableChangeEvents {
-		changeStreamNs = []string{}
+		mongos = append(mongos, mongoClient)
 	}
 
 	gtmOpts := &gtm.Options{
 		After:               after,
 		Filter:              filter,
 		NamespaceFilter:     nsFilter,
-		OpLogDisabled:       config.DisableChangeEvents || len(config.ChangeStreamNs) > 0,
-		OpLogDatabaseName:   oplogDatabaseName,
-		OpLogCollectionName: oplogCollectionName,
+		OpLogDisabled:       config.EnableOplog == false,
+		OpLogDatabaseName:   config.MongoOpLogDatabaseName,
+		OpLogCollectionName: config.MongoOpLogCollectionName,
 		ChannelSize:         config.GtmSettings.ChannelSize,
 		Ordering:            gtm.AnyOrder,
 		WorkerCount:         10,
 		BufferDuration:      gtmBufferDuration,
 		BufferSize:          config.GtmSettings.BufferSize,
 		DirectReadNs:        config.DirectReadNs,
-		DirectReadSplitMax:  config.DirectReadSplitMax,
+		DirectReadSplitMax:  int32(config.DirectReadSplitMax),
 		DirectReadConcur:    config.DirectReadConcur,
 		DirectReadFilter:    directReadFilter,
 		Log:                 infoLog,
 		Pipe:                buildPipe(config),
-		PipeAllowDisk:       config.PipeAllowDisk,
-		ChangeStreamNs:      changeStreamNs,
+		ChangeStreamNs:      config.ChangeStreamNs,
 	}
 
 	gtmCtx := gtm.StartMulti(mongos, gtmOpts)
@@ -3965,12 +3847,12 @@ func main() {
 	go func() {
 		<-sigs
 		if enabled {
-			shutdown(10, hsc, bulk, bulkStats, mongo, config)
+			shutdown(10, hsc, bulk, bulkStats, mongoClient, config)
 		} else {
 			shutdown(10, hsc, nil, nil, nil, config)
 		}
 	}()
-	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
+	var lastTs, lastTsSaved primitive.Timestamp
 	var allOpsVisited bool
 	var fileWg, indexWg, processWg, relateWg sync.WaitGroup
 	doneC := make(chan int)
@@ -3988,7 +3870,7 @@ func main() {
 			go func() {
 				defer relateWg.Done()
 				for op := range outputChs.relateC {
-					if err := processRelated(mongo, config, op, outputChs); err != nil {
+					if err := processRelated(mongoClient, config, op, outputChs); err != nil {
 						processErr(err, config)
 					}
 				}
@@ -4000,7 +3882,7 @@ func main() {
 		go func() {
 			defer indexWg.Done()
 			for op := range outputChs.indexC {
-				if err := doIndex(config, mongo, bulk, elasticClient, op); err != nil {
+				if err := doIndex(config, mongoClient, bulk, elasticClient, op); err != nil {
 					processErr(err, config)
 				}
 			}
@@ -4011,7 +3893,7 @@ func main() {
 		go func() {
 			defer fileWg.Done()
 			for op := range outputChs.fileC {
-				err := addFileContent(mongo, op, config)
+				err := addFileContent(mongoClient, op, config)
 				if err != nil {
 					processErr(err, config)
 				}
@@ -4024,7 +3906,7 @@ func main() {
 		go func() {
 			defer processWg.Done()
 			for op := range outputChs.processC {
-				if err := runProcessor(mongo, bulk, elasticClient, op); err != nil {
+				if err := runProcessor(mongoClient, bulk, elasticClient, op); err != nil {
 					processErr(err, config)
 				}
 			}
@@ -4054,11 +3936,11 @@ func main() {
 		gtmCtx.Pause()
 		bulk.Stop()
 		for range heartBeat.C {
-			enabled, err = enableProcess(mongo, config)
+			enabled, err = enableProcess(mongoClient, config)
 			if enabled {
 				infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
 				bulk.Start(context.Background())
-				resumeWork(gtmCtx, mongo, config)
+				resumeWork(gtmCtx, mongoClient, config)
 				break
 			}
 		}
@@ -4068,7 +3950,7 @@ func main() {
 		case timeout := <-doneC:
 			if enabled {
 				enabled = false
-				shutdown(timeout, hsc, bulk, bulkStats, mongo, config)
+				shutdown(timeout, hsc, bulk, bulkStats, mongoClient, config)
 			} else {
 				shutdown(timeout, hsc, nil, nil, nil, config)
 			}
@@ -4077,10 +3959,11 @@ func main() {
 			if !enabled {
 				break
 			}
-			if lastTimestamp > lastSavedTimestamp {
+			if lastTs.T > lastTsSaved.T ||
+				(lastTs.T == lastTsSaved.T && lastTs.I > lastTsSaved.I) {
 				bulk.Flush()
-				if saveTimestamp(mongo, lastTimestamp, config); err == nil {
-					lastSavedTimestamp = lastTimestamp
+				if saveTimestamp(mongoClient, lastTs, config); err == nil {
+					lastTsSaved = lastTs
 				} else {
 					processErr(err, config)
 				}
@@ -4090,27 +3973,30 @@ func main() {
 				break
 			}
 			if enabled {
-				enabled, err = ensureEnabled(mongo, config)
+				enabled, err = ensureEnabled(mongoClient, config)
+				if err != nil {
+					processErr(err, config)
+				}
 				if !enabled {
 					infoLog.Printf("Pausing work for cluster %s", config.ClusterName)
 					gtmCtx.Pause()
 					bulk.Stop()
 					for range heartBeat.C {
-						enabled, err = enableProcess(mongo, config)
+						enabled, err = enableProcess(mongoClient, config)
 						if enabled {
 							infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
 							bulk.Start(context.Background())
-							resumeWork(gtmCtx, mongo, config)
+							resumeWork(gtmCtx, mongoClient, config)
 							break
 						}
 					}
 				}
 			} else {
-				enabled, err = enableProcess(mongo, config)
+				enabled, err = enableProcess(mongoClient, config)
 				if enabled {
 					infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
 					bulk.Start(context.Background())
-					resumeWork(gtmCtx, mongo, config)
+					resumeWork(gtmCtx, mongoClient, config)
 				}
 			}
 			if err != nil {
@@ -4149,9 +4035,9 @@ func main() {
 				break
 			}
 			if op.IsSourceOplog() {
-				lastTimestamp = op.Timestamp
+				lastTs = op.Timestamp
 			}
-			if err = routeOp(config, mongo, bulk, elasticClient, op, outputChs); err != nil {
+			if err = routeOp(config, mongoClient, bulk, elasticClient, op, outputChs); err != nil {
 				processErr(err, config)
 			}
 		}
