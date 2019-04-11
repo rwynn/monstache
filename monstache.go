@@ -2551,7 +2551,7 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 		certs := x509.NewCertPool()
 		if ca, err = ioutil.ReadFile(config.ElasticPemFile); err == nil {
 			if ok := certs.AppendCertsFromPEM(ca); !ok {
-				errorLog.Printf("No certs parsed successfully from %s", config.MongoPemFile)
+				errorLog.Printf("No certs parsed successfully from %s", config.ElasticPemFile)
 			}
 			tlsConfig.RootCAs = certs
 		} else {
