@@ -3702,6 +3702,21 @@ func handlePanic() {
 	}
 }
 
+func saveTimestampFromReplStatus(session *mgo.Session, config *configOptions) {
+	if rs, err := gtm.GetReplStatus(session); err == nil {
+		var ts bson.MongoTimestamp
+		if ts, err = rs.GetLastCommitted(); err == nil {
+			if err = saveTimestamp(session, ts, config); err != nil {
+				processErr(err, config)
+			}
+		} else {
+			processErr(err, config)
+		}
+	} else {
+		processErr(err, config)
+	}
+}
+
 func main() {
 	enabled := true
 	defer handlePanic()
@@ -4034,6 +4049,9 @@ func main() {
 		go func() {
 			gtmCtx.DirectReadWg.Wait()
 			infoLog.Println("Direct reads completed")
+			if config.Resume {
+				saveTimestampFromReplStatus(mongo, config)
+			}
 			if config.ExitAfterDirectReads {
 				gtmCtx.Stop()
 				<-opsConsumed
