@@ -3609,6 +3609,21 @@ func getBuildInfo(client *mongo.Client) (bi *buildInfo, err error) {
 	return
 }
 
+func saveTimestampFromReplStatus(client *mongo.Client, config *configOptions) {
+	if rs, err := gtm.GetReplStatus(client); err == nil {
+		var ts primitive.Timestamp
+		if ts, err = rs.GetLastCommitted(); err == nil {
+			if err = saveTimestamp(client, ts, config); err != nil {
+				processErr(err, config)
+			}
+		} else {
+			processErr(err, config)
+		}
+	} else {
+		processErr(err, config)
+	}
+}
+
 func main() {
 	enabled := true
 	defer handlePanic()
@@ -3935,6 +3950,9 @@ func main() {
 		go func() {
 			gtmCtx.DirectReadWg.Wait()
 			infoLog.Println("Direct reads completed")
+			if config.Resume {
+				saveTimestampFromReplStatus(mongoClient, config)
+			}
 			if config.ExitAfterDirectReads {
 				infoLog.Println("Stopping all workers")
 				gtmCtx.Stop()
