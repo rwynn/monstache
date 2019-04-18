@@ -12,11 +12,11 @@ This version of monstache targets MongoDB 3.6+ and Elasticsearch 6+.
 
 ### Changes from previous versions
 
-Monstache now defaults to use change streams instead of tailing the oplog for changes.  Without an configuration
+Monstache now defaults to use change streams instead of tailing the oplog for changes.  Without any configuration
 monstache watches the entire MongoDB deployment.  You can specify specific namespaces to watch by setting the option
-`change-stream-namespaces` to an arry of strings.
+`change-stream-namespaces` to an array of strings.
 
-The interface for golang plugins have changed due to the switch to the new driver. Previously the API exposed
+The interface for golang plugins has changed due to the switch to the new driver. Previously the API exposed
 a `Session` field typed as a `*mgo.Session`.  Now that has been replaced with a `MongoClient` field which has the type
 `*mongo.Client`. 
 
