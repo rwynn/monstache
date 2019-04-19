@@ -2955,16 +2955,20 @@ func doIndexStats(config *configOptions, bulkStats *elastic.BulkProcessor, stats
 }
 
 func dropDBMeta(session *mgo.Session, db string, config *configOptions) (err error) {
-	col := session.DB(config.ConfigDatabaseName).C("meta")
-	q := bson.M{"db": db}
-	_, err = col.RemoveAll(q)
+	if config.DeleteStrategy == statefulDeleteStrategy {
+		col := session.DB(config.ConfigDatabaseName).C("meta")
+		q := bson.M{"db": db}
+		_, err = col.RemoveAll(q)
+	}
 	return
 }
 
 func dropCollectionMeta(session *mgo.Session, namespace string, config *configOptions) (err error) {
-	col := session.DB(config.ConfigDatabaseName).C("meta")
-	q := bson.M{"namespace": namespace}
-	_, err = col.RemoveAll(q)
+	if config.DeleteStrategy == statefulDeleteStrategy {
+		col := session.DB(config.ConfigDatabaseName).C("meta")
+		q := bson.M{"namespace": namespace}
+		_, err = col.RemoveAll(q)
+	}
 	return
 }
 
