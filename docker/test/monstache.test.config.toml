@@ -1,12 +1,10 @@
-gzip = true
-
 mongo-url = "mongodb://root-user:password@mongo-0:27017"
 
-change-stream-namespaces = ["test"]
+change-stream-namespaces = [""]
 
 elasticsearch-urls = ["http://es6:9200"]
 
-elasticsearch-max-conns = 10
+elasticsearch-max-conns = 1
 
 elasticsearch-max-seconds = 1
 
