@@ -3722,6 +3722,7 @@ func main() {
 			if ts.T == 0 {
 				ts, _ = gtm.LastOpTimestamp(client, options)
 			}
+			infoLog.Printf("Resuming from timestamp %+v", ts)
 			return ts, nil
 		}
 	}
