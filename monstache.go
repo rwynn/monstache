@@ -3,6 +3,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -27,7 +28,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/gridfs"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"golang.org/x/net/context"
 	"gopkg.in/Graylog2/go-gelf.v2/gelf"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"io/ioutil"
@@ -2825,16 +2825,20 @@ func doIndexStats(config *configOptions, bulkStats *elastic.BulkProcessor, stats
 }
 
 func dropDBMeta(client *mongo.Client, db string, config *configOptions) (err error) {
-	col := client.Database(config.ConfigDatabaseName).Collection("meta")
-	q := bson.M{"db": db}
-	_, err = col.DeleteMany(context.Background(), q)
+	if config.DeleteStrategy == statefulDeleteStrategy {
+		col := client.Database(config.ConfigDatabaseName).Collection("meta")
+		q := bson.M{"db": db}
+		_, err = col.DeleteMany(context.Background(), q)
+	}
 	return
 }
 
 func dropCollectionMeta(client *mongo.Client, namespace string, config *configOptions) (err error) {
-	col := client.Database(config.ConfigDatabaseName).Collection("meta")
-	q := bson.M{"namespace": namespace}
-	_, err = col.DeleteMany(context.Background(), q)
+	if config.DeleteStrategy == statefulDeleteStrategy {
+		col := client.Database(config.ConfigDatabaseName).Collection("meta")
+		q := bson.M{"namespace": namespace}
+		_, err = col.DeleteMany(context.Background(), q)
+	}
 	return
 }
 
