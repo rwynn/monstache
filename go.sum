@@ -29,8 +29,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d h1:1VUlQbCfkoSGv7qP7Y+ro3ap1P1pPZxgdGVqiTVy5C4=
 github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d/go.mod h1:xvqspoSXJTIpemEonrMDFq6XzwHYYgToXWj5eRX1OtY=
-github.com/rwynn/gtm v0.0.0-20190418210833-17dc9158b6d1 h1:SfcueumcjZsnXdwDBk0Jm7ZCVcA7uu/X3vtYIIpBDfc=
-github.com/rwynn/gtm v0.0.0-20190418210833-17dc9158b6d1/go.mod h1:LYXeTMjbA7l9k9oEM+NUBuu0BgvNrD5nQuo8seLsar0=
+github.com/rwynn/gtm v0.0.0-20190419152445-05a1d37d02fe h1:pTV3k4jXeLEOh7rrV7R4ZMGUFFYyJbeGiWH0D9qTZRA=
+github.com/rwynn/gtm v0.0.0-20190419152445-05a1d37d02fe/go.mod h1:LYXeTMjbA7l9k9oEM+NUBuu0BgvNrD5nQuo8seLsar0=
 github.com/rwynn/mgo v0.0.0-20190318130802-4743670bc61d h1:fuuv7D/fC+W9L65/v0U1WbPFFDcLfCQbOr31+BE04t4=
 github.com/rwynn/mgo v0.0.0-20190318130802-4743670bc61d/go.mod h1:A7shUp7a6hZnGy4eE0930GgrQD7Q1hSry97MbwFZupU=
 github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908 h1:RRpyb4kheanCQVyYfOhkZoD/cwClvn12RzHex2ZmHxw=
