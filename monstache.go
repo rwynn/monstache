@@ -15,8 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/coreos/go-systemd/daemon"
 	"github.com/evanphx/json-patch"
-	"github.com/olivere/elastic"
-	aws "github.com/olivere/elastic/aws/v4"
+	"github.com/olivere/elastic/v7"
+	aws "github.com/olivere/elastic/v7/aws/v4"
 	"github.com/robertkrimen/otto"
 	_ "github.com/robertkrimen/otto/underscore"
 	"github.com/rwynn/gtm"
@@ -61,7 +61,7 @@ var pipePlugin func(string, bool) ([]interface{}, error)
 var mapEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var filterEnvs map[string]*executionEnv = make(map[string]*executionEnv)
 var pipeEnvs map[string]*executionEnv = make(map[string]*executionEnv)
-var mapIndexTypes map[string]*indexTypeMapping = make(map[string]*indexTypeMapping)
+var mapIndexTypes map[string]*indexMapping = make(map[string]*indexMapping)
 var relates map[string][]*relation = make(map[string][]*relation)
 var fileNamespaces map[string]bool = make(map[string]bool)
 var patchNamespaces map[string]bool = make(map[string]bool)
@@ -73,7 +73,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
 
-const version = "5.0.0"
+const version = "6.0.0"
 const mongoURLDefault string = "mongodb://localhost:27017"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
@@ -81,7 +81,6 @@ const elasticClientTimeoutDefault int = 0
 const elasticMaxDocsDefault int = -1
 const elasticMaxBytesDefault int = 8 * 1024 * 1024
 const gtmChannelSizeDefault int = 512
-const typeFromFuture string = "_doc"
 const fileDownloadersDefault = 10
 const relateThreadsDefault = 10
 const relateBufferDefault = 1000
@@ -134,10 +133,9 @@ type relation struct {
 	col           string
 }
 
-type indexTypeMapping struct {
+type indexMapping struct {
 	Namespace string
 	Index     string
-	Type      string
 }
 
 type findConf struct {
@@ -272,7 +270,7 @@ type configOptions struct {
 	Script                   []javascript
 	Filter                   []javascript
 	Pipeline                 []javascript
-	Mapping                  []indexTypeMapping
+	Mapping                  []indexMapping
 	Relate                   []relation
 	FileNamespaces           stringargs `toml:"file-namespaces"`
 	PatchNamespaces          stringargs `toml:"patch-namespaces"`
@@ -361,15 +359,6 @@ func afterBulk(executionId int64, requests []elastic.BulkableRequest, response *
 			}
 		}
 	}
-}
-
-func (config *configOptions) useTypeFromFuture() (use bool) {
-	if config.ElasticMajorVersion > 6 {
-		use = true
-	} else if config.ElasticMajorVersion == 6 && config.ElasticMinorVersion >= 2 {
-		use = true
-	}
-	return
 }
 
 func (config *configOptions) parseElasticsearchVersion(number string) (err error) {
@@ -522,26 +511,18 @@ func ensureFileMapping(client *elastic.Client) (err error) {
 	return err
 }
 
-func defaultIndexTypeMapping(config *configOptions, op *gtm.Op) *indexTypeMapping {
-	typeName := typeFromFuture
-	if !config.useTypeFromFuture() {
-		typeName = op.GetCollection()
-	}
-	return &indexTypeMapping{
+func defaultIndexMapping(config *configOptions, op *gtm.Op) *indexMapping {
+	return &indexMapping{
 		Namespace: op.Namespace,
 		Index:     strings.ToLower(op.Namespace),
-		Type:      typeName,
 	}
 }
 
-func mapIndexType(config *configOptions, op *gtm.Op) *indexTypeMapping {
-	mapping := defaultIndexTypeMapping(config, op)
+func mapIndex(config *configOptions, op *gtm.Op) *indexMapping {
+	mapping := defaultIndexMapping(config, op)
 	if m := mapIndexTypes[op.Namespace]; m != nil {
 		if m.Index != "" {
 			mapping.Index = m.Index
-		}
-		if m.Type != "" {
-			mapping.Type = m.Type
 		}
 	}
 	return mapping
@@ -1433,14 +1414,13 @@ func (config *configOptions) loadReplacements() {
 func (config *configOptions) loadIndexTypes() {
 	if config.Mapping != nil {
 		for _, m := range config.Mapping {
-			if m.Namespace != "" && (m.Index != "" || m.Type != "") {
-				mapIndexTypes[m.Namespace] = &indexTypeMapping{
+			if m.Namespace != "" && m.Index != "" {
+				mapIndexTypes[m.Namespace] = &indexMapping{
 					Namespace: m.Namespace,
 					Index:     strings.ToLower(m.Index),
-					Type:      m.Type,
 				}
 			} else {
-				panic("Mappings must specify namespace and at least one of index and type")
+				panic("Mappings must specify namespace and index")
 			}
 		}
 	}
@@ -2424,7 +2404,7 @@ func hasFileContent(op *gtm.Op, config *configOptions) (ingest bool) {
 }
 
 func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
-	objectID string, indexType *indexTypeMapping, meta *indexingMeta) (err error) {
+	objectID string, indexType *indexMapping, meta *indexingMeta) (err error) {
 	var merges []interface{}
 	var toJSON []byte
 	if op.IsSourceDirect() {
@@ -2438,15 +2418,11 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 		service := client.Get()
 		service.Id(objectID)
 		service.Index(indexType.Index)
-		service.Type(indexType.Type)
 		if meta.ID != "" {
 			service.Id(meta.ID)
 		}
 		if meta.Index != "" {
 			service.Index(meta.Index)
-		}
-		if meta.Type != "" {
-			service.Type(meta.Type)
 		}
 		if meta.Routing != "" {
 			service.Routing(meta.Routing)
@@ -2458,7 +2434,7 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 		if resp, err = service.Do(ctx); err == nil {
 			if resp.Found {
 				var src map[string]interface{}
-				if err = json.Unmarshal(*resp.Source, &src); err == nil {
+				if err = json.Unmarshal(resp.Source, &src); err == nil {
 					if val, ok := src[config.MergePatchAttr]; ok {
 						merges = val.([]interface{})
 						for _, m := range merges {
@@ -2508,7 +2484,7 @@ func doIndexing(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkPr
 		return
 	}
 	prepareDataForIndexing(config, op)
-	objectID, indexType := opIDToString(op), mapIndexType(config, op)
+	objectID, indexType := opIDToString(op), mapIndex(config, op)
 	if config.EnablePatches {
 		if patchNamespaces[op.Namespace] {
 			if e := addPatch(config, client, op, objectID, indexType, meta); e != nil {
@@ -2525,7 +2501,6 @@ func doIndexing(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkPr
 		req.UseEasyJSON(config.EnableEasyJSON)
 		req.Id(objectID)
 		req.Index(indexType.Index)
-		req.Type(indexType.Type)
 		req.Doc(op.Data)
 		req.DocAsUpsert(true)
 		if meta.ID != "" {
@@ -2535,7 +2510,6 @@ func doIndexing(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkPr
 			req.Index(meta.Index)
 		}
 		if meta.Type != "" {
-			req.Type(meta.Type)
 		}
 		if meta.Routing != "" {
 			req.Routing(meta.Routing)
@@ -2554,16 +2528,12 @@ func doIndexing(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkPr
 		req.UseEasyJSON(config.EnableEasyJSON)
 		req.Id(objectID)
 		req.Index(indexType.Index)
-		req.Type(indexType.Type)
 		req.Doc(op.Data)
 		if meta.ID != "" {
 			req.Id(meta.ID)
 		}
 		if meta.Index != "" {
 			req.Index(meta.Index)
-		}
-		if meta.Type != "" {
-			req.Type(meta.Type)
 		}
 		if meta.Routing != "" {
 			req.Routing(meta.Routing)
@@ -2619,14 +2589,10 @@ func doIndexing(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkPr
 			req := elastic.NewBulkIndexRequest()
 			req.UseEasyJSON(config.EnableEasyJSON)
 			req.Index(tmIndex(indexType.Index))
-			req.Type(indexType.Type)
 			req.Routing(objectID)
 			req.Doc(data)
 			if meta.Index != "" {
 				req.Index(tmIndex(meta.Index))
-			}
-			if meta.Type != "" {
-				req.Type(meta.Type)
 			}
 			if meta.Pipeline != "" {
 				req.Pipeline(meta.Pipeline)
@@ -2813,11 +2779,7 @@ func doIndexStats(config *configOptions, bulkStats *elastic.BulkProcessor, stats
 	doc["Pid"] = os.Getpid()
 	doc["Stats"] = stats
 	index := strings.ToLower(t.Format(config.StatsIndexFormat))
-	typeName := "stats"
-	if config.useTypeFromFuture() {
-		typeName = typeFromFuture
-	}
-	req := elastic.NewBulkIndexRequest().Index(index).Type(typeName)
+	req := elastic.NewBulkIndexRequest().Index(index)
 	req.UseEasyJSON(config.EnableEasyJSON)
 	req.Doc(doc)
 	bulkStats.Add(req)
@@ -3288,11 +3250,11 @@ func findDeletedSrcDoc(config *configOptions, client *elastic.Client, op *gtm.Op
 		errorLog.Printf("Unable to find deleted document %s", objectID)
 		return nil
 	}
-	if searchResult.Hits.TotalHits == 0 {
+	if searchResult.TotalHits() == 0 {
 		errorLog.Printf("Found no hits for deleted document %s", objectID)
 		return nil
 	}
-	if searchResult.Hits.TotalHits > 1 {
+	if searchResult.TotalHits() > 1 {
 		errorLog.Printf("Found multiple hits for deleted document %s", objectID)
 		return nil
 	}
@@ -3302,7 +3264,7 @@ func findDeletedSrcDoc(config *configOptions, client *elastic.Client, op *gtm.Op
 		return nil
 	}
 	var src map[string]interface{}
-	if err = json.Unmarshal(*hit.Source, &src); err == nil {
+	if err = json.Unmarshal(hit.Source, &src); err == nil {
 		src["_id"] = op.Id
 		return src
 	}
@@ -3322,7 +3284,7 @@ func doDelete(config *configOptions, client *elastic.Client, mongo *mongo.Client
 	if config.DeleteStrategy == ignoreDeleteStrategy {
 		return
 	}
-	objectID, indexType, meta := opIDToString(op), mapIndexType(config, op), &indexingMeta{}
+	objectID, indexType, meta := opIDToString(op), mapIndex(config, op), &indexingMeta{}
 	req.Id(objectID)
 	if config.IndexAsUpdate == false {
 		req.Version(tsVersion(op.Timestamp))
@@ -3333,12 +3295,8 @@ func doDelete(config *configOptions, client *elastic.Client, mongo *mongo.Client
 			meta = getIndexMeta(mongo, op.Namespace, objectID, config)
 		}
 		req.Index(indexType.Index)
-		req.Type(indexType.Type)
 		if meta.Index != "" {
 			req.Index(meta.Index)
-		}
-		if meta.Type != "" {
-			req.Type(meta.Type)
 		}
 		if meta.Routing != "" {
 			req.Routing(meta.Routing)
@@ -3354,7 +3312,7 @@ func doDelete(config *configOptions, client *elastic.Client, mongo *mongo.Client
 				errorLog.Printf("Unable to delete document %s: %s", objectID, err)
 				return
 			}
-			if searchResult.Hits != nil && searchResult.Hits.TotalHits == 1 {
+			if searchResult.Hits != nil && searchResult.TotalHits() == 1 {
 				hit := searchResult.Hits.Hits[0]
 				req.Index(hit.Index)
 				req.Type(hit.Type)
@@ -3370,7 +3328,6 @@ func doDelete(config *configOptions, client *elastic.Client, mongo *mongo.Client
 			}
 		} else {
 			req.Index(indexType.Index)
-			req.Type(indexType.Type)
 		}
 	} else {
 		return

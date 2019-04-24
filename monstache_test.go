@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/olivere/elastic"
+	"github.com/olivere/elastic/v7"
 	"github.com/rwynn/gtm"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/bsontype"
@@ -20,7 +20,7 @@ import (
 
 /*
 This test requires the following processes to be running on localhost
-	- elasticsearch v6.2+
+	- elasticsearch v7.0+
 	- mongodb 4.0+
 	- monstache
 
@@ -92,7 +92,7 @@ func ValidateDocResponse(t *testing.T, doc bson.M, resp *elastic.GetResult) {
 		t.Fatalf("elasticsearch id %s does not match mongo id %s", resp.Id, doc["_id"])
 	}
 	var src map[string]interface{}
-	err := json.Unmarshal(*resp.Source, &src)
+	err := json.Unmarshal(resp.Source, &src)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestInsert(t *testing.T) {
 	}
 	if _, err = col.InsertOne(context.Background(), doc); err == nil {
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := client.Get().Index("test.test").Type("_doc").Id("1").Do(context.Background()); err == nil {
+		if resp, err := client.Get().Index("test.test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)
@@ -291,7 +291,7 @@ func TestUpdate(t *testing.T) {
 	}
 	if _, err = col.InsertOne(context.Background(), doc); err == nil {
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := client.Get().Index("test.test").Type("_doc").Id("1").Do(context.Background()); err == nil {
+		if resp, err := client.Get().Index("test.test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)
@@ -304,7 +304,7 @@ func TestUpdate(t *testing.T) {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := client.Get().Index("test.test").Type("_doc").Id("1").Do(context.Background()); err == nil {
+		if resp, err := client.Get().Index("test.test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)
@@ -332,7 +332,7 @@ func TestDelete(t *testing.T) {
 	}
 	if _, err = col.InsertOne(context.Background(), doc); err == nil {
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := client.Get().Index("test.test").Type("_doc").Id("1").Do(context.Background()); err == nil {
+		if resp, err := client.Get().Index("test.test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)
@@ -344,7 +344,7 @@ func TestDelete(t *testing.T) {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Duration(delay) * time.Second)
-		_, err := client.Get().Index("test.test").Type("_doc").Id("1").Do(context.Background())
+		_, err := client.Get().Index("test.test").Id("1").Do(context.Background())
 		if !elastic.IsNotFound(err) {
 			t.Fatal("record not deleted")
 		}
@@ -371,7 +371,7 @@ func TestDropDatabase(t *testing.T) {
 	}
 	if _, err = col.InsertOne(context.Background(), doc); err == nil {
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := client.Get().Index("test.test").Type("_doc").Id("1").Do(context.Background()); err == nil {
+		if resp, err := client.Get().Index("test.test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)
@@ -411,7 +411,7 @@ func TestDropCollection(t *testing.T) {
 	}
 	if _, err = col.InsertOne(context.Background(), doc); err == nil {
 		time.Sleep(time.Duration(delay) * time.Second)
-		if resp, err := client.Get().Index("test.test").Type("_doc").Id("1").Do(context.Background()); err == nil {
+		if resp, err := client.Get().Index("test.test").Id("1").Do(context.Background()); err == nil {
 			ValidateDocResponse(t, doc, resp)
 		} else {
 			t.Fatal(err)

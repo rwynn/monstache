@@ -1,9 +1,9 @@
 package monstachemap
 
 import (
-	"go.mongodb.org/mongo-driver/mongo"
+	"github.com/olivere/elastic/v7"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"github.com/olivere/elastic"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // plugins must import this package

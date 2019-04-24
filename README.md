@@ -1,14 +1,13 @@
 # monstache
 a go daemon that syncs mongodb to elasticsearch in realtime
 
-### Version 5 alpha
+### Version 6
 
-This is a pre-release work in progress version of monstache built against the official MongoDB golang driver.
+This version of monstache is designed for MongoDB 3.6+ and Elasticsearch 7.0+.  It uses the official MongoDB
+golang driver and the community supported Elasticsearch driver from olivere.
 
 Some of the monstache settings related to MongoDB have been removed in this version as they are now supported in the 
 [connection string](https://github.com/mongodb/mongo-go-driver/blob/v1.0.0/x/network/connstring/connstring.go)
-
-This version of monstache targets MongoDB 3.6+ and Elasticsearch 6+.
 
 ### Changes from previous versions
 

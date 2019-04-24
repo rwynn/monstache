@@ -2,7 +2,7 @@ mongo-url = "mongodb://root-user:password@mongo-0:27017"
 
 change-stream-namespaces = [""]
 
-elasticsearch-urls = ["http://es6:9200"]
+elasticsearch-urls = ["http://es7:9200"]
 
 elasticsearch-max-conns = 1
 

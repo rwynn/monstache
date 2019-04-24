@@ -1,10 +1,10 @@
 # https://www.elastic.co/guide/en/elasticsearch/reference/6.x/settings.html
 
 # https://www.elastic.co/guide/en/elasticsearch/reference/6.x/node.name.html
-node.name: ${ELASTIC6_SEARCH_NODE_NAME:es6-data}
+node.name: ${ELASTIC7_SEARCH_NODE_NAME:es7-data}
 
 # https://www.elastic.co/guide/en/elasticsearch/reference/6.x/cluster.name.html
-# cluster.name: es6-cluster
+# cluster.name: es7-cluster
 
 # discovery.type: single-node
 
@@ -26,7 +26,7 @@ http.cors.allow-headers: "X-Requested-With, WWW-Authenticate, X-Auth-Token, Cont
 http.cors.allow-methods: "GET, POST, PATCH, PUT, DELETE, OPTIONS"
 # http.cors.allow-methods: GET,POST,PATCH,PUT,DELETE,OPTIONS
 
-# http.port: ${ELASTIC6_SEARCH_DOCKER_PORT:9200}
+# http.port: ${ELASTIC7_SEARCH_DOCKER_PORT:9200}
 http.port: 9200
 
 # https://www.elastic.co/guide/en/elasticsearch/reference/6.x/modules-network.html#network-interface-values
