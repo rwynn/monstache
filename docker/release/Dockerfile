@@ -2,7 +2,7 @@
 # Step 1: Build the app
 ####################################################################################################
 
-FROM rwynn/monstache-builder-cache-rel5:1.0.1 AS build-app
+FROM rwynn/monstache-builder-cache-rel6:1.0.0 AS build-app
 
 RUN mkdir /app
 
