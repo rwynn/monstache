@@ -1273,6 +1273,17 @@ func resumeWork(ctx *gtm.OpCtxMulti, client *mongo.Client, config *configOptions
 			}
 		}
 	}
+	drained := false
+	for !drained {
+		select {
+		case _, open := <-ctx.OpC:
+			if !open {
+				drained = true
+			}
+		default:
+			drained = true
+		}
+	}
 	ctx.Resume()
 }
 
@@ -3798,26 +3809,40 @@ func main() {
 		ChangeStreamNs:      config.ChangeStreamNs,
 	}
 
-	gtmCtx := gtm.StartMulti(mongos, gtmOpts)
-
-	if config.readShards() && !config.DisableChangeEvents {
-		gtmCtx.AddShardListener(configSession, gtmOpts, config.makeShardInsertHandler())
-	}
+	heartBeat := time.NewTicker(10 * time.Second)
 	if config.ClusterName != "" {
 		if enabled {
 			infoLog.Printf("Starting work for cluster %s", config.ClusterName)
 		} else {
 			infoLog.Printf("Pausing work for cluster %s", config.ClusterName)
-			gtmCtx.Pause()
+			bulk.Stop()
+			for range heartBeat.C {
+				enabled, err = enableProcess(mongoClient, config)
+				if enabled {
+					infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
+					bulk.Start(context.Background())
+					break
+				}
+				select {
+				case <-sigs:
+					shutdown(5, nil, nil, nil, nil, config)
+				default:
+					continue
+				}
+			}
 		}
+	} else {
+		heartBeat.Stop()
+	}
+
+	gtmCtx := gtm.StartMulti(mongos, gtmOpts)
+
+	if config.readShards() && !config.DisableChangeEvents {
+		gtmCtx.AddShardListener(configSession, gtmOpts, config.makeShardInsertHandler())
 	}
 	timestampTicker := time.NewTicker(10 * time.Second)
 	if config.Resume == false {
 		timestampTicker.Stop()
-	}
-	heartBeat := time.NewTicker(10 * time.Second)
-	if config.ClusterName == "" {
-		heartBeat.Stop()
 	}
 	statsTimeout := time.Duration(30) * time.Second
 	if config.StatsDuration != "" {
@@ -3932,19 +3957,6 @@ func main() {
 		}()
 	}
 	infoLog.Println("Listening for events")
-	if config.ClusterName != "" && !enabled {
-		gtmCtx.Pause()
-		bulk.Stop()
-		for range heartBeat.C {
-			enabled, err = enableProcess(mongoClient, config)
-			if enabled {
-				infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
-				bulk.Start(context.Background())
-				resumeWork(gtmCtx, mongoClient, config)
-				break
-			}
-		}
-	}
 	for {
 		select {
 		case timeout := <-doneC:
