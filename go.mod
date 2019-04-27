@@ -14,7 +14,7 @@ require (
 	github.com/tidwall/pretty v0.0.0-20190325153808-1166b9ac2b65 // indirect
 	github.com/xdg/scram v0.0.0-20180814205039-7eeb5667e42c // indirect
 	github.com/xdg/stringprep v1.0.0 // indirect
-	go.mongodb.org/mongo-driver v1.0.1-0.20190412181518-181353310ab8
+	go.mongodb.org/mongo-driver v1.0.1-0.20190425221052-7e1461d5d3c1
 	golang.org/x/crypto v0.0.0-20190404164418-38d8ce5564a5 // indirect
 	gopkg.in/Graylog2/go-gelf.v2 v2.0.0-20180326133423-4dbb9d721348
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
