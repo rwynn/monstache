@@ -1,6 +1,9 @@
 # monstache
 a go daemon that syncs mongodb to elasticsearch in realtime
 
+[![Build Status](https://travis-ci.org/rwynn/monstache.svg?branch=rel6)](https://travis-ci.org/rwynn/monstache)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rwynn/monstache)](https://goreportcard.com/report/github.com/rwynn/monstache)
+
 ### Version 6
 
 This version of monstache is designed for MongoDB 3.6+ and Elasticsearch 7.0+.  It uses the official MongoDB
