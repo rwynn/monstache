@@ -1,6 +1,9 @@
 # monstache
 a go daemon that syncs mongodb to elasticsearch in realtime
 
+[![Build Status](https://travis-ci.org/rwynn/monstache.svg?branch=rel5)](https://travis-ci.org/rwynn/monstache)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rwynn/monstache)](https://goreportcard.com/report/github.com/rwynn/monstache)
+
 ### Version 5
 
 This is a version of monstache built against the official MongoDB golang driver.
