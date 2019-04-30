@@ -3803,6 +3803,25 @@ func main() {
 		defer bulkStats.Stop()
 	}
 
+	go notifySd(config)
+	var hsc *httpServerCtx
+	if config.EnableHTTPServer {
+		hsc = &httpServerCtx{
+			bulk:   bulk,
+			config: config,
+		}
+		hsc.buildServer()
+		go hsc.serveHttp()
+	}
+	go func() {
+		<-sigs
+		if enabled {
+			shutdown(10, hsc, bulk, bulkStats, mongo, config)
+		} else {
+			shutdown(10, hsc, nil, nil, nil, config)
+		}
+	}()
+
 	var after gtm.TimestampGenerator
 	if config.Replay {
 		after = func(session *mgo.Session, options *gtm.Options) bson.MongoTimestamp {
@@ -3964,12 +3983,6 @@ func main() {
 					bulk.Start(context.Background())
 					break
 				}
-				select {
-				case <-sigs:
-					shutdown(5, nil, nil, nil, nil, config)
-				default:
-					continue
-				}
 			}
 		}
 	} else {
@@ -3996,24 +4009,6 @@ func main() {
 	if config.Stats == false {
 		printStats.Stop()
 	}
-	go notifySd(config)
-	var hsc *httpServerCtx
-	if config.EnableHTTPServer {
-		hsc = &httpServerCtx{
-			bulk:   bulk,
-			config: config,
-		}
-		hsc.buildServer()
-		go hsc.serveHttp()
-	}
-	go func() {
-		<-sigs
-		if enabled {
-			shutdown(10, hsc, bulk, bulkStats, mongo, config)
-		} else {
-			shutdown(10, hsc, nil, nil, nil, config)
-		}
-	}()
 	var lastTimestamp, lastSavedTimestamp bson.MongoTimestamp
 	var allOpsVisited bool
 	var fileWg, indexWg, processWg, relateWg sync.WaitGroup
