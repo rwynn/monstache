@@ -1004,6 +1004,7 @@ func prepareDataForIndexing(config *configOptions, op *gtm.Op) {
 	if config.PruneInvalidJSON {
 		op.Data = fixPruneInvalidJSON(opIDToString(op), data)
 	}
+	op.Data = monstachemap.ConvertMapForJSON(op.Data)
 }
 
 func parseIndexMeta(op *gtm.Op) (meta *indexingMeta) {
