@@ -9,12 +9,12 @@ require (
 	github.com/kr/pretty v0.1.0 // indirect
 	github.com/olivere/elastic/v7 v7.0.0
 	github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d
-	github.com/rwynn/gtm v0.0.0-20190426162532-7b7dbfe90388
+	github.com/rwynn/gtm v0.0.0-20190510014426-6a4f37ffe043
 	github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908 // indirect
 	github.com/tidwall/pretty v0.0.0-20190325153808-1166b9ac2b65 // indirect
 	github.com/xdg/scram v0.0.0-20180814205039-7eeb5667e42c // indirect
 	github.com/xdg/stringprep v1.0.0 // indirect
-	go.mongodb.org/mongo-driver v1.0.1-0.20190425221052-7e1461d5d3c1
+	go.mongodb.org/mongo-driver v1.0.1-0.20190507231345-c7d9b5376a19
 	golang.org/x/crypto v0.0.0-20190404164418-38d8ce5564a5 // indirect
 	gopkg.in/Graylog2/go-gelf.v2 v2.0.0-20180326133423-4dbb9d721348
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
