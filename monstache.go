@@ -1656,8 +1656,10 @@ func (config *configOptions) decodeAsTemplate() *configOptions {
 	if err != nil {
 		panic(err)
 	}
-	if _, err := toml.Decode(b.String(), config); err != nil {
+	if md, err := toml.Decode(b.String(), config); err != nil {
 		panic(err)
+	} else if ud := md.Undecoded(); len(ud) != 0 {
+		panic(fmt.Errorf("Config file contains undecoded keys: %q", ud))
 	}
 	return config
 }
@@ -1673,8 +1675,10 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.EnableTemplate {
 			tomlConfig.decodeAsTemplate()
 		} else {
-			if _, err := toml.DecodeFile(tomlConfig.ConfigFile, &tomlConfig); err != nil {
+			if md, err := toml.DecodeFile(tomlConfig.ConfigFile, &tomlConfig); err != nil {
 				panic(err)
+			} else if ud := md.Undecoded(); len(ud) != 0 {
+				panic(fmt.Errorf("Config file contains undecoded keys: %q", ud))
 			}
 		}
 		if config.MongoURL == "" {
@@ -3751,7 +3755,7 @@ func main() {
 				if err = result.Decode(&doc); err == nil {
 					if doc["ts"] != nil {
 						ts = doc["ts"].(primitive.Timestamp)
-                        ts.I += 1
+						ts.I += 1
 					}
 				}
 			}
