@@ -917,13 +917,10 @@ func processRelated(client *mongo.Client,bulk *elastic.BulkProcessor, elastic *e
 						Namespace: r.WithNamespace,
 						Source:    op.Source,
 						Timestamp: op.Timestamp,
+						Data:      op.Data,
 					}
 					doDelete(config, elastic, client, bulk, rop)
-					select {
-						case out.relateC <- rop:
-					default:
-						errorLog.Printf(relateQueueOverloadMsg, rop.Namespace, rop.Id)
-					}
+					q = append(q, rop);
 					continue;
 				}
 				var srcData interface{}
@@ -2683,7 +2680,6 @@ func doIndexing(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkPr
 }
 
 func doIndex(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op) (err error) {
-	fmt.Println("op",op.Namespace,op.Id,op.IsDelete(),op.Data);
 	if err = mapData(mongo, config, op); err == nil {
 		if op.Data != nil {
 			err = doIndexing(config, mongo, bulk, client, op)
