@@ -303,6 +303,14 @@ type configOptions struct {
 	mongoClientOptions       *options.ClientOptions
 }
 
+func (rel *relation) IsIdentity() bool {
+	if(rel.SrcField == "_id" && rel.MatchField == "_id"){
+		return true;
+	}else{
+		return false;
+	}
+}
+
 func (l *logFiles) enabled() bool {
 	return l.Info != "" || l.Warn != "" || l.Error != "" || l.Trace != "" || l.Stats != ""
 }
@@ -902,7 +910,7 @@ func processRelated(client *mongo.Client,bulk *elastic.BulkProcessor, elastic *e
 				if r.MaxDepth > 0 && r.MaxDepth < depth {
 					continue
 				}
-				if(op.IsDelete() && r.SrcField == "_id" && r.MatchField == "_id"){
+				if(op.IsDelete() && r.IsIdentity()){
 					rop := &gtm.Op{
 						Id:        op.Id,
 						Operation: op.Operation,
@@ -2675,6 +2683,7 @@ func doIndexing(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkPr
 }
 
 func doIndex(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkProcessor, client *elastic.Client, op *gtm.Op) (err error) {
+	fmt.Println("op",op.Namespace,op.Id,op.IsDelete(),op.Data);
 	if err = mapData(mongo, config, op); err == nil {
 		if op.Data != nil {
 			err = doIndexing(config, mongo, bulk, client, op)
