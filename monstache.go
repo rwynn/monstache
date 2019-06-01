@@ -884,7 +884,7 @@ func buildSelector(matchField string, data interface{}) bson.M {
 	return sel
 }
 
-func processRelated(client *mongo.Client, config *configOptions, root *gtm.Op, out *outputChans) (err error) {
+func processRelated(client *mongo.Client,bulk *elastic.BulkProcessor, elastic *elastic.Client,  config *configOptions, root *gtm.Op, out *outputChans) (err error) {
 	var q []*gtm.Op
 	batch := []*gtm.Op{root}
 	depth := 1
@@ -901,6 +901,22 @@ func processRelated(client *mongo.Client, config *configOptions, root *gtm.Op, o
 			for _, r := range rs {
 				if r.MaxDepth > 0 && r.MaxDepth < depth {
 					continue
+				}
+				if(op.IsDelete() && r.SrcField == "_id" && r.MatchField == "_id"){
+					rop := &gtm.Op{
+						Id:        op.Id,
+						Operation: op.Operation,
+						Namespace: r.WithNamespace,
+						Source:    op.Source,
+						Timestamp: op.Timestamp,
+					}
+					select {
+						case out.relateC <- rop:
+					default:
+						errorLog.Printf(relateQueueOverloadMsg, rop.Namespace, rop.Id)
+					}
+					doDelete(config, elastic, client, bulk, rop)
+					continue;
 				}
 				var srcData interface{}
 				if srcData, err = extractData(r.SrcField, op.Data); err != nil {
@@ -3935,7 +3951,7 @@ func main() {
 			go func() {
 				defer relateWg.Done()
 				for op := range outputChs.relateC {
-					if err := processRelated(mongoClient, config, op, outputChs); err != nil {
+					if err := processRelated(mongoClient, bulk, elasticClient, config, op, outputChs); err != nil {
 						processErr(err, config)
 					}
 				}
