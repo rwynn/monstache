@@ -884,7 +884,7 @@ func buildSelector(matchField string, data interface{}) bson.M {
 	return sel
 }
 
-func processRelated(client *mongo.Client,bulk *elastic.BulkProcessor, elastic *elastic.Client,  config *configOptions, root *gtm.Op, out *outputChans) (err error) {
+func processRelated(client *mongo.Client,bulk *elastic.BulkProcessor, elastic *elastic.Client, config *configOptions, root *gtm.Op, out *outputChans) (err error) {
 	var q []*gtm.Op
 	batch := []*gtm.Op{root}
 	depth := 1
@@ -910,12 +910,12 @@ func processRelated(client *mongo.Client,bulk *elastic.BulkProcessor, elastic *e
 						Source:    op.Source,
 						Timestamp: op.Timestamp,
 					}
+					doDelete(config, elastic, client, bulk, rop)
 					select {
 						case out.relateC <- rop:
 					default:
 						errorLog.Printf(relateQueueOverloadMsg, rop.Namespace, rop.Id)
 					}
-					doDelete(config, elastic, client, bulk, rop)
 					continue;
 				}
 				var srcData interface{}
