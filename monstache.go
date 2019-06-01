@@ -304,10 +304,10 @@ type configOptions struct {
 }
 
 func (rel *relation) IsIdentity() bool {
-	if(rel.SrcField == "_id" && rel.MatchField == "_id"){
-		return true;
-	}else{
-		return false;
+	if rel.SrcField == "_id" && rel.MatchField == "_id" {
+		return true
+	} else {
+		return false
 	}
 }
 
@@ -892,7 +892,7 @@ func buildSelector(matchField string, data interface{}) bson.M {
 	return sel
 }
 
-func processRelated(client *mongo.Client,bulk *elastic.BulkProcessor, elastic *elastic.Client, config *configOptions, root *gtm.Op, out *outputChans) (err error) {
+func processRelated(client *mongo.Client, bulk *elastic.BulkProcessor, elastic *elastic.Client, config *configOptions, root *gtm.Op, out *outputChans) (err error) {
 	var q []*gtm.Op
 	batch := []*gtm.Op{root}
 	depth := 1
@@ -910,7 +910,7 @@ func processRelated(client *mongo.Client,bulk *elastic.BulkProcessor, elastic *e
 				if r.MaxDepth > 0 && r.MaxDepth < depth {
 					continue
 				}
-				if(op.IsDelete() && r.IsIdentity()){
+				if op.IsDelete() && r.IsIdentity() {
 					rop := &gtm.Op{
 						Id:        op.Id,
 						Operation: op.Operation,
@@ -920,8 +920,8 @@ func processRelated(client *mongo.Client,bulk *elastic.BulkProcessor, elastic *e
 						Data:      op.Data,
 					}
 					doDelete(config, elastic, client, bulk, rop)
-					q = append(q, rop);
-					continue;
+					q = append(q, rop)
+					continue
 				}
 				var srcData interface{}
 				if srcData, err = extractData(r.SrcField, op.Data); err != nil {
