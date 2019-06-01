@@ -2723,6 +2723,18 @@ func routeOp(config *configOptions, mongo *mongo.Client, bulk *elastic.BulkProce
 				var delData map[string]interface{}
 				useFind := false
 				for _, r := range rs {
+					if(r.MatchField =="_id" && r.SrcField == "_id"){
+						rop := &gtm.Op{
+							Id:        op.Id,
+							Operation: op.Operation,
+							Namespace: r.WithNamespace,
+							Source:    op.Source,
+							Timestamp: op.Timestamp,
+							Data:      delData,
+							}
+						doDelete(config, client, mongo, bulk, rop);
+						continue;
+					}
 					if r.SrcField != "_id" {
 						useFind = true
 						break
