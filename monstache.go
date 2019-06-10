@@ -537,7 +537,7 @@ func (ic *indexClient) ensureFileMapping() (err error) {
 	return err
 }
 
-func defaultIndexMapping(config *configOptions, op *gtm.Op) *indexMapping {
+func (ic *indexClient) defaultIndexMapping(op *gtm.Op) *indexMapping {
 	return &indexMapping{
 		Namespace: op.Namespace,
 		Index:     strings.ToLower(op.Namespace),
@@ -545,8 +545,7 @@ func defaultIndexMapping(config *configOptions, op *gtm.Op) *indexMapping {
 }
 
 func (ic *indexClient) mapIndex(op *gtm.Op) *indexMapping {
-	config := ic.config
-	mapping := defaultIndexMapping(config, op)
+	mapping := ic.defaultIndexMapping(op)
 	if m := mapIndexTypes[op.Namespace]; m != nil {
 		if m.Index != "" {
 			mapping.Index = m.Index
