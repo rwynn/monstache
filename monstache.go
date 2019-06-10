@@ -548,9 +548,9 @@ func (ic *indexClient) ensureFileMapping() (err error) {
 	return err
 }
 
-func defaultIndexTypeMapping(config *configOptions, op *gtm.Op) *indexTypeMapping {
+func (ic *indexClient) defaultIndexTypeMapping(op *gtm.Op) *indexTypeMapping {
 	typeName := typeFromFuture
-	if !config.useTypeFromFuture() {
+	if !ic.config.useTypeFromFuture() {
 		typeName = op.GetCollection()
 	}
 	return &indexTypeMapping{
@@ -561,8 +561,7 @@ func defaultIndexTypeMapping(config *configOptions, op *gtm.Op) *indexTypeMappin
 }
 
 func (ic *indexClient) mapIndexType(op *gtm.Op) *indexTypeMapping {
-	config := ic.config
-	mapping := defaultIndexTypeMapping(config, op)
+	mapping := ic.defaultIndexTypeMapping(op)
 	if m := mapIndexTypes[op.Namespace]; m != nil {
 		if m.Index != "" {
 			mapping.Index = m.Index
