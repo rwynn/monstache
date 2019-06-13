@@ -1,7 +1,9 @@
 package monstachemap
 
 import (
+	"encoding/hex"
 	"errors"
+	"github.com/globalsign/mgo/bson"
 	"time"
 )
 
@@ -9,6 +11,10 @@ const timeJsonFormat = "2006-01-02T15:04:05.000Z07:00"
 
 type Time struct {
 	time.Time
+}
+
+type Binary struct {
+	bson.Binary
 }
 
 func (t Time) MarshalJSON() ([]byte, error) {
@@ -22,6 +28,15 @@ func (t Time) MarshalJSON() ([]byte, error) {
 	return b, nil
 }
 
+func (bi Binary) MarshalJSON() ([]byte, error) {
+	hexStr := hex.EncodeToString(bi.Data)
+	b := make([]byte, 0, len(hexStr)+2)
+	b = append(b, '"')
+	b = append(b, []byte(hexStr)...)
+	b = append(b, '"')
+	return b, nil
+}
+
 func ConvertSliceForJSON(a []interface{}) []interface{} {
 	var avs []interface{}
 	for _, av := range a {
@@ -31,6 +46,8 @@ func ConvertSliceForJSON(a []interface{}) []interface{} {
 			avc = ConvertMapForJSON(achild)
 		case []interface{}:
 			avc = ConvertSliceForJSON(achild)
+		case bson.Binary:
+			avc = Binary{achild}
 		case time.Time:
 			avc = Time{achild}
 		default:
@@ -49,6 +66,8 @@ func ConvertMapForJSON(m map[string]interface{}) map[string]interface{} {
 			o[k] = ConvertMapForJSON(child)
 		case []interface{}:
 			o[k] = ConvertSliceForJSON(child)
+		case bson.Binary:
+			o[k] = Binary{child}
 		case time.Time:
 			o[k] = Time{child}
 		default:

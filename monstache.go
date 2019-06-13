@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -586,19 +587,21 @@ func mapIndexType(config *configOptions, op *gtm.Op) *indexTypeMapping {
 
 func opIDToString(op *gtm.Op) string {
 	var opIDStr string
-	switch op.Id.(type) {
+	switch id := op.Id.(type) {
 	case bson.ObjectId:
-		opIDStr = op.Id.(bson.ObjectId).Hex()
+		opIDStr = id.Hex()
+	case bson.Binary:
+		opIDStr = hex.EncodeToString(id.Data)
 	case float64:
-		intID := int(op.Id.(float64))
-		if op.Id.(float64) == float64(intID) {
+		intID := int(id)
+		if id == float64(intID) {
 			opIDStr = fmt.Sprintf("%v", intID)
 		} else {
 			opIDStr = fmt.Sprintf("%v", op.Id)
 		}
 	case float32:
-		intID := int(op.Id.(float32))
-		if op.Id.(float32) == float32(intID) {
+		intID := int(id)
+		if id == float32(intID) {
 			opIDStr = fmt.Sprintf("%v", intID)
 		} else {
 			opIDStr = fmt.Sprintf("%v", op.Id)
