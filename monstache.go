@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -591,7 +590,7 @@ func opIDToString(op *gtm.Op) string {
 	case bson.ObjectId:
 		opIDStr = id.Hex()
 	case bson.Binary:
-		opIDStr = hex.EncodeToString(id.Data)
+		opIDStr = monstachemap.EncodeBinData(monstachemap.Binary{id})
 	case float64:
 		intID := int(id)
 		if id == float64(intID) {
