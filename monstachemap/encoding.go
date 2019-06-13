@@ -1,9 +1,11 @@
 package monstachemap
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"strings"
 	"time"
 )
 
@@ -29,12 +31,38 @@ func (t Time) MarshalJSON() ([]byte, error) {
 }
 
 func (bi Binary) MarshalJSON() ([]byte, error) {
-	hexStr := hex.EncodeToString(bi.Data)
-	b := make([]byte, 0, len(hexStr)+2)
+	encoded := EncodeBinData(bi)
+	b := make([]byte, 0, len(encoded)+2)
 	b = append(b, '"')
-	b = append(b, []byte(hexStr)...)
+	b = append(b, []byte(encoded)...)
 	b = append(b, '"')
 	return b, nil
+}
+
+func EncodeBinData(bi Binary) string {
+	var enc string
+	if bi.Subtype == 0x03 || bi.Subtype == 0x04 {
+		// UUID
+		hex := hex.EncodeToString(bi.Data)
+		if len(hex) == 32 {
+			enc = strings.Join(
+				[]string{
+					hex[:8],
+					hex[8:12],
+					hex[12:16],
+					hex[16:20],
+					hex[20:32],
+				},
+				"-",
+			)
+		} else {
+			enc = hex
+		}
+	} else {
+		// other binary types
+		enc = base64.StdEncoding.EncodeToString(bi.Data)
+	}
+	return enc
 }
 
 func ConvertSliceForJSON(a []interface{}) []interface{} {
