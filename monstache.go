@@ -71,7 +71,7 @@ var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
 var mongoDialInfo *mgo.DialInfo
 
-const version = "4.17.3"
+const version = "4.17.4"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
