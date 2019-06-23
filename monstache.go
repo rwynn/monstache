@@ -739,7 +739,7 @@ func deepExportMap(e map[string]interface{}) map[string]interface{} {
 	return o
 }
 
-func mapDataJavascript(op *gtm.Op) error {
+func (ic *indexClient) mapDataJavascript(op *gtm.Op) error {
 	names := []string{"", op.Namespace}
 	for _, name := range names {
 		env := mapEnvs[name]
@@ -778,14 +778,14 @@ func mapDataJavascript(op *gtm.Op) error {
 	return nil
 }
 
-func mapDataGolang(client *mongo.Client, op *gtm.Op) error {
+func (ic *indexClient) mapDataGolang(op *gtm.Op) error {
 	input := &monstachemap.MapperPluginInput{
 		Document:          op.Data,
 		Namespace:         op.Namespace,
 		Database:          op.GetDatabase(),
 		Collection:        op.GetCollection(),
 		Operation:         op.Operation,
-		MongoClient:       client,
+		MongoClient:       ic.mongo,
 		UpdateDescription: op.UpdateDescription,
 	}
 	output, err := mapperPlugin(input)
@@ -844,11 +844,11 @@ func mapDataGolang(client *mongo.Client, op *gtm.Op) error {
 	return nil
 }
 
-func mapData(client *mongo.Client, config *configOptions, op *gtm.Op) error {
+func (ic *indexClient) mapData(op *gtm.Op) error {
 	if mapperPlugin != nil {
-		return mapDataGolang(client, op)
+		return ic.mapDataGolang(op)
 	}
-	return mapDataJavascript(op)
+	return ic.mapDataJavascript(op)
 }
 
 func extractData(srcField string, data map[string]interface{}) (result interface{}, err error) {
@@ -2482,8 +2482,8 @@ func (ic *indexClient) hasFileContent(op *gtm.Op) (ingest bool) {
 	return fileNamespaces[op.Namespace]
 }
 
-func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
-	objectID string, indexType *indexMapping, meta *indexingMeta) (err error) {
+func (ic *indexClient) addPatch(op *gtm.Op, objectID string,
+	indexType *indexMapping, meta *indexingMeta) (err error) {
 	var merges []interface{}
 	var toJSON []byte
 	if op.IsSourceDirect() {
@@ -2492,6 +2492,7 @@ func addPatch(config *configOptions, client *elastic.Client, op *gtm.Op,
 	if op.Timestamp.T == 0 {
 		return nil
 	}
+	client, config := ic.client, ic.config
 	if op.IsUpdate() {
 		ctx := context.Background()
 		service := client.Get()
@@ -2566,7 +2567,7 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 	objectID, indexType := opIDToString(op), ic.mapIndex(op)
 	if ic.config.EnablePatches {
 		if patchNamespaces[op.Namespace] {
-			if e := addPatch(ic.config, ic.client, op, objectID, indexType, meta); e != nil {
+			if e := ic.addPatch(op, objectID, indexType, meta); e != nil {
 				errorLog.Printf("Unable to save json-patch info: %s", e)
 			}
 		}
@@ -2688,7 +2689,7 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 }
 
 func (ic *indexClient) doIndex(op *gtm.Op) (err error) {
-	if err = mapData(ic.mongo, ic.config, op); err == nil {
+	if err = ic.mapData(op); err == nil {
 		if op.Data != nil {
 			err = ic.doIndexing(op)
 		} else if op.IsUpdate() {
@@ -2761,7 +2762,7 @@ func (ic *indexClient) routeDeleteRelate(op *gtm.Op) (err error) {
 			}
 		}
 		if useFind {
-			delData = findDeletedSrcDoc(ic.config, ic.client, op)
+			delData = ic.findDeletedSrcDoc(op)
 		} else {
 			delData = map[string]interface{}{
 				"_id": op.Id,
@@ -3352,12 +3353,12 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 	}
 }
 
-func findDeletedSrcDoc(config *configOptions, client *elastic.Client, op *gtm.Op) map[string]interface{} {
+func (ic *indexClient) findDeletedSrcDoc(op *gtm.Op) map[string]interface{} {
 	objectID := opIDToString(op)
 	termQuery := elastic.NewTermQuery("_id", objectID)
-	search := client.Search()
+	search := ic.client.Search()
 	search.Size(1)
-	search.Index(config.DeleteIndexPattern)
+	search.Index(ic.config.DeleteIndexPattern)
 	search.Query(termQuery)
 	searchResult, err := search.Do(context.Background())
 	if err != nil {
