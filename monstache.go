@@ -3746,9 +3746,9 @@ func (ic *indexClient) run() {
 	ic.startIndex()
 	ic.startDownload()
 	ic.startPostProcess()
-	ic.startReadWait()
 	ic.clusterWait()
 	ic.startListen()
+	ic.startReadWait()
 	ic.eventLoop()
 }
 
