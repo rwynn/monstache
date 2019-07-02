@@ -300,6 +300,7 @@ type configOptions struct {
 	DirectReadNs             stringargs     `toml:"direct-read-namespaces"`
 	DirectReadSplitMax       int            `toml:"direct-read-split-max"`
 	DirectReadConcur         int            `toml:"direct-read-concur"`
+	DirectReadNoTimeout      bool           `toml:"direct-read-no-timeout"`
 	MapperPluginPath         string         `toml:"mapper-plugin-path"`
 	EnableHTTPServer         bool           `toml:"enable-http-server"`
 	HTTPServerAddr           string         `toml:"http-server-addr"`
@@ -953,6 +954,9 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 				}
 
 				opts := &options.FindOptions{}
+				if ic.config.DirectReadNoTimeout {
+					opts.SetNoCursorTimeout(true)
+				}
 				col := ic.mongo.Database(r.db).Collection(r.col)
 				sel := buildSelector(r.MatchField, srcData)
 				cursor, err := col.Find(context.Background(), sel, opts)
@@ -1430,6 +1434,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.Var(&config.DirectReadNs, "direct-read-namespace", "A list of direct read namespaces")
 	flag.IntVar(&config.DirectReadSplitMax, "direct-read-split-max", 0, "Max number of times to split a collection for direct reads")
 	flag.IntVar(&config.DirectReadConcur, "direct-read-concur", 0, "Max number of direct-read-namespaces to read concurrently. By default all givne are read concurrently")
+	flag.BoolVar(&config.DirectReadNoTimeout, "direct-read-no-timeout", false, "True to set the no cursor timeout flag for direct reads")
 	flag.Var(&config.RoutingNamespaces, "routing-namespace", "A list of namespaces that override routing information")
 	flag.Var(&config.TimeMachineNamespaces, "time-machine-namespace", "A list of direct read namespaces")
 	flag.StringVar(&config.TimeMachineIndexPrefix, "time-machine-index-prefix", "", "A prefix to preprend to time machine indexes")
@@ -3962,6 +3967,7 @@ func (ic *indexClient) buildGtmOptions() *gtm.Options {
 		DirectReadNs:        config.DirectReadNs,
 		DirectReadSplitMax:  int32(config.DirectReadSplitMax),
 		DirectReadConcur:    config.DirectReadConcur,
+		DirectReadNoTimeout: config.DirectReadNoTimeout,
 		DirectReadFilter:    directReadFilter,
 		Log:                 infoLog,
 		Pipe:                buildPipe(config),
