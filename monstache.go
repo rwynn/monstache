@@ -28,6 +28,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/gridfs"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/x/bsonx"
 	"gopkg.in/Graylog2/go-gelf.v2/gelf"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"io/ioutil"
@@ -301,6 +302,7 @@ type configOptions struct {
 	DirectReadSplitMax       int            `toml:"direct-read-split-max"`
 	DirectReadConcur         int            `toml:"direct-read-concur"`
 	DirectReadNoTimeout      bool           `toml:"direct-read-no-timeout"`
+	DirectReadExcludeRegex   string         `toml:"direct-read-dynamic-exclude-regex"`
 	MapperPluginPath         string         `toml:"mapper-plugin-path"`
 	EnableHTTPServer         bool           `toml:"enable-http-server"`
 	HTTPServerAddr           string         `toml:"http-server-addr"`
@@ -372,6 +374,18 @@ func (args *stringargs) Set(value string) error {
 
 func (config *configOptions) readShards() bool {
 	return len(config.ChangeStreamNs) == 0 && config.MongoConfigURL != ""
+}
+
+func (config *configOptions) dynamicDirectReadList() bool {
+	return len(config.DirectReadNs) == 1 && config.DirectReadNs[0] == ""
+}
+
+func (config *configOptions) ignoreDatabaseForDirectReads(db string) bool {
+	return db == "local" || db == "admin" || db == "config" || db == config.ConfigDatabaseName
+}
+
+func (config *configOptions) ignoreCollectionForDirectReads(col string) bool {
+	return strings.HasPrefix(col, "system.")
 }
 
 func afterBulk(executionId int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
@@ -1426,6 +1440,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.ClusterName, "cluster-name", "", "Name of the monstache process cluster")
 	flag.StringVar(&config.Worker, "worker", "", "The name of this worker in a multi-worker configuration")
 	flag.StringVar(&config.MapperPluginPath, "mapper-plugin-path", "", "The path to a .so file to load as a document mapper plugin")
+	flag.StringVar(&config.DirectReadExcludeRegex, "direct-read-dynamic-exclude-regex", "", "A regex to use for excluding namespaces when using dynamic direct reads")
 	flag.StringVar(&config.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
 	flag.StringVar(&config.NsDropRegex, "namespace-drop-regex", "", "A regex which is matched against a drop operation's namespace (<database>.<collection>).  Only drop operations which match are synched to elasticsearch")
 	flag.StringVar(&config.NsExcludeRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
@@ -1908,6 +1923,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.ClusterName == "" {
 			config.ClusterName = tomlConfig.ClusterName
 		}
+		if config.DirectReadExcludeRegex == "" {
+			config.DirectReadExcludeRegex = tomlConfig.DirectReadExcludeRegex
+		}
 		if config.NsRegex == "" {
 			config.NsRegex = tomlConfig.NsRegex
 		}
@@ -2122,6 +2140,11 @@ func (config *configOptions) loadEnvironment() *configOptions {
 		case "MONSTACHE_CHANGE_STREAM_NS":
 			if len(config.ChangeStreamNs) == 0 {
 				config.ChangeStreamNs = strings.Split(val, del)
+			}
+			break
+		case "MONSTACHE_DIRECT_READ_NS_DYNAMIC_EXCLUDE_REGEX":
+			if config.DirectReadExcludeRegex == "" {
+				config.DirectReadExcludeRegex = val
 			}
 			break
 		case "MONSTACHE_NS_REGEX":
@@ -3941,6 +3964,64 @@ func (ic *indexClient) buildFilterArray() []gtm.OpFilter {
 	return filterArray
 }
 
+func (ic *indexClient) buildDynamicDirectReadNs(filter gtm.OpFilter) (names []string) {
+	client, config := ic.mongo, ic.config
+	if config.DirectReadExcludeRegex != "" {
+		filter = gtm.ChainOpFilters(filterInverseWithRegex(config.DirectReadExcludeRegex), filter)
+	}
+	dbs, err := client.ListDatabaseNames(context.Background(), bson.M{})
+	if err != nil {
+		errorLog.Fatalf("Failed to read database names for dynamic direct reads: %s", err)
+	}
+	for _, d := range dbs {
+		if config.ignoreDatabaseForDirectReads(d) {
+			continue
+		}
+		db := client.Database(d)
+		lo := options.ListCollections().SetNameOnly(true)
+		res, err := db.ListCollections(context.Background(), bson.M{}, lo)
+		if err != nil {
+			errorLog.Fatalf("Failed to read db %s collection names for dynamic direct reads: %s", d, err)
+			return
+		}
+		for res.Next(context.Background()) {
+			next := &bsonx.Doc{}
+			err = res.Decode(next)
+			if err != nil {
+				errorLog.Fatalf("Failed to read db %s collection names for dynamic direct reads: %s", d, err)
+				return
+			}
+			elem, err := next.LookupErr("name")
+			if err != nil {
+				errorLog.Fatalf("Failed to read db %s collection names for dynamic direct reads: %s", d, err)
+				return
+			}
+			if elem.Type() != bson.TypeString {
+				err = fmt.Errorf("incorrect type for 'name'. got %v. want %v", elem.Type(), bson.TypeString)
+				errorLog.Fatalf("Failed to read db %s collection names for dynamic direct reads: %s", d, err)
+				return
+			}
+			c := elem.StringValue()
+			if config.ignoreCollectionForDirectReads(c) {
+				continue
+			}
+			ns := strings.Join([]string{d, c}, ".")
+			if filter(&gtm.Op{Namespace: ns}) {
+				names = append(names, ns)
+			} else {
+				infoLog.Printf("Excluding collection [%s] for dynamic direct reads", ns)
+			}
+		}
+		res.Close(context.Background())
+	}
+	if len(names) == 0 {
+		warnLog.Println("Dynamic direct read candidates: NONE")
+	} else {
+		infoLog.Printf("Dynamic direct read candidates: %v", names)
+	}
+	return
+}
+
 func (ic *indexClient) buildGtmOptions() *gtm.Options {
 	var nsFilter, filter, directReadFilter gtm.OpFilter
 	config := ic.config
@@ -3955,6 +4036,9 @@ func (ic *indexClient) buildGtmOptions() *gtm.Options {
 			config.GtmSettings.BufferDuration, err)
 	}
 	after := ic.buildTimestampGen()
+	if config.dynamicDirectReadList() {
+		config.DirectReadNs = ic.buildDynamicDirectReadNs(nsFilter)
+	}
 	gtmOpts := &gtm.Options{
 		After:               after,
 		Filter:              filter,
