@@ -1773,6 +1773,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.DirectReadConcur == 0 {
 			config.DirectReadConcur = tomlConfig.DirectReadConcur
 		}
+		if !config.DirectReadNoTimeout && tomlConfig.DirectReadNoTimeout {
+			config.DirectReadNoTimeout = true
+		}
 		if !config.ElasticRetry && tomlConfig.ElasticRetry {
 			config.ElasticRetry = true
 		}
