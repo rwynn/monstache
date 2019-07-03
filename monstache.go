@@ -297,6 +297,7 @@ type configOptions struct {
 	DirectReadNs             stringargs     `toml:"direct-read-namespaces"`
 	DirectReadSplitMax       int            `toml:"direct-read-split-max"`
 	DirectReadConcur         int            `toml:"direct-read-concur"`
+	DirectReadNoTimeout      bool           `toml:"direct-read-no-timeout"`
 	MapperPluginPath         string         `toml:"mapper-plugin-path"`
 	EnableHTTPServer         bool           `toml:"enable-http-server"`
 	HTTPServerAddr           string         `toml:"http-server-addr"`
@@ -930,6 +931,9 @@ func processRelated(session *mgo.Session, bulk *elastic.BulkProcessor, elastic *
 	batch := []*gtm.Op{root}
 	depth := 1
 	s := session.Copy()
+	if config.DirectReadNoTimeout {
+		s.SetCursorTimeout(0)
+	}
 	defer s.Close()
 	for len(batch) > 0 {
 		for _, e := range batch {
@@ -1386,11 +1390,12 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.Var(&config.ChangeStreamNs, "change-stream-namespace", "A list of change stream namespaces")
 	flag.Var(&config.DirectReadNs, "direct-read-namespace", "A list of direct read namespaces")
 	flag.IntVar(&config.DirectReadSplitMax, "direct-read-split-max", 0, "Max number of times to split a collection for direct reads")
-	flag.IntVar(&config.DirectReadConcur, "direct-read-concur", 0, "Max number of direct-read-namespaces to read concurrently. By default all givne are read concurrently")
+	flag.IntVar(&config.DirectReadConcur, "direct-read-concur", 0, "Max number of direct-read-namespaces to read concurrently. By default all given are read concurrently")
 	flag.Var(&config.RoutingNamespaces, "routing-namespace", "A list of namespaces that override routing information")
 	flag.Var(&config.TimeMachineNamespaces, "time-machine-namespace", "A list of direct read namespaces")
 	flag.StringVar(&config.TimeMachineIndexPrefix, "time-machine-index-prefix", "", "A prefix to preprend to time machine indexes")
 	flag.StringVar(&config.TimeMachineIndexSuffix, "time-machine-index-suffix", "", "A suffix to append to time machine indexes")
+	flag.BoolVar(&config.DirectReadNoTimeout, "direct-read-no-timeout", false, "True to set the no cursor timeout flag for direct reads")
 	flag.BoolVar(&config.TimeMachineDirectReads, "time-machine-direct-reads", false, "True to index the results of direct reads into the any time machine indexes")
 	flag.BoolVar(&config.PipeAllowDisk, "pipe-allow-disk", false, "True to allow MongoDB to use the disk for pipeline options with lots of results")
 	flag.Var(&config.ElasticUrls, "elasticsearch-url", "A list of Elasticsearch URLs")
@@ -1729,6 +1734,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.DirectReadConcur == 0 {
 			config.DirectReadConcur = tomlConfig.DirectReadConcur
+		}
+		if !config.DirectReadNoTimeout && tomlConfig.DirectReadNoTimeout {
+			config.DirectReadNoTimeout = true
 		}
 		if !config.ElasticRetry && tomlConfig.ElasticRetry {
 			config.ElasticRetry = true
@@ -3986,6 +3994,7 @@ func main() {
 		DirectReadNs:        config.DirectReadNs,
 		DirectReadSplitMax:  config.DirectReadSplitMax,
 		DirectReadConcur:    config.DirectReadConcur,
+		DirectReadNoTimeout: config.DirectReadNoTimeout,
 		DirectReadFilter:    directReadFilter,
 		Log:                 infoLog,
 		Pipe:                buildPipe(config),
