@@ -1712,10 +1712,11 @@ func (config *configOptions) decodeAsTemplate() *configOptions {
 func (config *configOptions) loadConfigFile() *configOptions {
 	if config.ConfigFile != "" {
 		var tomlConfig = configOptions{
-			ConfigFile:         config.ConfigFile,
-			DroppedDatabases:   true,
-			DroppedCollections: true,
-			GtmSettings:        gtmDefaultSettings(),
+			ConfigFile:             config.ConfigFile,
+			DroppedDatabases:       true,
+			DroppedCollections:     true,
+			ElasticValidatePemFile: true,
+			GtmSettings:            gtmDefaultSettings(),
 		}
 		if config.EnableTemplate {
 			tomlConfig.decodeAsTemplate()
