@@ -19,6 +19,10 @@ type Binary struct {
 	primitive.Binary
 }
 
+type Decimal128 struct {
+	primitive.Decimal128
+}
+
 func (t Time) MarshalJSON() ([]byte, error) {
 	if y := t.Year(); y < 0 || y >= 10000 {
 		return nil, errors.New("Time.MarshalJSON: year outside of range [0,9999]")
@@ -37,6 +41,17 @@ func (bi Binary) MarshalJSON() ([]byte, error) {
 	b = append(b, []byte(encoded)...)
 	b = append(b, '"')
 	return b, nil
+}
+
+func (dec Decimal128) MarshalJSON() ([]byte, error) {
+	encoded := dec.String()
+	if encoded == "NaN" ||
+		strings.HasPrefix(encoded, "-Inf") ||
+		strings.HasPrefix(encoded, "Inf") ||
+		strings.HasPrefix(encoded, "+Inf") {
+		return []byte("null"), nil
+	}
+	return []byte(encoded), nil
 }
 
 func EncodeBinData(bi Binary) string {
@@ -76,6 +91,8 @@ func ConvertSliceForJSON(a []interface{}) []interface{} {
 			avc = ConvertSliceForJSON(achild)
 		case primitive.Binary:
 			avc = Binary{achild}
+		case primitive.Decimal128:
+			avc = Decimal128{achild}
 		case time.Time:
 			avc = Time{achild}
 		default:
@@ -96,6 +113,8 @@ func ConvertMapForJSON(m map[string]interface{}) map[string]interface{} {
 			o[k] = ConvertSliceForJSON(child)
 		case primitive.Binary:
 			o[k] = Binary{child}
+		case primitive.Decimal128:
+			o[k] = Decimal128{child}
 		case time.Time:
 			o[k] = Time{child}
 		default:
