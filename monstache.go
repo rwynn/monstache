@@ -391,6 +391,11 @@ func afterBulk(executionId int64, requests []elastic.BulkableRequest, response *
 		failed := response.Failed()
 		if failed != nil {
 			for _, item := range failed {
+				if item.Status == 409 {
+					// ignore version conflict since this simply means the doc
+					// is already in the index
+					continue
+				}
 				json, err := json.Marshal(item)
 				if err != nil {
 					errorLog.Printf("Unable to marshal bulk response item: %s", err)
