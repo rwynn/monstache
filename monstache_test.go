@@ -47,15 +47,15 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-var mongoUrl = getEnv("MONGO_DB_URL", "mongodb://localhost:27017")
+var mongoURL = getEnv("MONGO_DB_URL", "mongodb://localhost:27017")
 
-var elasticUrl = getEnv("ELASTIC_SEARCH_URL", "http://localhost:9200")
+var elasticURL = getEnv("ELASTIC_SEARCH_URL", "http://localhost:9200")
 
-var elasticUrlConfig = elastic.SetURL(elasticUrl)
+var elasticURLConfig = elastic.SetURL(elasticURL)
 var elasticNoSniffConfig = elastic.SetSniff(false)
 
 func init() {
-	fmt.Printf("MongoDB Url: %v\nElasticsearch Url: %v\n", mongoUrl, elasticUrl)
+	fmt.Printf("MongoDB Url: %v\nElasticsearch Url: %v\n", mongoURL, elasticURL)
 
 	flag.IntVar(&delay, "delay", 3, "Delay between operations in seconds")
 	flag.Parse()
@@ -66,7 +66,7 @@ func dialMongo() (*mongo.Client, error) {
 	rb.RegisterTypeMapEntry(bsontype.DateTime, reflect.TypeOf(time.Time{}))
 	reg := rb.Build()
 	clientOptions := options.Client()
-	clientOptions.ApplyURI(mongoUrl)
+	clientOptions.ApplyURI(mongoURL)
 	clientOptions.SetAppName("monstache")
 	clientOptions.SetRegistry(reg)
 	client, err := mongo.NewClient(clientOptions)
@@ -182,7 +182,7 @@ func TestBuildRelateSelector(t *testing.T) {
 
 func TestOpIdToString(t *testing.T) {
 	var result string
-	var id float64 = 10.0
+	var id = 10.0
 	var id2 int64 = 1
 	var id3 float32 = 12.0
 	op := &gtm.Op{Id: id}
@@ -246,7 +246,7 @@ func TestSetElasticClientScheme(t *testing.T) {
 }
 
 func TestInsert(t *testing.T) {
-	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
+	client, err := elastic.NewClient(elasticURLConfig, elasticNoSniffConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestInsert(t *testing.T) {
 }
 
 func TestUpdate(t *testing.T) {
-	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
+	client, err := elastic.NewClient(elasticURLConfig, elasticNoSniffConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestUpdate(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
+	client, err := elastic.NewClient(elasticURLConfig, elasticNoSniffConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestDelete(t *testing.T) {
 }
 
 func TestDropDatabase(t *testing.T) {
-	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
+	client, err := elastic.NewClient(elasticURLConfig, elasticNoSniffConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestDropDatabase(t *testing.T) {
 }
 
 func TestDropCollection(t *testing.T) {
-	client, err := elastic.NewClient(elasticUrlConfig, elasticNoSniffConfig)
+	client, err := elastic.NewClient(elasticURLConfig, elasticNoSniffConfig)
 	if err != nil {
 		t.Fatal(err)
 	}

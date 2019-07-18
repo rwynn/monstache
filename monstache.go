@@ -59,15 +59,15 @@ var mapperPlugin func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPlug
 var filterPlugin func(*monstachemap.MapperPluginInput) (bool, error)
 var processPlugin func(*monstachemap.ProcessPluginInput) error
 var pipePlugin func(string, bool) ([]interface{}, error)
-var mapEnvs map[string]*executionEnv = make(map[string]*executionEnv)
-var filterEnvs map[string]*executionEnv = make(map[string]*executionEnv)
-var pipeEnvs map[string]*executionEnv = make(map[string]*executionEnv)
-var mapIndexTypes map[string]*indexMapping = make(map[string]*indexMapping)
-var relates map[string][]*relation = make(map[string][]*relation)
-var fileNamespaces map[string]bool = make(map[string]bool)
-var patchNamespaces map[string]bool = make(map[string]bool)
-var tmNamespaces map[string]bool = make(map[string]bool)
-var routingNamespaces map[string]bool = make(map[string]bool)
+var mapEnvs = make(map[string]*executionEnv)
+var filterEnvs = make(map[string]*executionEnv)
+var pipeEnvs = make(map[string]*executionEnv)
+var mapIndexTypes = make(map[string]*indexMapping)
+var relates = make(map[string][]*relation)
+var fileNamespaces = make(map[string]bool)
+var patchNamespaces = make(map[string]bool)
+var tmNamespaces = make(map[string]bool)
+var routingNamespaces = make(map[string]bool)
 var mux sync.Mutex
 
 var chunksRegex = regexp.MustCompile("\\.chunks$")
@@ -170,7 +170,7 @@ type findConf struct {
 	ns            string
 	name          string
 	client        *mongo.Client
-	byId          bool
+	byID          bool
 	multi         bool
 	pipe          bool
 	pipeAllowDisk bool
@@ -325,9 +325,8 @@ type configOptions struct {
 func (rel *relation) IsIdentity() bool {
 	if rel.SrcField == "_id" && rel.MatchField == "_id" {
 		return true
-	} else {
-		return false
 	}
+	return false
 }
 
 func (l *logFiles) enabled() bool {
@@ -386,11 +385,16 @@ func (config *configOptions) ignoreCollectionForDirectReads(col string) bool {
 	return strings.HasPrefix(col, "system.")
 }
 
-func afterBulk(executionId int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
+func afterBulk(executionID int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
 	if response != nil && response.Errors {
 		failed := response.Failed()
 		if failed != nil {
 			for _, item := range failed {
+				if item.Status == 409 {
+					// ignore version conflict since this simply means the doc
+					// is already in the index
+					continue
+				}
 				json, err := json.Marshal(item)
 				if err != nil {
 					errorLog.Printf("Unable to marshal bulk response item: %s", err)
@@ -867,7 +871,7 @@ func (ic *indexClient) mapData(op *gtm.Op) error {
 }
 
 func extractData(srcField string, data map[string]interface{}) (result interface{}, err error) {
-	var cur map[string]interface{} = data
+	var cur = data
 	fields := strings.Split(srcField, ".")
 	flen := len(fields)
 	for i, field := range fields {
@@ -1151,7 +1155,7 @@ func filterDropWithRegex(regex string) gtm.OpFilter {
 
 func filterWithPlugin() gtm.OpFilter {
 	return func(op *gtm.Op) bool {
-		var keep bool = true
+		var keep = true
 		if (op.IsInsert() || op.IsUpdate()) && op.Data != nil {
 			keep = false
 			input := &monstachemap.MapperPluginInput{
@@ -1174,7 +1178,7 @@ func filterWithPlugin() gtm.OpFilter {
 
 func filterWithScript() gtm.OpFilter {
 	return func(op *gtm.Op) bool {
-		var keep bool = true
+		var keep = true
 		if (op.IsInsert() || op.IsUpdate()) && op.Data != nil {
 			nss := []string{"", op.Namespace}
 			for _, ns := range nss {
@@ -3073,7 +3077,7 @@ func loadBuiltinFunctions(client *mongo.Client, config *configOptions) {
 			name:   "findId",
 			vm:     env.VM,
 			ns:     ns,
-			byId:   true,
+			byID:   true,
 		}
 		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
 			errorLog.Fatalln(err)
@@ -3160,6 +3164,7 @@ func (fc *findCall) setSort(topts map[string]interface{}) (err error) {
 		} else {
 			err = errors.New("Invalid sort option value")
 		}
+		fc.setSort(map[string]interface{}{"joe": "rick"})
 	}
 	return
 }
@@ -3326,7 +3331,7 @@ func (fc *findCall) execute() (r otto.Value, err error) {
 		r, err = fc.getVM().ToValue(rdocs)
 	} else {
 		fo := options.FindOne()
-		if fc.config.byId {
+		if fc.config.byID {
 			query = bson.M{"_id": query}
 		}
 		if len(fc.sel) > 0 {
@@ -3522,7 +3527,7 @@ func (ic *indexClient) watchdogSdFailed(err error) {
 	}
 }
 
-func (ctx *httpServerCtx) serveHttp() {
+func (ctx *httpServerCtx) serveHTTP() {
 	s := ctx.httpServer
 	if ctx.config.Verbose {
 		infoLog.Printf("Starting http server at %s", s.Addr)
@@ -3683,7 +3688,7 @@ func (ic *indexClient) sigListen() {
 	}()
 }
 
-func (ic *indexClient) startHttpServer() {
+func (ic *indexClient) startHTTPServer() {
 	config := ic.config
 	if config.EnableHTTPServer {
 		ic.hsc = &httpServerCtx{
@@ -3691,7 +3696,7 @@ func (ic *indexClient) startHttpServer() {
 			config: ic.config,
 		}
 		ic.hsc.buildServer()
-		go ic.hsc.serveHttp()
+		go ic.hsc.serveHTTP()
 	}
 }
 
@@ -3728,7 +3733,7 @@ func (ic *indexClient) run() {
 	ic.startNotify()
 	ic.setupFileIndexing()
 	ic.setupBulk()
-	ic.startHttpServer()
+	ic.startHTTPServer()
 	ic.sigListen()
 	ic.startCluster()
 	ic.startRelate()
@@ -3843,7 +3848,7 @@ func (ic *indexClient) buildTimestampGen() gtm.TimestampGenerator {
 				if err = result.Decode(&doc); err == nil {
 					if doc["ts"] != nil {
 						ts = doc["ts"].(primitive.Timestamp)
-						ts.I += 1
+						ts.I++
 					}
 				}
 			}
