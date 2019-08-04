@@ -3869,7 +3869,12 @@ func (ic *indexClient) buildTimestampGen() gtm.TimestampGenerator {
 	config := ic.config
 	if config.Replay {
 		after = func(client *mongo.Client, options *gtm.Options) (primitive.Timestamp, error) {
-			return primitive.Timestamp{}, nil
+			ts, _ := gtm.FirstOpTimestamp(client, options)
+			// add ten seconds as oldest items often fall off the oplog
+			ts.T += 10
+			ts.I = 0
+			infoLog.Printf("Replaying from timestamp %+v", ts)
+			return ts, nil
 		}
 	} else if config.ResumeFromTimestamp != 0 {
 		after = func(client *mongo.Client, options *gtm.Options) (primitive.Timestamp, error) {
