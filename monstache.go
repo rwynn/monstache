@@ -28,7 +28,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/gridfs"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/x/bsonx"
 	"gopkg.in/Graylog2/go-gelf.v2/gelf"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"io/ioutil"
@@ -3946,30 +3945,12 @@ func (ic *indexClient) buildDynamicDirectReadNs(filter gtm.OpFilter) (names []st
 			continue
 		}
 		db := client.Database(d)
-		lo := options.ListCollections().SetNameOnly(true)
-		res, err := db.ListCollections(context.Background(), bson.M{}, lo)
+		cols, err := db.ListCollectionNames(context.Background(), bson.M{})
 		if err != nil {
 			errorLog.Fatalf("Failed to read db %s collection names for dynamic direct reads: %s", d, err)
 			return
 		}
-		for res.Next(context.Background()) {
-			next := &bsonx.Doc{}
-			err = res.Decode(next)
-			if err != nil {
-				errorLog.Fatalf("Failed to read db %s collection names for dynamic direct reads: %s", d, err)
-				return
-			}
-			elem, err := next.LookupErr("name")
-			if err != nil {
-				errorLog.Fatalf("Failed to read db %s collection names for dynamic direct reads: %s", d, err)
-				return
-			}
-			if elem.Type() != bson.TypeString {
-				err = fmt.Errorf("incorrect type for 'name'. got %v. want %v", elem.Type(), bson.TypeString)
-				errorLog.Fatalf("Failed to read db %s collection names for dynamic direct reads: %s", d, err)
-				return
-			}
-			c := elem.StringValue()
+		for _, c := range cols {
 			if config.ignoreCollectionForDirectReads(c) {
 				continue
 			}
@@ -3980,7 +3961,6 @@ func (ic *indexClient) buildDynamicDirectReadNs(filter gtm.OpFilter) (names []st
 				infoLog.Printf("Excluding collection [%s] for dynamic direct reads", ns)
 			}
 		}
-		res.Close(context.Background())
 	}
 	if len(names) == 0 {
 		warnLog.Println("Dynamic direct read candidates: NONE")
