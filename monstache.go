@@ -10,22 +10,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/BurntSushi/toml"
-	"github.com/coreos/go-systemd/daemon"
-	"github.com/evanphx/json-patch"
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
-	"github.com/robertkrimen/otto"
-	_ "github.com/robertkrimen/otto/underscore"
-	"github.com/rwynn/gtm"
-	"github.com/rwynn/gtm/consistent"
-	"github.com/smartystreets/go-aws-auth"
-	"golang.org/x/net/context"
-	"gopkg.in/Graylog2/go-gelf.v2/gelf"
-	"gopkg.in/natefinch/lumberjack.v2"
-	elastic "gopkg.in/olivere/elastic.v5"
-	"gopkg.in/olivere/elastic.v5/aws"
-	"gopkg.in/rwynn/monstache.v3/monstachemap"
 	"io"
 	"io/ioutil"
 	"log"
@@ -43,6 +27,23 @@ import (
 	"syscall"
 	"text/template"
 	"time"
+
+	"github.com/BurntSushi/toml"
+	"github.com/coreos/go-systemd/daemon"
+	jsonpatch "github.com/evanphx/json-patch"
+	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
+	"github.com/robertkrimen/otto"
+	_ "github.com/robertkrimen/otto/underscore"
+	"github.com/rwynn/gtm"
+	"github.com/rwynn/gtm/consistent"
+	awsauth "github.com/smartystreets/go-aws-auth"
+	"golang.org/x/net/context"
+	"gopkg.in/Graylog2/go-gelf.v2/gelf"
+	"gopkg.in/natefinch/lumberjack.v2"
+	elastic "gopkg.in/olivere/elastic.v5"
+	"gopkg.in/olivere/elastic.v5/aws"
+	"gopkg.in/rwynn/monstache.v3/monstachemap"
 )
 
 var infoLog = log.New(os.Stdout, "INFO ", log.Flags())
@@ -71,7 +72,7 @@ var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
 var mongoDialInfo *mgo.DialInfo
 
-const version = "3.24.7"
+const version = "3.25.0"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
