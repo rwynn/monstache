@@ -10,22 +10,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/BurntSushi/toml"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/coreos/go-systemd/daemon"
-	"github.com/evanphx/json-patch"
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
-	"github.com/olivere/elastic"
-	aws "github.com/olivere/elastic/aws/v4"
-	"github.com/robertkrimen/otto"
-	_ "github.com/robertkrimen/otto/underscore"
-	"github.com/rwynn/gtm"
-	"github.com/rwynn/gtm/consistent"
-	"github.com/rwynn/monstache/monstachemap"
-	"golang.org/x/net/context"
-	"gopkg.in/Graylog2/go-gelf.v2/gelf"
-	"gopkg.in/natefinch/lumberjack.v2"
 	"io"
 	"io/ioutil"
 	"log"
@@ -43,6 +27,23 @@ import (
 	"syscall"
 	"text/template"
 	"time"
+
+	"github.com/BurntSushi/toml"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/coreos/go-systemd/daemon"
+	jsonpatch "github.com/evanphx/json-patch"
+	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
+	"github.com/olivere/elastic"
+	aws "github.com/olivere/elastic/aws/v4"
+	"github.com/robertkrimen/otto"
+	_ "github.com/robertkrimen/otto/underscore"
+	"github.com/rwynn/gtm"
+	"github.com/rwynn/gtm/consistent"
+	"github.com/rwynn/monstache/monstachemap"
+	"golang.org/x/net/context"
+	"gopkg.in/Graylog2/go-gelf.v2/gelf"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var infoLog = log.New(os.Stdout, "INFO ", log.Flags())
@@ -71,7 +72,7 @@ var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
 var mongoDialInfo *mgo.DialInfo
 
-const version = "4.17.7"
+const version = "4.18.0"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
