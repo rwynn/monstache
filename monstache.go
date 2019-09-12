@@ -3591,16 +3591,15 @@ func (ctx *httpServerCtx) buildServer() {
 		w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/isEnabled", func(w http.ResponseWriter, req *http.Request) {
-		paused := *ctx.enabled;
-		status := instanceStatus{Enabled: paused}
+		status := instanceStatus{Enabled: *ctx.enabled}
 		data, err := json.Marshal(status)
-		if (err != nil) {
+		if err != nil {
 			w.WriteHeader(500)
 			fmt.Fprintf(w, "Unable to print instance isEnabled status: %s", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write(data);
+		w.Write(data)
 	})
 	if ctx.config.Stats {
 		mux.HandleFunc("/stats", func(w http.ResponseWriter, req *http.Request) {
