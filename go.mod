@@ -8,7 +8,7 @@ require (
 	github.com/golang/snappy v0.0.1 // indirect
 	github.com/kr/pretty v0.1.0 // indirect
 	github.com/minio/highwayhash v1.0.0 // indirect
-	github.com/olivere/elastic/v7 v7.0.5
+	github.com/olivere/elastic/v7 v7.0.6
 	github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d
 	github.com/rwynn/gtm v0.0.0-20190819153110-515be98d5e90
 	github.com/serialx/hashring v0.0.0-20190515033939-7706f26af194 // indirect

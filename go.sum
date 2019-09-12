@@ -63,8 +63,8 @@ github.com/matttproud/golang_protobuf_extensions v1.0.1/go.mod h1:D8He9yQNgCq6Z5
 github.com/minio/highwayhash v1.0.0 h1:iMSDhgUILCr0TNm8LWlSjF8N0ZIj2qbO8WHp6Q/J2BA=
 github.com/minio/highwayhash v1.0.0/go.mod h1:xQboMTeM9nY9v/LlAOxFctujiv5+Aq2hR5dxBpaMbdc=
 github.com/mwitkow/go-conntrack v0.0.0-20161129095857-cc309e4a2223/go.mod h1:qRWi+5nqEBWmkhHvq77mSJWrCKwh8bxhgT7d/eI7P4U=
-github.com/olivere/elastic/v7 v7.0.5 h1:A+kj32UgnUGoiVZfy84rjnYYgOcA9InugIb93La99/A=
-github.com/olivere/elastic/v7 v7.0.5/go.mod h1:nut831m8vw5KQbQxX1oXjj3/buiDpDZc5pqNVdH9xYk=
+github.com/olivere/elastic/v7 v7.0.6 h1:BIzjaAYGL8Ur1pIPIpiYDvly4HkHrO/uakiV22WDEQQ=
+github.com/olivere/elastic/v7 v7.0.6/go.mod h1:nut831m8vw5KQbQxX1oXjj3/buiDpDZc5pqNVdH9xYk=
 github.com/onsi/ginkgo v1.6.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=
 github.com/onsi/ginkgo v1.7.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=
 github.com/onsi/gomega v1.4.3/go.mod h1:ex+gbHU/CVuBBDIJjb2X0qEXbFg53c61hWP/1CpauHY=
