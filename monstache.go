@@ -11,25 +11,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/BurntSushi/toml"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/coreos/go-systemd/daemon"
-	"github.com/evanphx/json-patch"
-	"github.com/olivere/elastic"
-	aws "github.com/olivere/elastic/aws/v4"
-	"github.com/robertkrimen/otto"
-	_ "github.com/robertkrimen/otto/underscore"
-	"github.com/rwynn/gtm"
-	"github.com/rwynn/gtm/consistent"
-	"github.com/rwynn/monstache/monstachemap"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/bsontype"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/gridfs"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"gopkg.in/Graylog2/go-gelf.v2/gelf"
-	"gopkg.in/natefinch/lumberjack.v2"
 	"io/ioutil"
 	"log"
 	"math"
@@ -46,6 +27,27 @@ import (
 	"syscall"
 	"text/template"
 	"time"
+
+	"github.com/BurntSushi/toml"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/coreos/go-systemd/daemon"
+	jsonpatch "github.com/evanphx/json-patch"
+	"github.com/olivere/elastic"
+	aws "github.com/olivere/elastic/aws/v4"
+	"github.com/robertkrimen/otto"
+	_ "github.com/robertkrimen/otto/underscore"
+	"github.com/rwynn/gtm"
+	"github.com/rwynn/gtm/consistent"
+	"github.com/rwynn/monstache/monstachemap"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/bsontype"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/gridfs"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	mongoversion "go.mongodb.org/mongo-driver/version"
+	"gopkg.in/Graylog2/go-gelf.v2/gelf"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var infoLog = log.New(os.Stdout, "INFO ", log.Flags())
@@ -4366,6 +4368,7 @@ func buildMongoClient(config *configOptions) *mongo.Client {
 			cleanMongoURL(config.MongoURL), err)
 	}
 	infoLog.Printf("Started monstache version %s", version)
+	infoLog.Printf("MongoDB go driver %s", mongoversion.Driver)
 	if mongoInfo, err := getBuildInfo(mongoClient); err == nil {
 		infoLog.Printf("Successfully connected to MongoDB version %s", mongoInfo.Version)
 	} else {
