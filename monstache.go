@@ -4369,6 +4369,7 @@ func buildMongoClient(config *configOptions) *mongo.Client {
 	}
 	infoLog.Printf("Started monstache version %s", version)
 	infoLog.Printf("MongoDB go driver %s", mongoversion.Driver)
+	infoLog.Printf("Elasticsearch go driver %s", elastic.Version)
 	if mongoInfo, err := getBuildInfo(mongoClient); err == nil {
 		infoLog.Printf("Successfully connected to MongoDB version %s", mongoInfo.Version)
 	} else {
