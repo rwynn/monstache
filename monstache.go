@@ -215,6 +215,11 @@ type httpServerCtx struct {
 	config     *configOptions
 	shutdown   bool
 	started    time.Time
+	enabled    *bool
+}
+
+type instanceStatus struct {
+	Enabled bool
 }
 
 type configOptions struct {
@@ -3585,6 +3590,18 @@ func (ctx *httpServerCtx) buildServer() {
 		w.WriteHeader(200)
 		w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("/isEnabled", func(w http.ResponseWriter, req *http.Request) {
+		paused := *ctx.enabled;
+		status := instanceStatus{Enabled: paused}
+		data, err := json.Marshal(status)
+		if (err != nil) {
+			w.WriteHeader(500)
+			fmt.Fprintf(w, "Unable to print instance isEnabled status: %s", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write(data);
+	})
 	if ctx.config.Stats {
 		mux.HandleFunc("/stats", func(w http.ResponseWriter, req *http.Request) {
 			stats, err := json.MarshalIndent(ctx.bulk.Stats(), "", "    ")
@@ -3846,8 +3863,9 @@ func main() {
 	var hsc *httpServerCtx
 	if config.EnableHTTPServer {
 		hsc = &httpServerCtx{
-			bulk:   bulk,
-			config: config,
+			bulk:    bulk,
+			config:  config,
+			enabled: &enabled,
 		}
 		hsc.buildServer()
 		go hsc.serveHttp()
