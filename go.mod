@@ -11,7 +11,7 @@ require (
 	github.com/google/go-cmp v0.3.1 // indirect
 	github.com/mailru/easyjson v0.0.0-20190626092158-b2ccc519800e // indirect
 	github.com/minio/highwayhash v1.0.0 // indirect
-	github.com/olivere/elastic v6.2.22+incompatible
+	github.com/olivere/elastic v6.2.23+incompatible
 	github.com/pkg/errors v0.8.1 // indirect
 	github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d
 	github.com/rwynn/gtm v0.0.0-20190819153110-515be98d5e90
