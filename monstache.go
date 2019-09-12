@@ -45,6 +45,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/gridfs"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	mongoversion "go.mongodb.org/mongo-driver/version"
 	"gopkg.in/Graylog2/go-gelf.v2/gelf"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -4324,6 +4325,7 @@ func buildMongoClient(config *configOptions) *mongo.Client {
 			cleanMongoURL(config.MongoURL), err)
 	}
 	infoLog.Printf("Started monstache version %s", version)
+	infoLog.Printf("MongoDB go driver %s", mongoversion.Driver)
 	if mongoInfo, err := getBuildInfo(mongoClient); err == nil {
 		infoLog.Printf("Successfully connected to MongoDB version %s", mongoInfo.Version)
 	} else {
