@@ -215,6 +215,15 @@ type httpServerCtx struct {
 	config     *configOptions
 	shutdown   bool
 	started    time.Time
+	enabled    *bool
+}
+
+type instanceStatus struct {
+	Enabled     bool
+	Pid         int
+	Hostname    string
+	ClusterName string
+	ResumeName  string
 }
 
 type configOptions struct {
@@ -3585,6 +3594,28 @@ func (ctx *httpServerCtx) buildServer() {
 		w.WriteHeader(200)
 		w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("/instance", func(w http.ResponseWriter, req *http.Request) {
+		hostname, err := os.Hostname()
+		if err != nil {
+			w.WriteHeader(500)
+			fmt.Fprintf(w, "Unable to get hostname for instance info: %s", err)
+		}
+		status := instanceStatus{
+			Enabled:     *ctx.enabled,
+			Pid:         os.Getpid(),
+			Hostname:    hostname,
+			ResumeName:  ctx.config.ResumeName,
+			ClusterName: ctx.config.ClusterName,
+		}
+		data, err := json.Marshal(status)
+		if err != nil {
+			w.WriteHeader(500)
+			fmt.Fprintf(w, "Unable to print instance info: %s", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write(data)
+	})
 	if ctx.config.Stats {
 		mux.HandleFunc("/stats", func(w http.ResponseWriter, req *http.Request) {
 			stats, err := json.MarshalIndent(ctx.bulk.Stats(), "", "    ")
@@ -3846,8 +3877,9 @@ func main() {
 	var hsc *httpServerCtx
 	if config.EnableHTTPServer {
 		hsc = &httpServerCtx{
-			bulk:   bulk,
-			config: config,
+			bulk:    bulk,
+			config:  config,
+			enabled: &enabled,
 		}
 		hsc.buildServer()
 		go hsc.serveHttp()

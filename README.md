@@ -34,7 +34,7 @@ a go daemon that syncs mongodb to elasticsearch in realtime
 
 - Systemd support
 
-- Optional http server to get access to liveness, stats, etc
+- Optional http server to get access to liveness, stats, instance(for cluster mode) etc
 
 ### Documentation
 
