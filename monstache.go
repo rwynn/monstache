@@ -129,6 +129,7 @@ type indexClient struct {
 	fileC       chan *gtm.Op
 	relateC     chan *gtm.Op
 	filter      gtm.OpFilter
+	statusReqC  chan *statusRequest
 }
 
 type awsConnect struct {
@@ -221,6 +222,26 @@ type httpServerCtx struct {
 	config     *configOptions
 	shutdown   bool
 	started    time.Time
+	statusReqC chan *statusRequest
+}
+
+type instanceStatus struct {
+	Enabled      bool                `json:"enabled"`
+	Pid          int                 `json:"pid"`
+	Hostname     string              `json:"hostname"`
+	ClusterName  string              `json:"cluster"`
+	ResumeName   string              `json:"resumeName"`
+	LastTs       primitive.Timestamp `json:"lastTs"`
+	LastTsFormat string              `json:"lastTsFormat,omitempty"`
+}
+
+type statusResponse struct {
+	enabled bool
+	lastTs  primitive.Timestamp
+}
+
+type statusRequest struct {
+	responseC chan *statusResponse
 }
 
 type configOptions struct {
@@ -1324,6 +1345,9 @@ func (ic *indexClient) ensureEnabled() (enabled bool, err error) {
 				}
 			}
 		}
+	}
+	if err == mongo.ErrNoDocuments {
+		err = nil
 	}
 	return
 }
@@ -3558,12 +3582,59 @@ func (ctx *httpServerCtx) buildServer() {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(200)
 				w.Write(stats)
+				fmt.Fprintln(w)
 			} else {
 				w.WriteHeader(500)
 				fmt.Fprintf(w, "Unable to print statistics: %s", err)
 			}
 		})
 	}
+	mux.HandleFunc("/instance", func(w http.ResponseWriter, req *http.Request) {
+		hostname, err := os.Hostname()
+		if err != nil {
+			w.WriteHeader(500)
+			fmt.Fprintf(w, "Unable to get hostname for instance info: %s", err)
+			return
+		}
+		status := instanceStatus{
+			Pid:         os.Getpid(),
+			Hostname:    hostname,
+			ResumeName:  ctx.config.ResumeName,
+			ClusterName: ctx.config.ClusterName,
+		}
+		respC := make(chan *statusResponse)
+		statusReq := &statusRequest{
+			responseC: respC,
+		}
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case ctx.statusReqC <- statusReq:
+			srsp := <-respC
+			if srsp != nil {
+				status.Enabled = srsp.enabled
+				status.LastTs = srsp.lastTs
+				if srsp.lastTs.T != 0 {
+					status.LastTsFormat = time.Unix(int64(srsp.lastTs.T), 0).Format("2006-01-02T15:04:05")
+				}
+			}
+			data, err := json.Marshal(status)
+			if err != nil {
+				w.WriteHeader(500)
+				fmt.Fprintf(w, "Unable to print instance info: %s", err)
+				break
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			w.Write(data)
+			fmt.Fprintln(w)
+			break
+		case <-timer.C:
+			w.WriteHeader(500)
+			fmt.Fprintf(w, "Timeout getting instance info")
+			break
+		}
+	})
 	if ctx.config.Pprof {
 		mux.HandleFunc("/debug/pprof/", pprof.Index)
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
@@ -3693,8 +3764,9 @@ func (ic *indexClient) startHTTPServer() {
 	config := ic.config
 	if config.EnableHTTPServer {
 		ic.hsc = &httpServerCtx{
-			bulk:   ic.bulk,
-			config: ic.config,
+			bulk:       ic.bulk,
+			config:     ic.config,
+			statusReqC: ic.statusReqC,
 		}
 		ic.hsc.buildServer()
 		go ic.hsc.serveHTTP()
@@ -4031,17 +4103,23 @@ func (ic *indexClient) clusterWait() {
 			defer heartBeat.Stop()
 			infoLog.Printf("Pausing work for cluster %s", ic.config.ClusterName)
 			ic.bulk.Stop()
-			for range heartBeat.C {
-				var err error
-				ic.enabled, err = ic.enableProcess()
-				if err != nil {
-					errorLog.Printf("Error attempting to become active cluster process: %s", err)
-					continue
-				}
-				if ic.enabled {
-					infoLog.Printf("Resuming work for cluster %s", ic.config.ClusterName)
-					ic.bulk.Start(context.Background())
-					break
+			wait := true
+			for wait {
+				select {
+				case req := <-ic.statusReqC:
+					req.responseC <- nil
+				case <-heartBeat.C:
+					var err error
+					ic.enabled, err = ic.enableProcess()
+					if err != nil {
+						errorLog.Printf("Error attempting to become active cluster process: %s", err)
+						break
+					}
+					if ic.enabled {
+						infoLog.Printf("Resuming work for cluster %s", ic.config.ClusterName)
+						ic.bulk.Start(context.Background())
+						wait = false
+					}
 				}
 			}
 		}
@@ -4153,6 +4231,13 @@ func (ic *indexClient) eventLoop() {
 				break
 			}
 			ic.nextStats()
+		case req := <-ic.statusReqC:
+			enabled, lastTs := ic.enabled, ic.lastTs
+			statusResp := &statusResponse{
+				enabled: enabled,
+				lastTs:  lastTs,
+			}
+			req.responseC <- statusResp
 		case err = <-ic.gtmCtx.ErrC:
 			if err == nil {
 				break
@@ -4233,10 +4318,10 @@ func (ic *indexClient) closeClient() {
 		ic.hsc.httpServer.Shutdown(context.Background())
 	}
 	if ic.bulk != nil {
-		ic.bulk.Flush()
+		ic.bulk.Close()
 	}
 	if ic.bulkStats != nil {
-		ic.bulkStats.Flush()
+		ic.bulkStats.Close()
 	}
 	close(ic.closeC)
 }
@@ -4246,7 +4331,7 @@ func (ic *indexClient) shutdown(timeout int) {
 	go ic.closeClient()
 	doneC := make(chan bool)
 	go func() {
-		closeT := time.NewTicker(time.Duration(timeout) * time.Second)
+		closeT := time.NewTimer(time.Duration(timeout) * time.Second)
 		defer closeT.Stop()
 		done := false
 		for !done {
@@ -4379,6 +4464,7 @@ func main() {
 		processC:    make(chan *gtm.Op),
 		fileC:       make(chan *gtm.Op),
 		relateC:     make(chan *gtm.Op, config.RelateBuffer),
+		statusReqC:  make(chan *statusRequest),
 	}
 
 	ic.run()
