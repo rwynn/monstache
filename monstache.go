@@ -3502,7 +3502,6 @@ func (ic *indexClient) doDelete(op *gtm.Op) {
 			if searchResult.Hits != nil && searchResult.TotalHits() == 1 {
 				hit := searchResult.Hits.Hits[0]
 				req.Index(hit.Index)
-				req.Type(hit.Type)
 				if hit.Routing != "" {
 					req.Routing(hit.Routing)
 				}
