@@ -1289,15 +1289,17 @@ func (ic *indexClient) enableProcess() (bool, error) {
 	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("cluster")
 	doc := bson.M{}
 	doc["_id"] = ic.config.ResumeName
-	doc["expireAt"] = time.Now().UTC()
 	doc["pid"] = os.Getpid()
 	if host, err := os.Hostname(); err == nil {
 		doc["host"] = host
 	} else {
 		return false, err
 	}
+	doc["expireAt"] = time.Now().UTC()
 	_, err := col.InsertOne(context.Background(), doc)
 	if err == nil {
+		// update using $currentDate
+		ic.ensureEnabled()
 		return true, nil
 	}
 	if isDup(err) {
@@ -1358,7 +1360,7 @@ func (ic *indexClient) ensureEnabled() (enabled bool, err error) {
 						_, err = col.UpdateOne(context.Background(), bson.M{
 							"_id": ic.config.ResumeName,
 						}, bson.M{
-							"$set": bson.M{"expireAt": time.Now().UTC()},
+							"$currentDate": bson.M{"expireAt": true},
 						})
 					}
 				}
