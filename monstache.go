@@ -4186,8 +4186,7 @@ func main() {
 				bulk.Flush()
 				if saveTimestamp(mongo, lastTimestamp, config); err == nil {
 					lastSavedTimestamp = lastTimestamp
-					lstTime := lastSavedTimestamp.Time()
-					lts = lstTime
+					lts = lastSavedTimestamp.Time()
 				} else {
 					processErr(err, config)
 				}
