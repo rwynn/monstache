@@ -219,11 +219,12 @@ type httpServerCtx struct {
 }
 
 type instanceStatus struct {
-	Enabled     bool
-	Pid         int
-	Hostname    string
-	ClusterName string
-	ResumeName  string
+	Enabled     bool   `json:"enabled"`
+	Pid         int    `json:"pid"`
+	Hostname    string `json:"hostname"`
+	ClusterName string `json:"cluster"`
+	ResumeName  string `json:"resumeName"`
+	LastTs      string `json:"lastTs"`
 }
 
 type configOptions struct {
@@ -3583,7 +3584,7 @@ func (ctx *httpServerCtx) serveHttp() {
 	}
 }
 
-func (ctx *httpServerCtx) buildServer() {
+func (ctx *httpServerCtx) buildServer(lts *time.Time) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/started", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
@@ -3600,12 +3601,14 @@ func (ctx *httpServerCtx) buildServer() {
 			w.WriteHeader(500)
 			fmt.Fprintf(w, "Unable to get hostname for instance info: %s", err)
 		}
+
 		status := instanceStatus{
 			Enabled:     *ctx.enabled,
 			Pid:         os.Getpid(),
 			Hostname:    hostname,
 			ResumeName:  ctx.config.ResumeName,
 			ClusterName: ctx.config.ClusterName,
+			LastTs:      lts.String(),
 		}
 		data, err := json.Marshal(status)
 		if err != nil {
@@ -3803,6 +3806,7 @@ func saveTimestampFromReplStatus(session *mgo.Session, config *configOptions) {
 }
 
 func main() {
+	var lts time.Time
 	enabled := true
 	defer handlePanic()
 	config := &configOptions{
@@ -3881,7 +3885,7 @@ func main() {
 			config:  config,
 			enabled: &enabled,
 		}
-		hsc.buildServer()
+		hsc.buildServer(&lts)
 		go hsc.serveHttp()
 	}
 	go func() {
@@ -4182,6 +4186,7 @@ func main() {
 				bulk.Flush()
 				if saveTimestamp(mongo, lastTimestamp, config); err == nil {
 					lastSavedTimestamp = lastTimestamp
+					lts = lastSavedTimestamp.Time()
 				} else {
 					processErr(err, config)
 				}
