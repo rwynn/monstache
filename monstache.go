@@ -71,6 +71,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
 var mongoDialInfo *mgo.DialInfo
+var statusReqC = make(chan *statusRequest)
 
 const version = "4.18.0"
 const mongoURLDefault string = "localhost"
@@ -215,6 +216,25 @@ type httpServerCtx struct {
 	config     *configOptions
 	shutdown   bool
 	started    time.Time
+}
+
+type instanceStatus struct {
+	Enabled      bool                `json:"enabled"`
+	Pid          int                 `json:"pid"`
+	Hostname     string              `json:"hostname"`
+	ClusterName  string              `json:"cluster"`
+	ResumeName   string              `json:"resumeName"`
+	LastTs       bson.MongoTimestamp `json:"lastTs"`
+	LastTsFormat string              `json:"lastTsFormat,omitempty"`
+}
+
+type statusResponse struct {
+	enabled bool
+	lastTs  bson.MongoTimestamp
+}
+
+type statusRequest struct {
+	responseC chan *statusResponse
 }
 
 type configOptions struct {
@@ -3599,6 +3619,52 @@ func (ctx *httpServerCtx) buildServer() {
 			}
 		})
 	}
+	mux.HandleFunc("/instance", func(w http.ResponseWriter, req *http.Request) {
+		hostname, err := os.Hostname()
+		if err != nil {
+			w.WriteHeader(500)
+			fmt.Fprintf(w, "Unable to get hostname for instance info: %s", err)
+			return
+		}
+		status := instanceStatus{
+			Pid:         os.Getpid(),
+			Hostname:    hostname,
+			ResumeName:  ctx.config.ResumeName,
+			ClusterName: ctx.config.ClusterName,
+		}
+		respC := make(chan *statusResponse)
+		statusReq := &statusRequest{
+			responseC: respC,
+		}
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case statusReqC <- statusReq:
+			srsp := <-respC
+			if srsp != nil {
+				status.Enabled = srsp.enabled
+				status.LastTs = srsp.lastTs
+				if srsp.lastTs != 0 {
+					status.LastTsFormat = time.Unix(int64(srsp.lastTs>>32), 0).Format("2006-01-02T15:04:05")
+				}
+			}
+			data, err := json.Marshal(status)
+			if err != nil {
+				w.WriteHeader(500)
+				fmt.Fprintf(w, "Unable to print instance info: %s", err)
+				break
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			w.Write(data)
+			fmt.Fprintln(w)
+			break
+		case <-timer.C:
+			w.WriteHeader(500)
+			fmt.Fprintf(w, "Timeout getting instance info")
+			break
+		}
+	})
 	if ctx.config.Pprof {
 		mux.HandleFunc("/debug/pprof/", pprof.Index)
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
@@ -3722,10 +3788,10 @@ func shutdown(timeout int, hsc *httpServerCtx, bulk *elastic.BulkProcessor, bulk
 			hsc.httpServer.Shutdown(context.Background())
 		}
 		if bulk != nil {
-			bulk.Flush()
+			bulk.Stop()
 		}
 		if bulkStats != nil {
-			bulkStats.Flush()
+			bulkStats.Stop()
 		}
 		close(closeC)
 	}()
@@ -4017,12 +4083,19 @@ func main() {
 		} else {
 			infoLog.Printf("Pausing work for cluster %s", config.ClusterName)
 			bulk.Stop()
-			for range heartBeat.C {
-				enabled, err = enableProcess(mongo, config)
-				if enabled {
-					infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
-					bulk.Start(context.Background())
-					break
+			wait := true
+			for wait {
+				select {
+				case req := <-statusReqC:
+					req.responseC <- nil
+				case <-heartBeat.C:
+					enabled, err = enableProcess(mongo, config)
+					if enabled {
+						wait = false
+						infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
+						bulk.Start(context.Background())
+						break
+					}
 				}
 			}
 		}
@@ -4202,6 +4275,13 @@ func main() {
 					statsLog.Println(string(stats))
 				}
 			}
+		case req := <-statusReqC:
+			e, l := enabled, lastTimestamp
+			statusResp := &statusResponse{
+				enabled: e,
+				lastTs:  l,
+			}
+			req.responseC <- statusResp
 		case err = <-gtmCtx.ErrC:
 			if err == nil {
 				break
