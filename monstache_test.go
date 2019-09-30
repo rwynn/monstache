@@ -4,15 +4,17 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
-	"github.com/olivere/elastic"
-	"github.com/rwynn/gtm"
-	"golang.org/x/net/context"
 	"math"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
+	"github.com/olivere/elastic"
+	"github.com/rwynn/gtm"
+	"github.com/rwynn/monstache/monstachemap"
+	"golang.org/x/net/context"
 )
 
 /*
@@ -76,6 +78,21 @@ func ValidateDocResponse(t *testing.T, doc map[string]string, resp *elastic.GetR
 	}
 	if src["data"].(string) != doc["data"] {
 		t.Fatalf("elasticsearch data %s does not match mongo data %s", src["data"], doc["data"])
+	}
+}
+
+func TestMarshallEmptyArray(t *testing.T) {
+	var data = map[string]interface{}{
+		"data": make([]interface{}, 0),
+	}
+	b, err := json.Marshal(monstachemap.ConvertMapForJSON(data))
+	if err != nil {
+		t.Fatalf("Unable to marshal object: %s", err)
+	}
+	expectedJSON := "{\"data\":[]}"
+	actualJSON := string(b)
+	if actualJSON != expectedJSON {
+		t.Fatalf("Expected %s but got %s", expectedJSON, actualJSON)
 	}
 }
 

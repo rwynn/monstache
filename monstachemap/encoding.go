@@ -82,7 +82,7 @@ func EncodeBinData(bi Binary) string {
 }
 
 func ConvertSliceForJSON(a []interface{}) []interface{} {
-	var avs []interface{}
+	var avs = make([]interface{}, len(a))
 	for _, av := range a {
 		var avc interface{}
 		switch achild := av.(type) {
