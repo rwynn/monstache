@@ -4,9 +4,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"strings"
 	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 const timeJsonFormat = "2006-01-02T15:04:05.000Z07:00"
@@ -81,7 +82,7 @@ func EncodeBinData(bi Binary) string {
 }
 
 func ConvertSliceForJSON(a []interface{}) []interface{} {
-	var avs []interface{}
+	var avs = make([]interface{}, len(a))
 	for _, av := range a {
 		var avc interface{}
 		switch achild := av.(type) {
