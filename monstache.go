@@ -1188,7 +1188,7 @@ func filterWithPlugin() gtm.OpFilter {
 
 func filterWithScript() gtm.OpFilter {
 	return func(op *gtm.Op) bool {
-		var keep bool = true
+		var keep = true
 		if (op.IsInsert() || op.IsUpdate()) && op.Data != nil {
 			nss := []string{"", op.Namespace}
 			for _, ns := range nss {
@@ -1254,15 +1254,16 @@ func enableProcess(s *mgo.Session, config *configOptions) (bool, error) {
 	col := session.DB(config.ConfigDatabaseName).C("cluster")
 	doc := make(map[string]interface{})
 	doc["_id"] = config.ResumeName
-	doc["expireAt"] = time.Now().UTC()
 	doc["pid"] = os.Getpid()
 	if host, err := os.Hostname(); err == nil {
 		doc["host"] = host
 	} else {
 		return false, err
 	}
+	doc["expireAt"] = time.Now().UTC()
 	err := col.Insert(doc)
 	if err == nil {
+		ensureEnabled(s, config)
 		return true, nil
 	}
 	if mgo.IsDup(err) {
@@ -1290,7 +1291,7 @@ func ensureEnabled(s *mgo.Session, config *configOptions) (enabled bool, err err
 				enabled = (pid == os.Getpid() && host == hostname)
 				if enabled {
 					err = col.UpdateId(config.ResumeName,
-						bson.M{"$set": bson.M{"expireAt": time.Now().UTC()}})
+						bson.M{"$currentDate": bson.M{"expireAt": true}})
 				}
 			}
 		}
