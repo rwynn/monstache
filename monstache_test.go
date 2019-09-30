@@ -5,17 +5,19 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/olivere/elastic"
-	"github.com/rwynn/gtm"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/bsontype"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"math"
 	"os"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/olivere/elastic"
+	"github.com/rwynn/gtm"
+	"github.com/rwynn/monstache/monstachemap"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/bsontype"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 /*
@@ -98,6 +100,21 @@ func ValidateDocResponse(t *testing.T, doc bson.M, resp *elastic.GetResult) {
 	}
 	if src["data"].(string) != doc["data"] {
 		t.Fatalf("elasticsearch data %s does not match mongo data %s", src["data"], doc["data"])
+	}
+}
+
+func TestMarshallEmptyArray(t *testing.T) {
+	var data = map[string]interface{}{
+		"data": make([]interface{}, 0),
+	}
+	b, err := json.Marshal(monstachemap.ConvertMapForJSON(data))
+	if err != nil {
+		t.Fatalf("Unable to marshal object: %s", err)
+	}
+	expectedJSON := "{\"data\":[]}"
+	actualJSON := string(b)
+	if actualJSON != expectedJSON {
+		t.Fatalf("Expected %s but got %s", expectedJSON, actualJSON)
 	}
 }
 
