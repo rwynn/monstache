@@ -4302,13 +4302,20 @@ func main() {
 					infoLog.Printf("Pausing work for cluster %s", config.ClusterName)
 					gtmCtx.Pause()
 					bulk.Stop()
-					for range heartBeat.C {
-						enabled, err = enableProcess(mongo, config)
-						if enabled {
-							infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
-							bulk.Start(context.Background())
-							resumeWork(gtmCtx, mongo, config)
-							break
+					wait := true
+					for wait {
+						select {
+						case req := <-statusReqC:
+							req.responseC <- nil
+						case <-heartBeat.C:
+							enabled, err = enableProcess(mongo, config)
+							if enabled {
+								wait = false
+								infoLog.Printf("Resuming work for cluster %s", config.ClusterName)
+								bulk.Start(context.Background())
+								resumeWork(gtmCtx, mongo, config)
+								break
+							}
 						}
 					}
 				}
