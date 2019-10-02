@@ -4211,13 +4211,20 @@ func (ic *indexClient) nextHeartbeat() {
 			ic.bulk.Stop()
 			heartBeat := time.NewTicker(10 * time.Second)
 			defer heartBeat.Stop()
-			for range heartBeat.C {
-				ic.enabled, err = ic.enableProcess()
-				if ic.enabled {
-					infoLog.Printf("Resuming work for cluster %s", ic.config.ClusterName)
-					ic.bulk.Start(context.Background())
-					ic.resumeWork()
-					break
+			wait := true
+			for wait {
+				select {
+				case req := <-ic.statusReqC:
+					req.responseC <- nil
+				case <-heartBeat.C:
+					ic.enabled, err = ic.enableProcess()
+					if ic.enabled {
+						wait = false
+						infoLog.Printf("Resuming work for cluster %s", ic.config.ClusterName)
+						ic.bulk.Start(context.Background())
+						ic.resumeWork()
+						break
+					}
 				}
 			}
 		}
