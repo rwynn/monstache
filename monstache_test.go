@@ -106,12 +106,13 @@ func ValidateDocResponse(t *testing.T, doc bson.M, resp *elastic.GetResult) {
 func TestMarshallEmptyArray(t *testing.T) {
 	var data = map[string]interface{}{
 		"data": make([]interface{}, 0),
+		"ints": []interface{}{1, 2, 3},
 	}
 	b, err := json.Marshal(monstachemap.ConvertMapForJSON(data))
 	if err != nil {
 		t.Fatalf("Unable to marshal object: %s", err)
 	}
-	expectedJSON := "{\"data\":[]}"
+	expectedJSON := "{\"data\":[],\"ints\":[1,2,3]}"
 	actualJSON := string(b)
 	if actualJSON != expectedJSON {
 		t.Fatalf("Expected %s but got %s", expectedJSON, actualJSON)
