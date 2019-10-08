@@ -1,1 +1,1 @@
-rwynn/monstache:5.2.1
+rwynn/monstache:5.2.2
