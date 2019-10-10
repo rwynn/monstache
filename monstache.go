@@ -3757,7 +3757,14 @@ func (ic *indexClient) sigListen() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
 		<-sigs
-		ic.shutdown(10)
+		go func() {
+			// forced shutdown on 2nd signal
+			<-sigs
+			os.Exit(1)
+		}()
+		// clean shutdown
+		ic.stopAllWorkers()
+		ic.doneC <- 10
 	}()
 }
 
@@ -3849,6 +3856,20 @@ func (ic *indexClient) startPostProcess() {
 	}
 }
 
+func (ic *indexClient) stopAllWorkers() {
+	infoLog.Println("Stopping all workers")
+	ic.gtmCtx.Stop()
+	<-ic.opsConsumed
+	close(ic.relateC)
+	ic.relateWg.Wait()
+	close(ic.fileC)
+	ic.fileWg.Wait()
+	close(ic.indexC)
+	ic.indexWg.Wait()
+	close(ic.processC)
+	ic.processWg.Wait()
+}
+
 func (ic *indexClient) startReadWait() {
 	if len(ic.config.DirectReadNs) > 0 {
 		go func() {
@@ -3858,17 +3879,7 @@ func (ic *indexClient) startReadWait() {
 				ic.saveTimestampFromReplStatus()
 			}
 			if ic.config.ExitAfterDirectReads {
-				infoLog.Println("Stopping all workers")
-				ic.gtmCtx.Stop()
-				<-ic.opsConsumed
-				close(ic.relateC)
-				ic.relateWg.Wait()
-				close(ic.fileC)
-				ic.fileWg.Wait()
-				close(ic.indexC)
-				ic.indexWg.Wait()
-				close(ic.processC)
-				ic.processWg.Wait()
+				ic.stopAllWorkers()
 				ic.doneC <- 30
 			}
 		}()
