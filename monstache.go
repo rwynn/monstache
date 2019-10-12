@@ -130,6 +130,11 @@ type indexClient struct {
 	relateC     chan *gtm.Op
 	filter      gtm.OpFilter
 	statusReqC  chan *statusRequest
+	sigH        *sigHandler
+}
+
+type sigHandler struct {
+	clientStartedC chan *indexClient
 }
 
 type awsConnect struct {
@@ -2430,18 +2435,6 @@ func cleanMongoURL(URL string) string {
 	return url
 }
 
-func (config *configOptions) cancelConnection(mongoOk chan bool) {
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
-	defer signal.Stop(sigs)
-	select {
-	case <-mongoOk:
-		return
-	case <-sigs:
-		os.Exit(exitStatus)
-	}
-}
-
 func (config *configOptions) dialMongo(URL string) (*mongo.Client, error) {
 	var clientOptions *options.ClientOptions
 	if config.mongoClientOptions == nil {
@@ -2466,8 +2459,6 @@ func (config *configOptions) dialMongo(URL string) (*mongo.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	mongoOk := make(chan bool)
-	go config.cancelConnection(mongoOk)
 	err = client.Connect(context.Background())
 	if err != nil {
 		return nil, err
@@ -2476,7 +2467,6 @@ func (config *configOptions) dialMongo(URL string) (*mongo.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	close(mongoOk)
 	return client, nil
 }
 
@@ -3752,19 +3742,26 @@ func buildPipe(config *configOptions) func(string, bool) ([]interface{}, error) 
 	return nil
 }
 
-func (ic *indexClient) sigListen() {
+func (sh *sigHandler) start() {
 	go func() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
-		<-sigs
-		go func() {
-			// forced shutdown on 2nd signal
+		select {
+		case <-sigs:
+			// we never got started so simply exit
+			os.Exit(0)
+		case ic := <-sh.clientStartedC:
 			<-sigs
-			os.Exit(1)
-		}()
-		// clean shutdown
-		ic.stopAllWorkers()
-		ic.doneC <- 10
+			go func() {
+				// forced shutdown on 2nd signal
+				<-sigs
+				infoLog.Println("Forcing shutdown, bye bye...")
+				os.Exit(1)
+			}()
+			// we started processing events so do a clean shutdown
+			ic.stopAllWorkers()
+			ic.doneC <- 10
+		}
 	}()
 }
 
@@ -3815,7 +3812,6 @@ func (ic *indexClient) run() {
 	ic.setupFileIndexing()
 	ic.setupBulk()
 	ic.startHTTPServer()
-	ic.sigListen()
 	ic.startCluster()
 	ic.startRelate()
 	ic.startIndex()
@@ -4229,6 +4225,7 @@ func (ic *indexClient) eventLoop() {
 		printStats.Stop()
 	}
 	infoLog.Println("Listening for events")
+	ic.sigH.clientStartedC <- ic
 	for {
 		select {
 		case timeout := <-ic.doneC:
@@ -4368,15 +4365,6 @@ func (ic *indexClient) shutdown(timeout int) {
 	os.Exit(exitStatus)
 }
 
-func handlePanic() {
-	if r := recover(); r != nil {
-		errorLog.Println(r)
-		infoLog.Println("Shutting down with exit status 1 after panic.")
-		time.Sleep(3 * time.Second)
-		os.Exit(1)
-	}
-}
-
 func getBuildInfo(client *mongo.Client) (bi *buildInfo, err error) {
 	db := client.Database("admin")
 	result := db.RunCommand(context.Background(), bson.M{
@@ -4458,7 +4446,10 @@ func buildElasticClient(config *configOptions) *elastic.Client {
 
 func main() {
 
-	defer handlePanic()
+	sh := &sigHandler{
+		clientStartedC: make(chan *indexClient),
+	}
+	sh.start()
 
 	config := mustConfig()
 
@@ -4484,6 +4475,7 @@ func main() {
 		fileC:       make(chan *gtm.Op),
 		relateC:     make(chan *gtm.Op, config.RelateBuffer),
 		statusReqC:  make(chan *statusRequest),
+		sigH:        sh,
 	}
 
 	ic.run()
