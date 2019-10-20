@@ -32,6 +32,8 @@ github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d h1:1VUlQbCfkoSGv
 github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d/go.mod h1:xvqspoSXJTIpemEonrMDFq6XzwHYYgToXWj5eRX1OtY=
 github.com/rwynn/gtm v0.0.0-20190819153110-515be98d5e90 h1:CIwwoO+/5KKWfAZ5vJ3ZFnr49ikOg3mPW7zGrt+axVI=
 github.com/rwynn/gtm v0.0.0-20190819153110-515be98d5e90/go.mod h1:LYXeTMjbA7l9k9oEM+NUBuu0BgvNrD5nQuo8seLsar0=
+github.com/rwynn/gtm v0.0.0-20191017152926-d7134e6dc9a6 h1:9wr9G9OjXbNULdP1ajuBtU6tWm7XmHIfrNkz0hUPG9c=
+github.com/rwynn/gtm v0.0.0-20191017152926-d7134e6dc9a6/go.mod h1:LYXeTMjbA7l9k9oEM+NUBuu0BgvNrD5nQuo8seLsar0=
 github.com/serialx/hashring v0.0.0-20190515033939-7706f26af194 h1:YWnuNx9HpWDl2VXcLw2O+va5a8Ii9AVcsqrOkTjWPas=
 github.com/serialx/hashring v0.0.0-20190515033939-7706f26af194/go.mod h1:/yeG0My1xr/u+HZrFQ1tOQQQQrOawfyMUH13ai5brBc=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=

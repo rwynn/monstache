@@ -329,6 +329,7 @@ type configOptions struct {
 	DirectReadSplitMax       int            `toml:"direct-read-split-max"`
 	DirectReadConcur         int            `toml:"direct-read-concur"`
 	DirectReadNoTimeout      bool           `toml:"direct-read-no-timeout"`
+	DirectReadBounded        bool           `toml:"direct-read-bounded"`
 	DirectReadExcludeRegex   string         `toml:"direct-read-dynamic-exclude-regex"`
 	MapperPluginPath         string         `toml:"mapper-plugin-path"`
 	EnableHTTPServer         bool           `toml:"enable-http-server"`
@@ -1486,6 +1487,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.IntVar(&config.DirectReadSplitMax, "direct-read-split-max", 0, "Max number of times to split a collection for direct reads")
 	flag.IntVar(&config.DirectReadConcur, "direct-read-concur", 0, "Max number of direct-read-namespaces to read concurrently. By default all givne are read concurrently")
 	flag.BoolVar(&config.DirectReadNoTimeout, "direct-read-no-timeout", false, "True to set the no cursor timeout flag for direct reads")
+	flag.BoolVar(&config.DirectReadBounded, "direct-read-bounded", false, "True to limit direct reads to the docs present at query start time")
 	flag.Var(&config.RoutingNamespaces, "routing-namespace", "A list of namespaces that override routing information")
 	flag.Var(&config.TimeMachineNamespaces, "time-machine-namespace", "A list of direct read namespaces")
 	flag.StringVar(&config.TimeMachineIndexPrefix, "time-machine-index-prefix", "", "A prefix to preprend to time machine indexes")
@@ -1827,6 +1829,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if !config.DirectReadNoTimeout && tomlConfig.DirectReadNoTimeout {
 			config.DirectReadNoTimeout = true
+		}
+		if !config.DirectReadBounded && tomlConfig.DirectReadBounded {
+			config.DirectReadBounded = true
 		}
 		if !config.ElasticRetry && tomlConfig.ElasticRetry {
 			config.ElasticRetry = true
@@ -4133,6 +4138,7 @@ func (ic *indexClient) buildGtmOptions() *gtm.Options {
 		Log:                 infoLog,
 		Pipe:                buildPipe(config),
 		ChangeStreamNs:      config.ChangeStreamNs,
+		DirectReadBounded:   config.DirectReadBounded,
 	}
 	return gtmOpts
 }
