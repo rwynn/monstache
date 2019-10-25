@@ -75,7 +75,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
 
-const version = "6.2.3"
+const version = "6.2.4"
 const mongoURLDefault string = "mongodb://localhost:27017"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
