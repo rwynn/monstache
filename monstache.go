@@ -4461,12 +4461,12 @@ func buildElasticClient(config *configOptions) *elastic.Client {
 
 func main() {
 
+	config := mustConfig()
+
 	sh := &sigHandler{
 		clientStartedC: make(chan *indexClient),
 	}
 	sh.start()
-
-	config := mustConfig()
 
 	mongoClient := buildMongoClient(config)
 	loadBuiltinFunctions(mongoClient, config)
