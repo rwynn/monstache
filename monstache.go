@@ -295,6 +295,7 @@ type configOptions struct {
 	IndexFiles               bool   `toml:"index-files"`
 	IndexAsUpdate            bool   `toml:"index-as-update"`
 	FileHighlighting         bool   `toml:"file-highlighting"`
+	DisableFilePipelinePut   bool   `toml:"disable-file-pipeline-put"`
 	EnablePatches            bool   `toml:"enable-patches"`
 	FailFast                 bool   `toml:"fail-fast"`
 	IndexOplogTime           bool   `toml:"index-oplog-time"`
@@ -569,6 +570,10 @@ func (ic *indexClient) deleteIndex(namespace string) (err error) {
 }
 
 func (ic *indexClient) ensureFileMapping() (err error) {
+	config := ic.config
+	if config.DisableFilePipelinePut {
+		return nil
+	}
 	ctx := context.Background()
 	pipeline := map[string]interface{}{
 		"description": "Extract file information",
@@ -1447,6 +1452,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.ResumeWriteUnsafe, "resume-write-unsafe", false, "True to speedup writes of the last timestamp synched for resuming at the cost of error checking")
 	flag.BoolVar(&config.Replay, "replay", false, "True to replay all events from the oplog and index them in elasticsearch")
 	flag.BoolVar(&config.IndexFiles, "index-files", false, "True to index gridfs files into elasticsearch. Requires the elasticsearch mapper-attachments (deprecated) or ingest-attachment plugin")
+	flag.BoolVar(&config.DisableFilePipelinePut, "disable-file-pipeline-put", false, "True to disable auto-creation of the ingest plugin pipeline")
 	flag.BoolVar(&config.IndexAsUpdate, "index-as-update", false, "True to index documents as updates instead of overwrites")
 	flag.BoolVar(&config.FileHighlighting, "file-highlighting", false, "True to enable the ability to highlight search times for a file query")
 	flag.BoolVar(&config.EnablePatches, "enable-patches", false, "True to include an json-patch field on updates")
@@ -1833,6 +1839,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if !config.IndexFiles {
 			config.IndexFiles = tomlConfig.IndexFiles
+		}
+		if !config.DisableFilePipelinePut {
+			config.DisableFilePipelinePut = tomlConfig.DisableFilePipelinePut
 		}
 		if config.FileDownloaders == 0 {
 			config.FileDownloaders = tomlConfig.FileDownloaders
