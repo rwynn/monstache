@@ -194,6 +194,14 @@ type findCall struct {
 	sel    map[string]int
 }
 
+type logRotate struct {
+	MaxSize    int  `toml:"max-size"`
+	MaxAge     int  `toml:"max-age"`
+	MaxBackups int  `toml:"max-backups"`
+	LocalTime  bool `toml:"localtime"`
+	Compress   bool `toml:"compress"`
+}
+
 type logFiles struct {
 	Info  string
 	Warn  string
@@ -258,6 +266,7 @@ type configOptions struct {
 	MongoOpLogCollectionName string      `toml:"mongo-oplog-collection-name"`
 	GtmSettings              gtmSettings `toml:"gtm-settings"`
 	AWSConnect               awsConnect  `toml:"aws-connect"`
+	LogRotate                logRotate   `toml:"log-rotate"`
 	Logs                     logFiles    `toml:"logs"`
 	GraylogAddr              string      `toml:"graylog-addr"`
 	ElasticUrls              stringargs  `toml:"elasticsearch-urls"`
@@ -1757,6 +1766,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 	if config.ConfigFile != "" {
 		var tomlConfig = configOptions{
 			ConfigFile:             config.ConfigFile,
+			LogRotate:              config.LogRotate,
 			DroppedDatabases:       true,
 			DroppedCollections:     true,
 			ElasticValidatePemFile: true,
@@ -2036,6 +2046,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		config.GtmSettings = tomlConfig.GtmSettings
 		config.Relate = tomlConfig.Relate
+		config.LogRotate = tomlConfig.LogRotate
 		tomlConfig.loadScripts()
 		tomlConfig.loadFilters()
 		tomlConfig.loadPipelines()
@@ -2048,9 +2059,11 @@ func (config *configOptions) loadConfigFile() *configOptions {
 func (config *configOptions) newLogger(path string) *lumberjack.Logger {
 	return &lumberjack.Logger{
 		Filename:   path,
-		MaxSize:    500, // megabytes
-		MaxBackups: 5,
-		MaxAge:     28, //days
+		MaxSize:    config.LogRotate.MaxSize,
+		MaxBackups: config.LogRotate.MaxBackups,
+		MaxAge:     config.LogRotate.MaxAge,
+		LocalTime:  config.LogRotate.LocalTime,
+		Compress:   config.LogRotate.Compress,
 	}
 }
 
@@ -2218,6 +2231,27 @@ func (config *configOptions) loadEnvironment() *configOptions {
 			config.Logs.Error = val + "/error.log"
 			config.Logs.Trace = val + "/trace.log"
 			config.Logs.Stats = val + "/stats.log"
+			break
+		case "MONSTACHE_LOG_MAX_SIZE":
+			i, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				errorLog.Fatalf("Failed to load MONSTACHE_LOG_MAX_SIZE: %s", err)
+			}
+			config.LogRotate.MaxSize = int(i)
+			break
+		case "MONSTACHE_LOG_MAX_BACKUPS":
+			i, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				errorLog.Fatalf("Failed to load MONSTACHE_LOG_MAX_BACKUPS: %s", err)
+			}
+			config.LogRotate.MaxBackups = int(i)
+			break
+		case "MONSTACHE_LOG_MAX_AGE":
+			i, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				errorLog.Fatalf("Failed to load MONSTACHE_LOG_MAX_AGE: %s", err)
+			}
+			config.LogRotate.MaxAge = int(i)
 			break
 		case "MONSTACHE_HTTP_ADDR":
 			if config.HTTPServerAddr == "" {
@@ -3529,6 +3563,16 @@ func (ic *indexClient) doDelete(op *gtm.Op) {
 	return
 }
 
+func logRotateDefaults() logRotate {
+	return logRotate{
+		MaxSize:    500, //megabytes
+		MaxAge:     28,  // days
+		MaxBackups: 5,
+		LocalTime:  false,
+		Compress:   false,
+	}
+}
+
 func gtmDefaultSettings() gtmSettings {
 	return gtmSettings{
 		ChannelSize:    gtmChannelSizeDefault,
@@ -4409,6 +4453,7 @@ func (ic *indexClient) saveTimestampFromReplStatus() {
 func mustConfig() *configOptions {
 	config := &configOptions{
 		GtmSettings: gtmDefaultSettings(),
+		LogRotate:   logRotateDefaults(),
 	}
 	config.parseCommandLineFlags()
 	if config.Version {
