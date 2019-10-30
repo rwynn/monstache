@@ -229,6 +229,7 @@ type gtmSettings struct {
 	ChannelSize    int    `toml:"channel-size"`
 	BufferSize     int    `toml:"buffer-size"`
 	BufferDuration string `toml:"buffer-duration"`
+	MaxAwaitTime   string `toml:"max-await-time"`
 }
 
 type httpServerCtx struct {
@@ -3622,6 +3623,7 @@ func gtmDefaultSettings() gtmSettings {
 		ChannelSize:    gtmChannelSizeDefault,
 		BufferSize:     32,
 		BufferDuration: "75ms",
+		MaxAwaitTime:   "",
 	}
 }
 
@@ -4154,6 +4156,31 @@ func (ic *indexClient) buildDynamicDirectReadNs(filter gtm.OpFilter) (names []st
 	return
 }
 
+func (ic *indexClient) parseBufferDuration() time.Duration {
+	config := ic.config
+	gtmBufferDuration, err := time.ParseDuration(config.GtmSettings.BufferDuration)
+	if err != nil {
+		errorLog.Fatalf("Unable to parse gtm buffer duration %s: %s",
+			config.GtmSettings.BufferDuration, err)
+	}
+	return gtmBufferDuration
+}
+
+func (ic *indexClient) parseMaxAwaitTime() time.Duration {
+	config := ic.config
+	var maxAwaitTime time.Duration
+	if config.GtmSettings.MaxAwaitTime != "" {
+		var err error
+		maxAwaitTime, err = time.ParseDuration(config.GtmSettings.MaxAwaitTime)
+		if err != nil {
+			errorLog.Fatalf("Unable to parse gtm max await time %s: %s",
+				config.GtmSettings.MaxAwaitTime, err)
+
+		}
+	}
+	return maxAwaitTime
+}
+
 func (ic *indexClient) buildGtmOptions() *gtm.Options {
 	var nsFilter, filter, directReadFilter gtm.OpFilter
 	config := ic.config
@@ -4162,11 +4189,6 @@ func (ic *indexClient) buildGtmOptions() *gtm.Options {
 	nsFilter = gtm.ChainOpFilters(filterChain...)
 	filter = gtm.ChainOpFilters(filterArray...)
 	directReadFilter = gtm.ChainOpFilters(filterArray...)
-	gtmBufferDuration, err := time.ParseDuration(config.GtmSettings.BufferDuration)
-	if err != nil {
-		errorLog.Fatalf("Unable to parse gtm buffer duration %s: %s",
-			config.GtmSettings.BufferDuration, err)
-	}
 	after := ic.buildTimestampGen()
 	if config.dynamicDirectReadList() {
 		config.DirectReadNs = ic.buildDynamicDirectReadNs(nsFilter)
@@ -4181,7 +4203,7 @@ func (ic *indexClient) buildGtmOptions() *gtm.Options {
 		ChannelSize:         config.GtmSettings.ChannelSize,
 		Ordering:            gtm.AnyOrder,
 		WorkerCount:         10,
-		BufferDuration:      gtmBufferDuration,
+		BufferDuration:      ic.parseBufferDuration(),
 		BufferSize:          config.GtmSettings.BufferSize,
 		DirectReadNs:        config.DirectReadNs,
 		DirectReadSplitMax:  int32(config.DirectReadSplitMax),
@@ -4192,6 +4214,7 @@ func (ic *indexClient) buildGtmOptions() *gtm.Options {
 		Pipe:                buildPipe(config),
 		ChangeStreamNs:      config.ChangeStreamNs,
 		DirectReadBounded:   config.DirectReadBounded,
+		MaxAwaitTime:        ic.parseMaxAwaitTime(),
 	}
 	return gtmOpts
 }
