@@ -2,7 +2,7 @@ module github.com/rwynn/monstache
 
 require (
 	github.com/BurntSushi/toml v0.3.1
-	github.com/aws/aws-sdk-go v1.22.1
+	github.com/aws/aws-sdk-go v1.25.25
 	github.com/coreos/go-systemd v0.0.0-20190719114852-fd7a80b32e1f
 	github.com/evanphx/json-patch v4.5.0+incompatible
 	github.com/golang/snappy v0.0.1 // indirect
