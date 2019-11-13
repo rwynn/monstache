@@ -54,6 +54,7 @@ var elasticUrlConfig = elastic.SetURL(elasticUrl)
 var elasticNoSniffConfig = elastic.SetSniff(false)
 
 func init() {
+	testing.Init()
 	fmt.Printf("MongoDB Url: %v\nElasticsearch Url: %v\n", mongoUrl, elasticUrl)
 
 	flag.IntVar(&delay, "delay", 3, "Delay between operations in seconds")
