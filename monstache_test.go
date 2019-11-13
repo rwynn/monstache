@@ -57,6 +57,7 @@ var elasticNoSniffConfig = elastic.SetSniff(false)
 var elasticUserConfig = elastic.SetBasicAuth(elasticUser, elasticPass)
 
 func init() {
+	testing.Init()
 	fmt.Printf("MongoDB Url: %v\nElasticsearch Url: %v\nElasticsearch User:%v\nElasticsearch Pass:%v\n", mongoUrl, elasticUrl, elasticUser, elasticPass)
 	flag.IntVar(&delay, "delay", 3, "Delay between operations in seconds")
 	flag.Parse()
