@@ -73,7 +73,7 @@ var exitStatus = 0
 var mongoDialInfo *mgo.DialInfo
 var statusReqC = make(chan *statusRequest)
 
-const version = "4.19.1"
+const version = "4.19.2"
 const mongoURLDefault string = "localhost"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
