@@ -100,6 +100,13 @@ const (
 	ignoreDeleteStrategy
 )
 
+type resumeStrategy int
+
+const (
+	timestampResumeStrategy resumeStrategy = iota
+	tokenResumeStrategy
+)
+
 type buildInfo struct {
 	Version string
 }
@@ -125,6 +132,7 @@ type indexClient struct {
 	enabled     bool
 	lastTs      primitive.Timestamp
 	lastTsSaved primitive.Timestamp
+	tokens      bson.M
 	indexC      chan *gtm.Op
 	processC    chan *gtm.Op
 	fileC       chan *gtm.Op
@@ -299,8 +307,9 @@ type configOptions struct {
 	Gzip                     bool
 	Verbose                  bool
 	Resume                   bool
-	ResumeWriteUnsafe        bool  `toml:"resume-write-unsafe"`
-	ResumeFromTimestamp      int64 `toml:"resume-from-timestamp"`
+	ResumeStrategy           resumeStrategy `toml:"resume-strategy"`
+	ResumeWriteUnsafe        bool           `toml:"resume-write-unsafe"`
+	ResumeFromTimestamp      int64          `toml:"resume-from-timestamp"`
 	Replay                   bool
 	DroppedDatabases         bool   `toml:"dropped-databases"`
 	DroppedCollections       bool   `toml:"dropped-collections"`
@@ -398,6 +407,20 @@ func (arg *deleteStrategy) Set(value string) (err error) {
 	}
 	ds := deleteStrategy(i)
 	*arg = ds
+	return
+}
+
+func (arg *resumeStrategy) String() string {
+	return fmt.Sprintf("%d", *arg)
+}
+
+func (arg *resumeStrategy) Set(value string) (err error) {
+	var i int
+	if i, err = strconv.Atoi(value); err != nil {
+		return
+	}
+	rs := resumeStrategy(i)
+	*arg = rs
 	return
 }
 
@@ -1422,6 +1445,34 @@ func (ic *indexClient) resumeWork() {
 	ic.gtmCtx.Resume()
 }
 
+func (ic *indexClient) saveTokens() error {
+	var err error
+	if len(ic.tokens) == 0 {
+		return err
+	}
+	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("tokens")
+	bwo := options.BulkWrite().SetOrdered(false)
+	var models []mongo.WriteModel
+	for streamID, token := range ic.tokens {
+		filter := bson.M{
+			"resumeName": ic.config.ResumeName,
+			"streamID":   streamID,
+		}
+		replacement := bson.M{
+			"resumeName": ic.config.ResumeName,
+			"streamID":   streamID,
+			"token":      token,
+		}
+		model := mongo.NewReplaceOneModel()
+		model.SetUpsert(true)
+		model.SetFilter(filter)
+		model.SetReplacement(replacement)
+		models = append(models, model)
+	}
+	_, err = col.BulkWrite(context.Background(), models, bwo)
+	return err
+}
+
 func (ic *indexClient) saveTimestamp() error {
 	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("monstache")
 	doc := map[string]interface{}{
@@ -1477,6 +1528,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.StatsDuration, "stats-duration", "", "The duration after which stats are logged")
 	flag.StringVar(&config.StatsIndexFormat, "stats-index-format", "", "time.Time supported format to use for the stats index names")
 	flag.BoolVar(&config.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
+	flag.Var(&config.ResumeStrategy, "resume-strategy", "Strategy to use for resuming. 0=timestamp,1=token")
 	flag.Int64Var(&config.ResumeFromTimestamp, "resume-from-timestamp", 0, "Timestamp to resume syncing from")
 	flag.BoolVar(&config.ResumeWriteUnsafe, "resume-write-unsafe", false, "True to speedup writes of the last timestamp synched for resuming at the cost of error checking")
 	flag.BoolVar(&config.Replay, "replay", false, "True to replay all events from the oplog and index them in elasticsearch")
@@ -1984,6 +2036,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.ClusterName == "" {
 			config.ClusterName = tomlConfig.ClusterName
+		}
+		if config.ResumeStrategy == 0 {
+			config.ResumeStrategy = tomlConfig.ResumeStrategy
 		}
 		if config.DirectReadExcludeRegex == "" {
 			config.DirectReadExcludeRegex = tomlConfig.DirectReadExcludeRegex
@@ -4006,9 +4061,41 @@ func (ic *indexClient) dialShards() []*mongo.Client {
 	return mongos
 }
 
+func (ic *indexClient) buildTokenGen() gtm.ResumeTokenGenenerator {
+	config := ic.config
+	var token gtm.ResumeTokenGenenerator
+	if config.ResumeStrategy != tokenResumeStrategy {
+		return token
+	}
+	token = func(client *mongo.Client, streamID string, options *gtm.Options) (interface{}, error) {
+		var t interface{} = nil
+		var err error
+		col := client.Database(config.ConfigDatabaseName).Collection("tokens")
+		result := col.FindOne(context.Background(), bson.M{
+			"resumeName": config.ResumeName,
+			"streamID":   streamID,
+		})
+		if err = result.Err(); err == nil {
+			doc := make(map[string]interface{})
+			if err = result.Decode(&doc); err == nil {
+				t = doc["token"]
+				if t != nil {
+					infoLog.Printf("Resuming stream '%s' from collection %s.tokens using resume name '%s'",
+						streamID, config.ConfigDatabaseName, config.ResumeName)
+				}
+			}
+		}
+		return t, err
+	}
+	return token
+}
+
 func (ic *indexClient) buildTimestampGen() gtm.TimestampGenerator {
 	var after gtm.TimestampGenerator
 	config := ic.config
+	if config.ResumeStrategy != timestampResumeStrategy {
+		return after
+	}
 	if config.Replay {
 		after = func(client *mongo.Client, options *gtm.Options) (primitive.Timestamp, error) {
 			ts, _ := gtm.FirstOpTimestamp(client, options)
@@ -4190,11 +4277,13 @@ func (ic *indexClient) buildGtmOptions() *gtm.Options {
 	filter = gtm.ChainOpFilters(filterArray...)
 	directReadFilter = gtm.ChainOpFilters(filterArray...)
 	after := ic.buildTimestampGen()
+	token := ic.buildTokenGen()
 	if config.dynamicDirectReadList() {
 		config.DirectReadNs = ic.buildDynamicDirectReadNs(nsFilter)
 	}
 	gtmOpts := &gtm.Options{
 		After:               after,
+		Token:               token,
 		Filter:              filter,
 		NamespaceFilter:     nsFilter,
 		OpLogDisabled:       config.EnableOplog == false,
@@ -4258,6 +4347,16 @@ func (ic *indexClient) clusterWait() {
 			}
 		}
 	}
+}
+
+func (ic *indexClient) nextTokens() {
+	ic.bulk.Flush()
+	if err := ic.saveTokens(); err == nil {
+		ic.lastTsSaved = ic.lastTs
+	} else {
+		ic.processErr(err)
+	}
+	return
 }
 
 func (ic *indexClient) nextTimestamp() {
@@ -4362,7 +4461,11 @@ func (ic *indexClient) eventLoop() {
 			if !ic.enabled {
 				break
 			}
-			ic.nextTimestamp()
+			if ic.config.ResumeStrategy == tokenResumeStrategy {
+				ic.nextTokens()
+			} else {
+				ic.nextTimestamp()
+			}
 		case <-heartBeat.C:
 			if ic.config.ClusterName == "" {
 				break
@@ -4398,6 +4501,9 @@ func (ic *indexClient) eventLoop() {
 			}
 			if op.IsSourceOplog() {
 				ic.lastTs = op.Timestamp
+				if ic.config.ResumeStrategy == tokenResumeStrategy {
+					ic.tokens[op.ResumeToken.StreamID] = op.ResumeToken.ResumeToken
+				}
 			}
 			if err = ic.routeOp(op); err != nil {
 				ic.processErr(err)
@@ -4603,6 +4709,7 @@ func main() {
 		relateC:     make(chan *gtm.Op, config.RelateBuffer),
 		statusReqC:  make(chan *statusRequest),
 		sigH:        sh,
+		tokens:      bson.M{},
 	}
 
 	ic.run()
