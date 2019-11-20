@@ -10,7 +10,7 @@ require (
 	github.com/minio/highwayhash v1.0.0 // indirect
 	github.com/olivere/elastic/v7 v7.0.9
 	github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d
-	github.com/rwynn/gtm v1.0.1-0.20191114012735-32a9d2360e76
+	github.com/rwynn/gtm v1.0.1-0.20191119151623-081995b34c9c
 	github.com/serialx/hashring v0.0.0-20190515033939-7706f26af194 // indirect
 	github.com/stretchr/testify v1.4.0 // indirect
 	github.com/tidwall/pretty v1.0.0 // indirect
