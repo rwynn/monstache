@@ -4020,7 +4020,7 @@ func (ic *indexClient) dialShards() []*mongo.Client {
 func (ic *indexClient) buildTokenGen() gtm.ResumeTokenGenenerator {
 	config := ic.config
 	var token gtm.ResumeTokenGenenerator
-	if config.ResumeStrategy != tokenResumeStrategy {
+	if !config.Resume || (config.ResumeStrategy != tokenResumeStrategy) {
 		return token
 	}
 	token = func(client *mongo.Client, streamID string, options *gtm.Options) (interface{}, error) {
