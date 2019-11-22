@@ -1470,6 +1470,9 @@ func (ic *indexClient) saveTokens() error {
 		models = append(models, model)
 	}
 	_, err = col.BulkWrite(context.Background(), models, bwo)
+	if err == nil {
+		ic.tokens = bson.M{}
+	}
 	return err
 }
 
@@ -4349,19 +4352,27 @@ func (ic *indexClient) clusterWait() {
 	}
 }
 
-func (ic *indexClient) nextTokens() {
-	ic.bulk.Flush()
-	if err := ic.saveTokens(); err == nil {
-		ic.lastTsSaved = ic.lastTs
-	} else {
-		ic.processErr(err)
+func (ic *indexClient) hasNewEvents() bool {
+	if ic.lastTs.T > ic.lastTsSaved.T ||
+		(ic.lastTs.T == ic.lastTsSaved.T && ic.lastTs.I > ic.lastTsSaved.I) {
+		return true
 	}
-	return
+	return false
+}
+
+func (ic *indexClient) nextTokens() {
+	if ic.hasNewEvents() {
+		ic.bulk.Flush()
+		if err := ic.saveTokens(); err == nil {
+			ic.lastTsSaved = ic.lastTs
+		} else {
+			ic.processErr(err)
+		}
+	}
 }
 
 func (ic *indexClient) nextTimestamp() {
-	if ic.lastTs.T > ic.lastTsSaved.T ||
-		(ic.lastTs.T == ic.lastTsSaved.T && ic.lastTs.I > ic.lastTsSaved.I) {
+	if ic.hasNewEvents() {
 		ic.bulk.Flush()
 		if err := ic.saveTimestamp(); err == nil {
 			ic.lastTsSaved = ic.lastTs
