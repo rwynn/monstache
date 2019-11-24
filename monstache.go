@@ -4660,13 +4660,17 @@ func validateResumeStrategy(config *configOptions, mongoInfo *buildInfo) {
 	if len(mongoInfo.VersionArray) == 0 {
 		return
 	}
-	if config.ResumeStrategy == timestampResumeStrategy {
-		if config.Resume || config.Replay || config.ResumeFromTimestamp > 0 {
-			const requiredMajorVersion = 4
-			majorVersion := mongoInfo.VersionArray[0]
-			if majorVersion < requiredMajorVersion {
-				errorLog.Println(resumeStrategyInvalid)
-			}
+	if config.ResumeStrategy != timestampResumeStrategy {
+		return
+	}
+	if len(config.ChangeStreamNs) == 0 {
+		return
+	}
+	if config.Resume || config.Replay || config.ResumeFromTimestamp > 0 {
+		const requiredMajorVersion = 4
+		majorVersion := mongoInfo.VersionArray[0]
+		if majorVersion < requiredMajorVersion {
+			errorLog.Println(resumeStrategyInvalid)
 		}
 	}
 }
