@@ -90,7 +90,7 @@ const postProcessorsDefault = 10
 const redact = "REDACTED"
 const configDatabaseNameDefault = "monstache"
 const relateQueueOverloadMsg = "Relate queue is full. Skipping relate for %v.(%v) to keep pipeline healthy."
-const resumeStrategyInvalid = "resume-strategy 0 is incompatible with MongoDB API < 4.  Set resume-stategy = 1"
+const resumeStrategyInvalid = "resume-strategy 0 is incompatible with MongoDB API < 4.  Set resume-strategy = 1"
 
 type deleteStrategy int
 
