@@ -91,6 +91,7 @@ const postProcessorsDefault = 10
 const redact = "REDACTED"
 const configDatabaseNameDefault = "monstache"
 const relateQueueOverloadMsg = "Relate queue is full. Skipping relate for %v.(%v) to keep pipeline healthy."
+const resumeStrategyInvalid = "resume-strategy 0 is incompatible with MongoDB API < 4.  Set resume-stategy = 1"
 
 type deleteStrategy int
 
@@ -108,7 +109,8 @@ const (
 )
 
 type buildInfo struct {
-	Version string
+	Version      string
+	VersionArray []int `bson:"versionArray"`
 }
 
 type stringargs []string
@@ -4654,6 +4656,21 @@ func mustConfig() *configOptions {
 	return config
 }
 
+func validateResumeStrategy(config *configOptions, mongoInfo *buildInfo) {
+	if len(mongoInfo.VersionArray) == 0 {
+		return
+	}
+	if config.ResumeStrategy == timestampResumeStrategy {
+		if config.Resume || config.Replay || config.ResumeFromTimestamp > 0 {
+			const requiredMajorVersion = 4
+			majorVersion := mongoInfo.VersionArray[0]
+			if majorVersion < requiredMajorVersion {
+				errorLog.Println(resumeStrategyInvalid)
+			}
+		}
+	}
+}
+
 func buildMongoClient(config *configOptions) *mongo.Client {
 	mongoClient, err := config.dialMongo(config.MongoURL)
 	if err != nil {
@@ -4665,6 +4682,7 @@ func buildMongoClient(config *configOptions) *mongo.Client {
 	infoLog.Printf("Elasticsearch go driver %s", elastic.Version)
 	if mongoInfo, err := getBuildInfo(mongoClient); err == nil {
 		infoLog.Printf("Successfully connected to MongoDB version %s", mongoInfo.Version)
+		validateResumeStrategy(config, mongoInfo)
 	} else {
 		infoLog.Println("Successfully connected to MongoDB")
 	}
