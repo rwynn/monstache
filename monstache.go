@@ -1333,6 +1333,12 @@ func (ic *indexClient) ensureClusterTTL() error {
 
 func (ic *indexClient) enableProcess() (bool, error) {
 	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("cluster")
+	findOneOpts := options.FindOne().SetProjection(bson.M{"_id": 1})
+	sr := col.FindOne(context.Background(), bson.M{"_id": ic.config.ResumeName}, findOneOpts)
+	if sr.Err() != mongo.ErrNoDocuments {
+		// only attempt the insert if no documents match
+		return false, nil
+	}
 	doc := bson.M{}
 	doc["_id"] = ic.config.ResumeName
 	doc["pid"] = os.Getpid()
