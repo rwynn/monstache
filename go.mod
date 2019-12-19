@@ -2,6 +2,7 @@ module github.com/rwynn/monstache
 
 require (
 	github.com/BurntSushi/toml v0.3.1
+	github.com/DataDog/zstd v1.4.4 // indirect
 	github.com/aws/aws-sdk-go v1.25.25
 	github.com/coreos/go-systemd v0.0.0-20190719114852-fd7a80b32e1f
 	github.com/evanphx/json-patch v4.5.0+incompatible
@@ -16,7 +17,7 @@ require (
 	github.com/tidwall/pretty v1.0.0 // indirect
 	github.com/xdg/scram v0.0.0-20180814205039-7eeb5667e42c // indirect
 	github.com/xdg/stringprep v1.0.0 // indirect
-	go.mongodb.org/mongo-driver v1.1.3
+	go.mongodb.org/mongo-driver v1.2.0
 	golang.org/x/sync v0.0.0-20190423024810-112230192c58 // indirect
 	gopkg.in/Graylog2/go-gelf.v2 v2.0.0-20180326133423-4dbb9d721348
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
