@@ -3919,12 +3919,15 @@ func main() {
 		hsc.buildServer()
 		go hsc.serveHttp()
 	}
+
+	eventLoopC := make(chan bool)
 	go func() {
-		<-sigs
-		if enabled {
-			shutdown(10, hsc, bulk, bulkStats, mongo, config)
-		} else {
-			shutdown(10, hsc, nil, nil, nil, config)
+		select {
+		case <-eventLoopC:
+			return
+		case <-sigs:
+			os.Exit(exitStatus)
+			break
 		}
 	}()
 
@@ -4183,6 +4186,19 @@ func main() {
 			}
 		}()
 	}
+	var tearDown = func() {
+		gtmCtx.Stop()
+		<-opsConsumed
+		close(outputChs.relateC)
+		relateWg.Wait()
+		close(outputChs.fileC)
+		fileWg.Wait()
+		close(outputChs.indexC)
+		indexWg.Wait()
+		close(outputChs.processC)
+		processWg.Wait()
+		doneC <- 30
+	}
 	if len(config.DirectReadNs) > 0 {
 		go func() {
 			gtmCtx.DirectReadWg.Wait()
@@ -4191,20 +4207,19 @@ func main() {
 				saveTimestampFromReplStatus(mongo, config)
 			}
 			if config.ExitAfterDirectReads {
-				gtmCtx.Stop()
-				<-opsConsumed
-				close(outputChs.relateC)
-				relateWg.Wait()
-				close(outputChs.fileC)
-				fileWg.Wait()
-				close(outputChs.indexC)
-				indexWg.Wait()
-				close(outputChs.processC)
-				processWg.Wait()
-				doneC <- 30
+				tearDown()
 			}
 		}()
 	}
+	go func() {
+		close(eventLoopC)
+		<-sigs
+		go func() {
+			<-sigs
+			os.Exit(exitStatus)
+		}()
+		tearDown()
+	}()
 	infoLog.Println("Listening for events")
 	for {
 		select {
