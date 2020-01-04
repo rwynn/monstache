@@ -4187,6 +4187,7 @@ func main() {
 		}()
 	}
 	var tearDown = func() {
+		infoLog.Println("Stopping all workers")
 		gtmCtx.Stop()
 		<-opsConsumed
 		close(outputChs.relateC)
