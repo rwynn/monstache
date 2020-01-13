@@ -30,6 +30,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/defaults"
 	"github.com/coreos/go-systemd/daemon"
 	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/olivere/elastic/v7"
@@ -92,6 +93,14 @@ const configDatabaseNameDefault = "monstache"
 const relateQueueOverloadMsg = "Relate queue is full. Skipping relate for %v.(%v) to keep pipeline healthy."
 const resumeStrategyInvalid = "resume-strategy 0 is incompatible with MongoDB API < 4.  Set resume-strategy = 1"
 
+type awsCredentialStrategy int
+
+const (
+	awsCredentialStrategyStatic = iota
+	awsCredentialStrategyShared
+	awsCredentialStrategyEndpoint
+)
+
 type deleteStrategy int
 
 const (
@@ -148,9 +157,14 @@ type sigHandler struct {
 }
 
 type awsConnect struct {
-	AccessKey string `toml:"access-key"`
-	SecretKey string `toml:"secret-key"`
-	Region    string
+	Strategy        awsCredentialStrategy
+	AccessKey       string `toml:"access-key"`
+	SecretKey       string `toml:"secret-key"`
+	Region          string
+	Profile         string
+	CredentialsFile string `toml:"credentials-file"`
+	ForceExpire     string `toml:"force-expire"`
+	creds           *credentials.Credentials
 }
 
 type executionEnv struct {
@@ -384,16 +398,26 @@ func (l *logFiles) enabled() bool {
 }
 
 func (ac *awsConnect) validate() error {
-	if ac.AccessKey == "" && ac.SecretKey == "" {
-		return nil
-	} else if ac.AccessKey != "" && ac.SecretKey != "" {
-		return nil
+	if ac.Strategy == awsCredentialStrategyStatic {
+		if ac.AccessKey == "" && ac.SecretKey == "" {
+			return nil
+		} else if ac.AccessKey != "" && ac.SecretKey != "" {
+			return nil
+		}
+		return errors.New("AWS connect settings must include both access-key and secret-key")
 	}
-	return errors.New("AWS connect settings must include both access-key and secret-key")
+	return nil
 }
 
 func (ac *awsConnect) enabled() bool {
-	return ac.AccessKey != "" || ac.SecretKey != ""
+	if ac.Strategy == awsCredentialStrategyStatic {
+		return ac.AccessKey != "" || ac.SecretKey != ""
+	}
+	return true
+}
+
+func (ac *awsConnect) forceExpireCreds() bool {
+	return ac.enabled() && ac.ForceExpire != "" && ac.creds != nil
 }
 
 func (arg *deleteStrategy) String() string {
@@ -2613,11 +2637,22 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 		Transport: transport,
 	}
 	if config.AWSConnect.enabled() {
-		client = aws.NewV4SigningClientWithHTTPClient(credentials.NewStaticCredentials(
-			config.AWSConnect.AccessKey,
-			config.AWSConnect.SecretKey,
-			"",
-		), config.AWSConnect.Region, client)
+		var creds *credentials.Credentials
+		if config.AWSConnect.Strategy == awsCredentialStrategyStatic {
+			creds = credentials.NewStaticCredentials(config.AWSConnect.AccessKey, config.AWSConnect.SecretKey, "")
+		} else if config.AWSConnect.Strategy == awsCredentialStrategyShared {
+			creds = credentials.NewChainCredentials([]credentials.Provider{
+				&credentials.EnvProvider{},
+				&credentials.SharedCredentialsProvider{
+					Filename: config.AWSConnect.CredentialsFile,
+					Profile:  config.AWSConnect.Profile,
+				},
+			})
+		} else if config.AWSConnect.Strategy == awsCredentialStrategyEndpoint {
+			creds = credentials.NewCredentials(defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()))
+		}
+		config.AWSConnect.creds = creds
+		client = aws.NewV4SigningClientWithHTTPClient(creds, config.AWSConnect.Region, client)
 	}
 	return client, err
 }
@@ -3946,6 +3981,7 @@ func (ic *indexClient) run() {
 	ic.clusterWait()
 	ic.startListen()
 	ic.startReadWait()
+	ic.startExpireCreds()
 	ic.eventLoop()
 }
 
@@ -4006,6 +4042,27 @@ func (ic *indexClient) startReadWait() {
 			}
 		}()
 	}
+}
+
+func (ic *indexClient) startExpireCreds() {
+	conf := ic.config
+	ac := conf.AWSConnect
+	if !ac.forceExpireCreds() {
+		return
+	}
+	duration, err := time.ParseDuration(ac.ForceExpire)
+	if err != nil {
+		errorLog.Fatalf("Error starting credential expiry: %s", err)
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(duration)
+		defer ticker.Stop()
+		for _ = range ticker.C {
+			ac.creds.Expire()
+			infoLog.Println("Force expired AWS credential")
+		}
+	}()
 }
 
 func (ic *indexClient) dialShards() []*mongo.Client {
