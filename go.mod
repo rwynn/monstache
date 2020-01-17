@@ -3,9 +3,10 @@ module github.com/rwynn/monstache
 require (
 	github.com/BurntSushi/toml v0.3.1
 	github.com/DataDog/zstd v1.4.4 // indirect
-	github.com/aws/aws-sdk-go v1.25.25
+	github.com/aws/aws-sdk-go v1.28.4
 	github.com/coreos/go-systemd v0.0.0-20190719114852-fd7a80b32e1f
 	github.com/evanphx/json-patch v4.5.0+incompatible
+	github.com/fsnotify/fsnotify v1.4.7
 	github.com/golang/snappy v0.0.1 // indirect
 	github.com/kr/pretty v0.1.0 // indirect
 	github.com/minio/highwayhash v1.0.0 // indirect

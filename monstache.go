@@ -18,9 +18,11 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"plugin"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +35,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/defaults"
 	"github.com/coreos/go-systemd/daemon"
 	jsonpatch "github.com/evanphx/json-patch"
+	"github.com/fsnotify/fsnotify"
 	"github.com/olivere/elastic/v7"
 	aws "github.com/olivere/elastic/v7/aws/v4"
 	"github.com/robertkrimen/otto"
@@ -97,8 +100,10 @@ type awsCredentialStrategy int
 
 const (
 	awsCredentialStrategyStatic = iota
-	awsCredentialStrategyShared
+	awsCredentialStrategyFile
+	awsCredentialStrategyEnv
 	awsCredentialStrategyEndpoint
+	awsCredentialStrategyChained
 )
 
 type deleteStrategy int
@@ -157,14 +162,15 @@ type sigHandler struct {
 }
 
 type awsConnect struct {
-	Strategy        awsCredentialStrategy
-	AccessKey       string `toml:"access-key"`
-	SecretKey       string `toml:"secret-key"`
-	Region          string
-	Profile         string
-	CredentialsFile string `toml:"credentials-file"`
-	ForceExpire     string `toml:"force-expire"`
-	creds           *credentials.Credentials
+	Strategy            awsCredentialStrategy
+	AccessKey           string `toml:"access-key"`
+	SecretKey           string `toml:"secret-key"`
+	Region              string
+	Profile             string
+	CredentialsFile     string `toml:"credentials-file"`
+	CredentialsWatchDir string `toml:"credentials-watch-dir"`
+	ForceExpire         string `toml:"force-expire"`
+	creds               *credentials.Credentials
 }
 
 type executionEnv struct {
@@ -418,6 +424,26 @@ func (ac *awsConnect) enabled() bool {
 
 func (ac *awsConnect) forceExpireCreds() bool {
 	return ac.enabled() && ac.ForceExpire != "" && ac.creds != nil
+}
+
+func (ac *awsConnect) watchCreds() bool {
+	if ac.enabled() && ac.creds != nil {
+		return ac.Strategy == awsCredentialStrategyFile || ac.Strategy == awsCredentialStrategyChained
+	}
+	return false
+}
+
+func (ac *awsConnect) watchFilePath() string {
+	if ac.CredentialsWatchDir != "" {
+		return ac.CredentialsWatchDir
+	}
+	var homeDir string
+	if runtime.GOOS == "windows" { // Windows
+		homeDir = os.Getenv("USERPROFILE")
+	} else {
+		homeDir = os.Getenv("HOME")
+	}
+	return filepath.Join(homeDir, ".aws")
 }
 
 func (arg *deleteStrategy) String() string {
@@ -2640,16 +2666,24 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 		var creds *credentials.Credentials
 		if config.AWSConnect.Strategy == awsCredentialStrategyStatic {
 			creds = credentials.NewStaticCredentials(config.AWSConnect.AccessKey, config.AWSConnect.SecretKey, "")
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyShared {
+		} else if config.AWSConnect.Strategy == awsCredentialStrategyFile {
+			creds = credentials.NewCredentials(&credentials.SharedCredentialsProvider{
+				Filename: config.AWSConnect.CredentialsFile,
+				Profile:  config.AWSConnect.Profile,
+			})
+		} else if config.AWSConnect.Strategy == awsCredentialStrategyEnv {
+			creds = credentials.NewCredentials(&credentials.EnvProvider{})
+		} else if config.AWSConnect.Strategy == awsCredentialStrategyEndpoint {
+			creds = credentials.NewCredentials(defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()))
+		} else if config.AWSConnect.Strategy == awsCredentialStrategyChained {
 			creds = credentials.NewChainCredentials([]credentials.Provider{
 				&credentials.EnvProvider{},
 				&credentials.SharedCredentialsProvider{
 					Filename: config.AWSConnect.CredentialsFile,
 					Profile:  config.AWSConnect.Profile,
 				},
+				defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()),
 			})
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyEndpoint {
-			creds = credentials.NewCredentials(defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()))
 		}
 		config.AWSConnect.creds = creds
 		client = aws.NewV4SigningClientWithHTTPClient(creds, config.AWSConnect.Region, client)
@@ -4047,22 +4081,49 @@ func (ic *indexClient) startReadWait() {
 func (ic *indexClient) startExpireCreds() {
 	conf := ic.config
 	ac := conf.AWSConnect
-	if !ac.forceExpireCreds() {
-		return
-	}
-	duration, err := time.ParseDuration(ac.ForceExpire)
-	if err != nil {
-		errorLog.Fatalf("Error starting credential expiry: %s", err)
-		return
-	}
-	go func() {
-		ticker := time.NewTicker(duration)
-		defer ticker.Stop()
-		for _ = range ticker.C {
-			ac.creds.Expire()
-			infoLog.Println("Force expired AWS credential")
+	if ac.forceExpireCreds() {
+		duration, err := time.ParseDuration(ac.ForceExpire)
+		if err != nil {
+			errorLog.Fatalf("Error starting credential expiry: %s", err)
+			return
 		}
-	}()
+		go func() {
+			ticker := time.NewTicker(duration)
+			defer ticker.Stop()
+			for range ticker.C {
+				ac.creds.Expire()
+				infoLog.Println("Force expired AWS credential")
+			}
+		}()
+	}
+	if ac.watchCreds() {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			errorLog.Fatal(err)
+		}
+		go func() {
+			defer watcher.Close()
+			for {
+				select {
+				case _, ok := <-watcher.Events:
+					if !ok {
+						return
+					}
+					ac.creds.Expire()
+					infoLog.Println("File watcher expired AWS credential")
+				case err, ok := <-watcher.Errors:
+					if !ok {
+						return
+					}
+					errorLog.Printf("Error watching path %s: %s", ac.watchFilePath(), err)
+				}
+			}
+		}()
+		err = watcher.Add(ac.watchFilePath())
+		if err != nil {
+			errorLog.Fatalf("Error adding file watcher for path %s: %s", ac.watchFilePath(), err)
+		}
+	}
 }
 
 func (ic *indexClient) dialShards() []*mongo.Client {
