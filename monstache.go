@@ -170,6 +170,7 @@ type awsConnect struct {
 	Profile             string
 	CredentialsFile     string `toml:"credentials-file"`
 	CredentialsWatchDir string `toml:"credentials-watch-dir"`
+	WatchCredentials    bool   `toml:"watch-credentials"`
 	ForceExpire         string `toml:"force-expire"`
 	creds               *credentials.Credentials
 }
@@ -429,7 +430,7 @@ func (ac *awsConnect) forceExpireCreds() bool {
 }
 
 func (ac *awsConnect) watchCreds() bool {
-	if ac.enabled() && ac.creds != nil {
+	if ac.enabled() && ac.creds != nil && ac.WatchCredentials {
 		return ac.Strategy == awsCredentialStrategyFile || ac.Strategy == awsCredentialStrategyChained
 	}
 	return false
@@ -4143,7 +4144,7 @@ func (ic *indexClient) startExpireCreds() {
 	if ac.watchCreds() {
 		watcher, err := fsnotify.NewWatcher()
 		if err != nil {
-			errorLog.Fatal(err)
+			errorLog.Fatalf("Error starting file watcher: %s", err)
 		}
 		go func() {
 			defer watcher.Close()
