@@ -35,9 +35,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws/defaults"
 	"github.com/coreos/go-systemd/daemon"
 	jsonpatch "github.com/evanphx/json-patch"
+	"github.com/fsnotify/fsnotify"
 	"github.com/olivere/elastic"
 	aws "github.com/olivere/elastic/aws/v4"
-	"github.com/fsnotify/fsnotify"
 	"github.com/robertkrimen/otto"
 	_ "github.com/robertkrimen/otto/underscore"
 	"github.com/rwynn/gtm"
@@ -79,7 +79,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
 
-const version = "5.4.3"
+const version = "5.5.0"
 const mongoURLDefault string = "mongodb://localhost:27017"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
