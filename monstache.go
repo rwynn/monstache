@@ -192,6 +192,7 @@ type relation struct {
 	WithNamespace string `toml:"with-namespace"`
 	SrcField      string `toml:"src-field"`
 	MatchField    string `toml:"match-field"`
+	DotNotation   bool   `toml:"dot-notation"`
 	KeepSrc       bool   `toml:"keep-src"`
 	MaxDepth      int    `toml:"max-depth"`
 	db            string
@@ -1076,7 +1077,12 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 					opts.SetNoCursorTimeout(true)
 				}
 				col := ic.mongo.Database(r.db).Collection(r.col)
-				sel := buildSelector(r.MatchField, srcData)
+				var sel bson.M
+				if r.DotNotation {
+					sel = bson.M{r.MatchField: srcData}
+				} else {
+					sel = buildSelector(r.MatchField, srcData)
+				}
 				cursor, err := col.Find(context.Background(), sel, opts)
 
 				doc := make(map[string]interface{})
