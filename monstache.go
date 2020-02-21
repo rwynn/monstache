@@ -125,6 +125,7 @@ type relation struct {
 	SrcField      string `toml:"src-field"`
 	MatchField    string `toml:"match-field"`
 	KeepSrc       bool   `toml:"keep-src"`
+	DotNotation   bool   `toml:"dot-notation"`
 	MaxDepth      int    `toml:"max-depth"`
 	db            string
 	col           string
@@ -1051,7 +1052,12 @@ func processRelated(session *mgo.Session, bulk *elastic.BulkProcessor, elastic *
 					processErr(err, config)
 					continue
 				}
-				sel := buildSelector(r.MatchField, srcData)
+				var sel bson.M
+				if r.DotNotation {
+					sel = bson.M{r.MatchField: srcData}
+				} else {
+					sel = buildSelector(r.MatchField, srcData)
+				}
 				col := s.DB(r.db).C(r.col)
 				query := col.Find(sel)
 				iter := query.Iter()
