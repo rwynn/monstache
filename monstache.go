@@ -3617,7 +3617,7 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 				var result otto.Value
 				if result, err = fc.execute(); err == nil {
 					r = result
-				} else if err != mgo.ErrNotFound {
+				} else if err != mongo.ErrNoDocuments {
 					fc.logError(err)
 				}
 			} else {
