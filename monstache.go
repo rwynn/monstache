@@ -3503,7 +3503,7 @@ func makeFind(fa *findConf) func(otto.FunctionCall) otto.Value {
 				var result otto.Value
 				if result, err = fc.execute(); err == nil {
 					r = result
-				} else {
+				} else if err != mgo.ErrNotFound {
 					fc.logError(err)
 				}
 			} else {
