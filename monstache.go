@@ -1463,6 +1463,7 @@ func (config *configOptions) loadReplacements() {
 					WithNamespace: r.WithNamespace,
 					SrcField:      r.SrcField,
 					MatchField:    r.MatchField,
+					DotNotation:   r.DotNotation,
 					KeepSrc:       r.KeepSrc,
 					MaxDepth:      r.MaxDepth,
 					db:            database,
