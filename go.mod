@@ -8,7 +8,7 @@ require (
 	github.com/fsnotify/fsnotify v1.4.7
 	github.com/minio/highwayhash v1.0.0 // indirect
 	github.com/olivere/elastic/v7 v7.0.12
-	github.com/robertkrimen/otto v0.0.0-20180617131154-15f95af6e78d
+	github.com/robertkrimen/otto v0.0.0-20191219234010-c382bd3c16ff
 	github.com/rwynn/gtm v1.0.1-0.20191119151623-081995b34c9c
 	github.com/serialx/hashring v0.0.0-20190515033939-7706f26af194 // indirect
 	github.com/xdg/stringprep v1.0.0 // indirect
