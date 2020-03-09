@@ -1,4 +1,4 @@
-FROM rwynn/monstache-builder:1.0.10
+FROM rwynn/monstache-builder:1.0.12
 
 RUN mkdir /app
 
