@@ -50,6 +50,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/gridfs"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	mongoversion "go.mongodb.org/mongo-driver/version"
+	"go.mongodb.org/mongo-driver/x/bsonx"
 	"gopkg.in/Graylog2/go-gelf.v2/gelf"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -4754,6 +4755,39 @@ func getBuildInfo(client *mongo.Client) (bi *buildInfo, err error) {
 	return
 }
 
+func (ic *indexClient) saveTimestampFromServerStatus() {
+	var err error
+	db := ic.mongo.Database("admin")
+	result := db.RunCommand(context.Background(), bson.M{
+		"serverStatus": 1,
+	})
+	if err = result.Err(); err == nil {
+		doc := &bsonx.Doc{}
+		if err = result.Decode(doc); err == nil {
+			var elem bsonx.Val
+			elem, err = doc.LookupErr("operationTime")
+			if err != nil {
+				ic.processErr(err)
+				return
+			}
+			if elem.Type() != bson.TypeTimestamp {
+				err = fmt.Errorf("incorrect type for 'operationTime'. got %v. want %v", elem.Type(), bson.TypeTimestamp)
+				ic.processErr(err)
+				return
+			}
+			ic.lastTs = elem.Interface().(primitive.Timestamp)
+			if err = ic.saveTimestamp(); err != nil {
+				ic.processErr(err)
+			}
+		} else {
+			ic.processErr(err)
+		}
+	} else {
+		ic.processErr(err)
+	}
+	return
+}
+
 func (ic *indexClient) saveTimestampFromReplStatus() {
 	if rs, err := gtm.GetReplStatus(ic.mongo); err == nil {
 		if ic.lastTs, err = rs.GetLastCommitted(); err == nil {
@@ -4764,7 +4798,7 @@ func (ic *indexClient) saveTimestampFromReplStatus() {
 			ic.processErr(err)
 		}
 	} else {
-		ic.processErr(err)
+		ic.saveTimestampFromServerStatus()
 	}
 }
 
