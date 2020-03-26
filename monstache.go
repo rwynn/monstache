@@ -549,17 +549,23 @@ func (config *configOptions) testElasticsearchConn(client *elastic.Client) (err 
 }
 
 func deleteIndexes(client *elastic.Client, db string, config *configOptions) (err error) {
-	index := strings.ToLower(db + "*")
+	var indices = []string{strings.ToLower(db + ".*")}
 	for ns, m := range mapIndexTypes {
 		dbCol := strings.SplitN(ns, ".", 2)
-		if dbCol[0] == db {
-			if m.Index != "" {
-				index = strings.ToLower(m.Index + "*")
+		if dbCol[0] == db && m.Index != "" {
+			index := strings.ToLower(m.Index)
+			for _, cur := range indices {
+				if cur == index {
+					index = ""
+					break
+				}
 			}
-			break
+			if index != "" {
+				indices = append(indices, index)
+			}
 		}
 	}
-	_, err = client.DeleteIndex(index).Do(context.Background())
+	_, err = client.DeleteIndex(indices...).Do(context.Background())
 	return
 }
 
