@@ -1906,7 +1906,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		} else {
 			if md, err := toml.DecodeFile(tomlConfig.ConfigFile, &tomlConfig); err != nil {
 				errorLog.Fatalln(err)
-			} else if ud := md.Undecoded(); len(ud) != 0 {
+			} else if ud := md.Undecoded(); len(ud) == 0 {
 				errorLog.Fatalf("Config file contains undecoded keys: %q", ud)
 			}
 		}
