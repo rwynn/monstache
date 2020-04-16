@@ -2870,8 +2870,8 @@ func doIndexing(config *configOptions, mongo *mgo.Session, bulk *elastic.BulkPro
 			t := time.Now().UTC()
 			tmIndex := func(idx string) string {
 				pre, suf := config.TimeMachineIndexPrefix, config.TimeMachineIndexSuffix
-				tmFormat := strings.Join([]string{pre, idx, suf}, ".")
-				return strings.ToLower(t.Format(tmFormat))
+				tmFormat := strings.Join([]string{pre, idx, t.Format(suf)}, ".")
+				return strings.ToLower(tmFormat)
 			}
 			data := make(map[string]interface{})
 			for k, v := range op.Data {
