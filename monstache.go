@@ -2934,8 +2934,8 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 			t := time.Now().UTC()
 			tmIndex := func(idx string) string {
 				pre, suf := ic.config.TimeMachineIndexPrefix, ic.config.TimeMachineIndexSuffix
-				tmFormat := strings.Join([]string{pre, idx, suf}, ".")
-				return strings.ToLower(t.Format(tmFormat))
+				tmFormat := strings.Join([]string{pre, idx, t.Format(suf)}, ".")
+				return strings.ToLower(tmFormat)
 			}
 			data := make(map[string]interface{})
 			for k, v := range op.Data {
