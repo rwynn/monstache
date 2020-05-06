@@ -2074,6 +2074,13 @@ func (config *configOptions) loadEnvironment() *configOptions {
 				config.MongoPemFile = val
 			}
 			break
+		case "MONSTACHE_MONGO_VALIDATE_PEM":
+			v, err := strconv.ParseBool(val)
+			if err != nil {
+				errorLog.Fatalf("Failed to load MONSTACHE_MONGO_VALIDATE_PEM: %s", err)
+			}
+			config.MongoValidatePemFile = v
+			break
 		case "MONSTACHE_MONGO_OPLOG_DB":
 			if config.MongoOpLogDatabaseName == "" {
 				config.MongoOpLogDatabaseName = val
@@ -2103,6 +2110,13 @@ func (config *configOptions) loadEnvironment() *configOptions {
 			if config.ElasticPemFile == "" {
 				config.ElasticPemFile = val
 			}
+			break
+		case "MONSTACHE_ES_VALIDATE_PEM":
+			v, err := strconv.ParseBool(val)
+			if err != nil {
+				errorLog.Fatalf("Failed to load MONSTACHE_ES_VALIDATE_PEM: %s", err)
+			}
+			config.ElasticValidatePemFile = v
 			break
 		case "MONSTACHE_WORKER":
 			if config.Worker == "" {
