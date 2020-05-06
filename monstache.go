@@ -2318,6 +2318,13 @@ func (config *configOptions) loadEnvironment() *configOptions {
 				config.ElasticPemFile = val
 			}
 			break
+		case "MONSTACHE_ES_VALIDATE_PEM":
+			v, err := strconv.ParseBool(val)
+			if err != nil {
+				errorLog.Fatalf("Failed to load MONSTACHE_ES_VALIDATE_PEM: %s", err)
+			}
+			config.ElasticValidatePemFile = v
+			break
 		case "MONSTACHE_WORKER":
 			if config.Worker == "" {
 				config.Worker = val
