@@ -12,7 +12,7 @@ require (
 	github.com/minio/highwayhash v1.0.0 // indirect
 	github.com/olivere/elastic v6.2.31+incompatible
 	github.com/robertkrimen/otto v0.0.0-20191219234010-c382bd3c16ff
-	github.com/rwynn/gtm v1.0.1-0.20200427172003-76a9f39b0cce
+	github.com/rwynn/gtm v1.0.1-0.20200508024042-5e8f85c19860
 	github.com/serialx/hashring v0.0.0-20190515033939-7706f26af194 // indirect
 	github.com/xdg/stringprep v1.0.0 // indirect
 	go.mongodb.org/mongo-driver v1.3.3
