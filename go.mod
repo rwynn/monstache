@@ -2,7 +2,7 @@ module github.com/rwynn/monstache
 
 require (
 	github.com/BurntSushi/toml v0.3.1
-	github.com/aws/aws-sdk-go v1.31.12
+	github.com/aws/aws-sdk-go v1.32.0
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
 	github.com/evanphx/json-patch v4.5.0+incompatible
 	github.com/fortytw2/leaktest v1.3.0 // indirect
@@ -10,7 +10,7 @@ require (
 	github.com/google/go-cmp v0.4.1 // indirect
 	github.com/mailru/easyjson v0.7.1 // indirect
 	github.com/minio/highwayhash v1.0.0 // indirect
-	github.com/olivere/elastic v6.2.32+incompatible
+	github.com/olivere/elastic v6.2.33+incompatible
 	github.com/robertkrimen/otto v0.0.0-20191219234010-c382bd3c16ff
 	github.com/rwynn/gtm v1.0.1-0.20200508024042-5e8f85c19860
 	github.com/serialx/hashring v0.0.0-20190515033939-7706f26af194 // indirect
