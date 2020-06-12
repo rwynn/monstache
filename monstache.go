@@ -265,6 +265,11 @@ type gtmSettings struct {
 	MaxAwaitTime   string `toml:"max-await-time"`
 }
 
+type elasticPKIAuth struct {
+	CertFile string `toml:"cert-file"`
+	KeyFile  string `toml:"key-file"`
+}
+
 type httpServerCtx struct {
 	httpServer *http.Server
 	bulk       *elastic.BulkProcessor
@@ -296,30 +301,31 @@ type statusRequest struct {
 type configOptions struct {
 	EnableTemplate           bool
 	EnvDelimiter             string
-	MongoURL                 string      `toml:"mongo-url"`
-	MongoConfigURL           string      `toml:"mongo-config-url"`
-	MongoOpLogDatabaseName   string      `toml:"mongo-oplog-database-name"`
-	MongoOpLogCollectionName string      `toml:"mongo-oplog-collection-name"`
-	GtmSettings              gtmSettings `toml:"gtm-settings"`
-	AWSConnect               awsConnect  `toml:"aws-connect"`
-	LogRotate                logRotate   `toml:"log-rotate"`
-	Logs                     logFiles    `toml:"logs"`
-	GraylogAddr              string      `toml:"graylog-addr"`
-	ElasticUrls              stringargs  `toml:"elasticsearch-urls"`
-	ElasticUser              string      `toml:"elasticsearch-user"`
-	ElasticPassword          string      `toml:"elasticsearch-password"`
-	ElasticPemFile           string      `toml:"elasticsearch-pem-file"`
-	ElasticValidatePemFile   bool        `toml:"elasticsearch-validate-pem-file"`
-	ElasticVersion           string      `toml:"elasticsearch-version"`
-	ElasticHealth0           int         `toml:"elasticsearch-healthcheck-timeout-startup"`
-	ElasticHealth1           int         `toml:"elasticsearch-healthcheck-timeout"`
-	ResumeName               string      `toml:"resume-name"`
-	NsRegex                  string      `toml:"namespace-regex"`
-	NsDropRegex              string      `toml:"namespace-drop-regex"`
-	NsExcludeRegex           string      `toml:"namespace-exclude-regex"`
-	NsDropExcludeRegex       string      `toml:"namespace-drop-exclude-regex"`
-	ClusterName              string      `toml:"cluster-name"`
-	Print                    bool        `toml:"print-config"`
+	MongoURL                 string         `toml:"mongo-url"`
+	MongoConfigURL           string         `toml:"mongo-config-url"`
+	MongoOpLogDatabaseName   string         `toml:"mongo-oplog-database-name"`
+	MongoOpLogCollectionName string         `toml:"mongo-oplog-collection-name"`
+	GtmSettings              gtmSettings    `toml:"gtm-settings"`
+	AWSConnect               awsConnect     `toml:"aws-connect"`
+	LogRotate                logRotate      `toml:"log-rotate"`
+	Logs                     logFiles       `toml:"logs"`
+	GraylogAddr              string         `toml:"graylog-addr"`
+	ElasticUrls              stringargs     `toml:"elasticsearch-urls"`
+	ElasticUser              string         `toml:"elasticsearch-user"`
+	ElasticPassword          string         `toml:"elasticsearch-password"`
+	ElasticPemFile           string         `toml:"elasticsearch-pem-file"`
+	ElasticValidatePemFile   bool           `toml:"elasticsearch-validate-pem-file"`
+	ElasticVersion           string         `toml:"elasticsearch-version"`
+	ElasticHealth0           int            `toml:"elasticsearch-healthcheck-timeout-startup"`
+	ElasticHealth1           int            `toml:"elasticsearch-healthcheck-timeout"`
+	ElasticPKIAuth           elasticPKIAuth `toml:"elasticsearch-pki-auth"`
+	ResumeName               string         `toml:"resume-name"`
+	NsRegex                  string         `toml:"namespace-regex"`
+	NsDropRegex              string         `toml:"namespace-drop-regex"`
+	NsExcludeRegex           string         `toml:"namespace-exclude-regex"`
+	NsDropExcludeRegex       string         `toml:"namespace-drop-exclude-regex"`
+	ClusterName              string         `toml:"cluster-name"`
+	Print                    bool           `toml:"print-config"`
 	Version                  bool
 	Pprof                    bool
 	EnableOplog              bool `toml:"enable-oplog"`
@@ -395,6 +401,20 @@ type configOptions struct {
 	PruneInvalidJSON         bool           `toml:"prune-invalid-json"`
 	Debug                    bool
 	mongoClientOptions       *options.ClientOptions
+}
+
+func (eca elasticPKIAuth) enabled() bool {
+	return eca.CertFile != "" || eca.KeyFile != ""
+}
+
+func (eca elasticPKIAuth) validate() error {
+	if eca.CertFile != "" && eca.KeyFile == "" {
+		return errors.New("Elasticsearch client auth key file is empty")
+	}
+	if eca.CertFile == "" && eca.KeyFile != "" {
+		return errors.New("Elasticsearch client auth cert file is empty")
+	}
+	return nil
 }
 
 func (rel *relation) IsIdentity() bool {
@@ -2196,6 +2216,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if !config.Logs.enabled() {
 			config.Logs = tomlConfig.Logs
 		}
+		if !config.ElasticPKIAuth.enabled() {
+			config.ElasticPKIAuth = tomlConfig.ElasticPKIAuth
+		}
 		config.GtmSettings = tomlConfig.GtmSettings
 		config.Relate = tomlConfig.Relate
 		config.LogRotate = tomlConfig.LogRotate
@@ -2316,6 +2339,16 @@ func (config *configOptions) loadEnvironment() *configOptions {
 		case "MONSTACHE_ES_PEM":
 			if config.ElasticPemFile == "" {
 				config.ElasticPemFile = val
+			}
+			break
+		case "MONSTACHE_ES_PKI_CERT":
+			if config.ElasticPKIAuth.CertFile == "" {
+				config.ElasticPKIAuth.CertFile = val
+			}
+			break
+		case "MONSTACHE_ES_PKI_KEY":
+			if config.ElasticPKIAuth.KeyFile == "" {
+				config.ElasticPKIAuth.KeyFile = val
 			}
 			break
 		case "MONSTACHE_ES_VALIDATE_PEM":
@@ -2690,6 +2723,18 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 		} else {
 			return client, err
 		}
+	}
+	clientAuth := config.ElasticPKIAuth
+	if clientAuth.enabled() {
+		if err = clientAuth.validate(); err != nil {
+			return client, err
+		}
+		var clientCert tls.Certificate
+		clientCert, err = tls.LoadX509KeyPair(clientAuth.CertFile, clientAuth.KeyFile)
+		if err != nil {
+			return client, err
+		}
+		tlsConfig.Certificates = []tls.Certificate{clientCert}
 	}
 	if config.ElasticValidatePemFile == false {
 		// Turn off validation
