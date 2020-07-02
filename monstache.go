@@ -1397,23 +1397,26 @@ func (ic *indexClient) ensureClusterTTL() error {
 }
 
 func (ic *indexClient) enableProcess() (bool, error) {
+	var err error
+	var host string
 	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("cluster")
 	findOneOpts := options.FindOne().SetProjection(bson.M{"_id": 1})
 	sr := col.FindOne(context.Background(), bson.M{"_id": ic.config.ResumeName}, findOneOpts)
-	if sr.Err() != mongo.ErrNoDocuments {
+	err = sr.Err()
+	if err != mongo.ErrNoDocuments {
 		// only attempt the insert if no documents match
-		return false, nil
+		return false, err
 	}
 	doc := bson.M{}
 	doc["_id"] = ic.config.ResumeName
 	doc["pid"] = os.Getpid()
-	if host, err := os.Hostname(); err == nil {
+	if host, err = os.Hostname(); err == nil {
 		doc["host"] = host
 	} else {
 		return false, err
 	}
 	doc["expireAt"] = time.Now().UTC()
-	_, err := col.InsertOne(context.Background(), doc)
+	_, err = col.InsertOne(context.Background(), doc)
 	if err == nil {
 		// update using $currentDate
 		ic.ensureEnabled()
