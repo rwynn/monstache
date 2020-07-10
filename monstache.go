@@ -1419,8 +1419,10 @@ func (ic *indexClient) enableProcess() (bool, error) {
 	_, err = col.InsertOne(context.Background(), doc)
 	if err == nil {
 		// update using $currentDate
-		ic.ensureEnabled()
-		return true, nil
+		_, err = ic.ensureEnabled()
+		if err == nil {
+			return true, nil
+		}
 	}
 	if isDup(err) {
 		return false, nil
@@ -1493,6 +1495,10 @@ func (ic *indexClient) ensureEnabled() (enabled bool, err error) {
 	return
 }
 
+func (ic *indexClient) pauseWork() {
+	ic.gtmCtx.Pause()
+}
+
 func (ic *indexClient) resumeWork() {
 	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("monstache")
 	result := col.FindOne(context.Background(), bson.M{
@@ -1505,17 +1511,6 @@ func (ic *indexClient) resumeWork() {
 				ts := doc["ts"].(primitive.Timestamp)
 				ic.gtmCtx.Since(ts)
 			}
-		}
-	}
-	drained := false
-	for !drained {
-		select {
-		case _, open := <-ic.gtmCtx.OpC:
-			if !open {
-				drained = true
-			}
-		default:
-			drained = true
 		}
 	}
 	ic.gtmCtx.Resume()
@@ -3254,6 +3249,8 @@ func (meta *indexingMeta) load(metaAttrs map[string]interface{}) {
 		s = fmt.Sprintf("%v", v)
 		if version, err := strconv.ParseInt(s, 10, 64); err == nil {
 			meta.Version = version
+		} else {
+			errorLog.Printf("Error applying version metadata: %s", err)
 		}
 	}
 	if v, ok = metaAttrs["versionType"]; ok {
@@ -3266,6 +3263,8 @@ func (meta *indexingMeta) load(metaAttrs map[string]interface{}) {
 		s = fmt.Sprintf("%v", v)
 		if roc, err := strconv.Atoi(s); err == nil {
 			meta.RetryOnConflict = roc
+		} else {
+			errorLog.Printf("Error applying retryOnConflict metadata: %s", err)
 		}
 	}
 }
@@ -4477,29 +4476,8 @@ func (ic *indexClient) clusterWait() {
 		if ic.enabled {
 			infoLog.Printf("Starting work for cluster %s", ic.config.ClusterName)
 		} else {
-			heartBeat := time.NewTicker(10 * time.Second)
-			defer heartBeat.Stop()
 			infoLog.Printf("Pausing work for cluster %s", ic.config.ClusterName)
-			ic.bulk.Stop()
-			wait := true
-			for wait {
-				select {
-				case req := <-ic.statusReqC:
-					req.responseC <- nil
-				case <-heartBeat.C:
-					var err error
-					ic.enabled, err = ic.enableProcess()
-					if err != nil {
-						errorLog.Printf("Error attempting to become active cluster process: %s", err)
-						break
-					}
-					if ic.enabled {
-						infoLog.Printf("Resuming work for cluster %s", ic.config.ClusterName)
-						ic.bulk.Start(context.Background())
-						wait = false
-					}
-				}
-			}
+			ic.waitEnabled()
 		}
 	}
 }
@@ -4549,6 +4527,28 @@ func (ic *indexClient) nextStats() {
 	}
 }
 
+func (ic *indexClient) waitEnabled() {
+	var err error
+	heartBeat := time.NewTicker(10 * time.Second)
+	defer heartBeat.Stop()
+	wait := true
+	for wait {
+		select {
+		case req := <-ic.statusReqC:
+			req.responseC <- nil
+		case <-heartBeat.C:
+			ic.enabled, err = ic.enableProcess()
+			if err != nil {
+				ic.processErr(err)
+			}
+			if ic.enabled {
+				wait = false
+				infoLog.Printf("Resuming work for cluster %s", ic.config.ClusterName)
+			}
+		}
+	}
+}
+
 func (ic *indexClient) nextHeartbeat() {
 	var err error
 	if ic.enabled {
@@ -4558,39 +4558,18 @@ func (ic *indexClient) nextHeartbeat() {
 		}
 		if !ic.enabled {
 			infoLog.Printf("Pausing work for cluster %s", ic.config.ClusterName)
-			ic.gtmCtx.Pause()
-			ic.bulk.Stop()
-			heartBeat := time.NewTicker(10 * time.Second)
-			defer heartBeat.Stop()
-			wait := true
-			for wait {
-				select {
-				case req := <-ic.statusReqC:
-					req.responseC <- nil
-				case <-heartBeat.C:
-					ic.enabled, err = ic.enableProcess()
-					if ic.enabled {
-						wait = false
-						infoLog.Printf("Resuming work for cluster %s", ic.config.ClusterName)
-						ic.bulk.Start(context.Background())
-						ic.resumeWork()
-						break
-					}
-				}
-			}
+			ic.pauseWork()
 		}
 	} else {
 		ic.enabled, err = ic.enableProcess()
+		if err != nil {
+			ic.processErr(err)
+		}
 		if ic.enabled {
 			infoLog.Printf("Resuming work for cluster %s", ic.config.ClusterName)
-			ic.bulk.Start(context.Background())
 			ic.resumeWork()
 		}
 	}
-	if err != nil {
-		ic.processErr(err)
-	}
-
 }
 
 func (ic *indexClient) eventLoop() {
