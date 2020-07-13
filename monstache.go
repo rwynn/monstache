@@ -379,6 +379,7 @@ type configOptions struct {
 	DirectReadConcur         int            `toml:"direct-read-concur"`
 	DirectReadNoTimeout      bool           `toml:"direct-read-no-timeout"`
 	DirectReadBounded        bool           `toml:"direct-read-bounded"`
+	DirectReadStateful       bool           `toml:"direct-read-stateful"`
 	DirectReadExcludeRegex   string         `toml:"direct-read-dynamic-exclude-regex"`
 	MapperPluginPath         string         `toml:"mapper-plugin-path"`
 	EnableHTTPServer         bool           `toml:"enable-http-server"`
@@ -1562,6 +1563,57 @@ func (ic *indexClient) saveTimestamp() error {
 	return err
 }
 
+func (ic *indexClient) filterDirectReadNamespaces(wanted []string) (results []string, err error) {
+	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("directreads")
+	filter := bson.M{
+		"_id": ic.config.ResumeName,
+	}
+	result := col.FindOne(context.Background(), filter)
+	if err = result.Err(); err == nil {
+		var doc struct {
+			Ns []string `bson:"ns"`
+		}
+		if err = result.Decode(&doc); err == nil {
+			var ns []string
+			if len(doc.Ns) > 0 {
+				ns = doc.Ns
+			}
+			for _, name := range wanted {
+				markedDone := false
+				for _, n := range ns {
+					if name == n {
+						markedDone = true
+						break
+					}
+				}
+				if !markedDone {
+					results = append(results, name)
+				}
+			}
+		}
+	} else if err == mongo.ErrNoDocuments {
+		err = nil
+		results = wanted
+	}
+	return
+}
+
+func (ic *indexClient) saveDirectReadNamespaces() (err error) {
+	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("directreads")
+	filter := bson.M{
+		"_id": ic.config.ResumeName,
+	}
+	ts := time.Now().UTC()
+	update := bson.M{
+		"$set":         bson.M{"updated": ts},
+		"$setOnInsert": bson.M{"created": ts},
+		"$addToSet":    bson.M{"ns": bson.M{"$each": ic.config.DirectReadNs}},
+	}
+	opts := options.Update().SetUpsert(true)
+	_, err = col.UpdateOne(context.Background(), filter, update, opts)
+	return
+}
+
 func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.Print, "print-config", false, "Print the configuration and then exit")
 	flag.BoolVar(&config.EnableTemplate, "tpl", false, "True to interpret the config file as a template")
@@ -1630,6 +1682,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.IntVar(&config.DirectReadConcur, "direct-read-concur", 0, "Max number of direct-read-namespaces to read concurrently. By default all givne are read concurrently")
 	flag.BoolVar(&config.DirectReadNoTimeout, "direct-read-no-timeout", false, "True to set the no cursor timeout flag for direct reads")
 	flag.BoolVar(&config.DirectReadBounded, "direct-read-bounded", false, "True to limit direct reads to the docs present at query start time")
+	flag.BoolVar(&config.DirectReadStateful, "direct-read-stateful", false, "True to mark direct read namespaces as complete and not sync them in future runs")
 	flag.Var(&config.RoutingNamespaces, "routing-namespace", "A list of namespaces that override routing information")
 	flag.Var(&config.TimeMachineNamespaces, "time-machine-namespace", "A list of direct read namespaces")
 	flag.StringVar(&config.TimeMachineIndexPrefix, "time-machine-index-prefix", "", "A prefix to preprend to time machine indexes")
@@ -1975,6 +2028,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if !config.DirectReadBounded && tomlConfig.DirectReadBounded {
 			config.DirectReadBounded = true
+		}
+		if !config.DirectReadStateful && tomlConfig.DirectReadStateful {
+			config.DirectReadStateful = true
 		}
 		if !config.ElasticRetry && tomlConfig.ElasticRetry {
 			config.ElasticRetry = true
@@ -4139,6 +4195,11 @@ func (ic *indexClient) startReadWait() {
 			if ic.config.Resume {
 				ic.saveTimestampFromReplStatus()
 			}
+			if ic.config.DirectReadStateful {
+				if err := ic.saveDirectReadNamespaces(); err != nil {
+					errorLog.Printf("Error saving direct read state: %s", err)
+				}
+			}
 			if ic.config.ExitAfterDirectReads {
 				ic.stopAllWorkers()
 				ic.doneC <- 30
@@ -4434,6 +4495,13 @@ func (ic *indexClient) buildGtmOptions() *gtm.Options {
 	token := ic.buildTokenGen()
 	if config.dynamicDirectReadList() {
 		config.DirectReadNs = ic.buildDynamicDirectReadNs(nsFilter)
+	}
+	if config.DirectReadStateful {
+		var err error
+		config.DirectReadNs, err = ic.filterDirectReadNamespaces(config.DirectReadNs)
+		if err != nil {
+			errorLog.Fatalf("Error retrieving direct read state: %s", err)
+		}
 	}
 	gtmOpts := &gtm.Options{
 		After:               after,
