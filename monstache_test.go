@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/olivere/elastic/v7"
-	"github.com/rwynn/gtm"
+	"github.com/rwynn/gtm/v2"
 	"github.com/rwynn/monstache/monstachemap"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/bsontype"
