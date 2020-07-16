@@ -1564,6 +1564,7 @@ func (ic *indexClient) saveTimestamp() error {
 }
 
 func (ic *indexClient) filterDirectReadNamespaces(wanted []string) (results []string, err error) {
+	results = make([]string, 0)
 	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("directreads")
 	filter := bson.M{
 		"_id": ic.config.ResumeName,
@@ -1574,7 +1575,7 @@ func (ic *indexClient) filterDirectReadNamespaces(wanted []string) (results []st
 			Ns []string `bson:"ns"`
 		}
 		if err = result.Decode(&doc); err == nil {
-			var ns []string
+			var ns, skipped []string
 			if len(doc.Ns) > 0 {
 				ns = doc.Ns
 			}
@@ -1588,7 +1589,12 @@ func (ic *indexClient) filterDirectReadNamespaces(wanted []string) (results []st
 				}
 				if !markedDone {
 					results = append(results, name)
+				} else {
+					skipped = append(skipped, name)
 				}
+			}
+			if len(skipped) > 0 {
+				infoLog.Printf("Skipping direct reads for namespaces marked complete: %+q", skipped)
 			}
 		}
 	} else if err == mongo.ErrNoDocuments {
@@ -4188,14 +4194,14 @@ func (ic *indexClient) stopAllWorkers() {
 }
 
 func (ic *indexClient) startReadWait() {
-	if len(ic.config.DirectReadNs) > 0 {
+	if len(ic.config.DirectReadNs) > 0 || ic.config.ExitAfterDirectReads {
 		go func() {
 			ic.gtmCtx.DirectReadWg.Wait()
 			infoLog.Println("Direct reads completed")
 			if ic.config.Resume {
 				ic.saveTimestampFromReplStatus()
 			}
-			if ic.config.DirectReadStateful {
+			if ic.config.DirectReadStateful && len(ic.config.DirectReadNs) > 0 {
 				if err := ic.saveDirectReadNamespaces(); err != nil {
 					errorLog.Printf("Error saving direct read state: %s", err)
 				}
