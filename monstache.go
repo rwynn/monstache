@@ -203,6 +203,7 @@ type relation struct {
 type indexMapping struct {
 	Namespace string
 	Index     string
+	Pipeline  string
 }
 
 type findConf struct {
@@ -716,6 +717,9 @@ func (ic *indexClient) mapIndex(op *gtm.Op) *indexMapping {
 	if m := mapIndexTypes[op.Namespace]; m != nil {
 		if m.Index != "" {
 			mapping.Index = m.Index
+		}
+		if m.Pipeline != "" {
+			mapping.Pipeline = m.Pipeline
 		}
 	}
 	return mapping
@@ -2972,6 +2976,7 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 		req.UseEasyJSON(ic.config.EnableEasyJSON)
 		req.Id(objectID)
 		req.Index(indexType.Index)
+		req.Pipeline(indexType.Pipeline)
 		req.Doc(op.Data)
 		if meta.ID != "" {
 			req.Id(meta.ID)
@@ -3033,6 +3038,7 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 			req := elastic.NewBulkIndexRequest()
 			req.UseEasyJSON(ic.config.EnableEasyJSON)
 			req.Index(tmIndex(indexType.Index))
+			req.Pipeline(indexType.Pipeline)
 			req.Routing(objectID)
 			req.Doc(data)
 			if meta.Index != "" {
