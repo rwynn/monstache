@@ -205,6 +205,7 @@ type indexTypeMapping struct {
 	Namespace string
 	Index     string
 	Type      string
+	Pipeline  string
 }
 
 type findConf struct {
@@ -735,6 +736,9 @@ func (ic *indexClient) mapIndexType(op *gtm.Op) *indexTypeMapping {
 		}
 		if m.Type != "" {
 			mapping.Type = m.Type
+		}
+		if m.Pipeline != "" {
+			mapping.Pipeline = m.Pipeline
 		}
 	}
 	return mapping
@@ -2999,6 +3003,7 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 		req.Id(objectID)
 		req.Index(indexType.Index)
 		req.Type(indexType.Type)
+		req.Pipeline(indexType.Pipeline)
 		req.Doc(op.Data)
 		if meta.ID != "" {
 			req.Id(meta.ID)
@@ -3064,6 +3069,7 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 			req.UseEasyJSON(ic.config.EnableEasyJSON)
 			req.Index(tmIndex(indexType.Index))
 			req.Type(indexType.Type)
+			req.Pipeline(indexType.Pipeline)
 			req.Routing(objectID)
 			req.Doc(data)
 			if meta.Index != "" {
