@@ -2364,6 +2364,13 @@ func (config *configOptions) loadEnvironment() *configOptions {
 		if val == "" {
 			continue
 		}
+		if strings.HasSuffix(name, "__FILE") {
+			var err error
+			name, val, err = config.loadVariableValueFromFile(name, val)
+			if err != nil {
+				panic(err)
+			}
+		}
 		switch name {
 		case "MONSTACHE_MONGO_URL":
 			if config.MongoURL == "" {
@@ -2534,6 +2541,20 @@ func (config *configOptions) loadEnvironment() *configOptions {
 		}
 	}
 	return config
+}
+
+func (config *configOptions) loadVariableValueFromFile(name string, path string) (n string, v string, err error) {
+		name = strings.TrimSuffix(name, "__FILE")
+		f, err := os.Open(path)
+		if err != nil {
+			return name, "", fmt.Errorf("read value for %s from file failed: %s", name, err)
+		}
+		defer f.Close()
+		c, err := ioutil.ReadAll(f)
+		if err != nil {
+			return name, "", fmt.Errorf("read value for %s from file failed: %s", name, err)
+		}
+		return name, string(c), nil
 }
 
 func (config *configOptions) loadRoutingNamespaces() *configOptions {
