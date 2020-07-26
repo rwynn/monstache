@@ -2272,17 +2272,17 @@ func (config *configOptions) loadEnvironment() *configOptions {
 }
 
 func (config *configOptions) loadVariableValueFromFile(name string, path string) (n string, v string, err error) {
-		name = strings.TrimSuffix(name, "__FILE")
-		f, err := os.Open(path)
-		if err != nil {
-			return name, "", fmt.Errorf("read value for %s from file failed: %s", name, err)
-		}
-		defer f.Close()
-		c, err := ioutil.ReadAll(f)
-		if err != nil {
-			return name, "", fmt.Errorf("read value for %s from file failed: %s", name, err)
-		}
-		return name, string(c), nil
+	name = strings.TrimSuffix(name, "__FILE")
+	f, err := os.Open(path)
+	if err != nil {
+		return name, "", fmt.Errorf("read value for %s from file failed: %s", name, err)
+	}
+	defer f.Close()
+	c, err := ioutil.ReadAll(f)
+	if err != nil {
+		return name, "", fmt.Errorf("read value for %s from file failed: %s", name, err)
+	}
+	return name, string(c), nil
 }
 
 func (config *configOptions) loadRoutingNamespaces() *configOptions {
