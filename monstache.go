@@ -3467,48 +3467,55 @@ func (ic *indexClient) getIndexMeta(namespace, id string) (meta *indexingMeta) {
 }
 
 func loadBuiltinFunctions(client *mongo.Client, config *configOptions) {
-	for ns, env := range mapEnvs {
-		var fa *findConf
-		fa = &findConf{
-			client: client,
-			name:   "findId",
-			vm:     env.VM,
-			ns:     ns,
-			byID:   true,
-		}
-		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
-			errorLog.Fatalln(err)
-		}
-		fa = &findConf{
-			client: client,
-			name:   "findOne",
-			vm:     env.VM,
-			ns:     ns,
-		}
-		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
-			errorLog.Fatalln(err)
-		}
-		fa = &findConf{
-			client: client,
-			name:   "find",
-			vm:     env.VM,
-			ns:     ns,
-			multi:  true,
-		}
-		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
-			errorLog.Fatalln(err)
-		}
-		fa = &findConf{
-			client:        client,
-			name:          "pipe",
-			vm:            env.VM,
-			ns:            ns,
-			multi:         true,
-			pipe:          true,
-			pipeAllowDisk: config.PipeAllowDisk,
-		}
-		if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
-			errorLog.Fatalln(err)
+	scriptEnvMaps := []map[string]*executionEnv{mapEnvs, filterEnvs}
+	loadBuiltinFunctionsForEnvs(scriptEnvMaps, client, config)
+}
+
+func loadBuiltinFunctionsForEnvs(envMaps []map[string]*executionEnv, client *mongo.Client, config *configOptions) {
+	for _, envMap := range envMaps {
+		for ns, env := range envMap {
+			var fa *findConf
+			fa = &findConf{
+				client: client,
+				name:   "findId",
+				vm:     env.VM,
+				ns:     ns,
+				byID:   true,
+			}
+			if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
+				errorLog.Fatalln(err)
+			}
+			fa = &findConf{
+				client: client,
+				name:   "findOne",
+				vm:     env.VM,
+				ns:     ns,
+			}
+			if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
+				errorLog.Fatalln(err)
+			}
+			fa = &findConf{
+				client: client,
+				name:   "find",
+				vm:     env.VM,
+				ns:     ns,
+				multi:  true,
+			}
+			if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
+				errorLog.Fatalln(err)
+			}
+			fa = &findConf{
+				client:        client,
+				name:          "pipe",
+				vm:            env.VM,
+				ns:            ns,
+				multi:         true,
+				pipe:          true,
+				pipeAllowDisk: config.PipeAllowDisk,
+			}
+			if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
+				errorLog.Fatalln(err)
+			}
 		}
 	}
 }
