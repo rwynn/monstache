@@ -2,9 +2,9 @@ name: Monstache CI
 
 on:
   push:
-    branches: [ rel6 ]
+    branches: [ '*' ]
   pull_request:
-    branches: [ rel6 ]
+    branches: [ '*' ]
 
 jobs:
   test:
