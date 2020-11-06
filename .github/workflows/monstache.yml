@@ -2,15 +2,16 @@ name: Monstache CI
 
 on:
   push:
-    branches: [ $default-branch ]
+    branches: [ rel6 ]
   pull_request:
-    branches: [ $default-branch ]
+    branches: [ rel6 ]
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-    - name: Run tests
-      run: cd docker/test; ./run-tests.sh
-
+      - uses: actions/checkout@v2
+      - name: Run a multi-line script
+        run: |
+          cd docker/test
+          ./run-tests.sh
