@@ -1,7 +1,7 @@
 # monstache
 a go daemon that syncs mongodb to elasticsearch in realtime
 
-![Monstache CI](https://github.com/rwynn/monstache/workflows/Monstache%20CI/badge.svg?branch=rel5)
+[![Monstache CI](https://github.com/rwynn/monstache/workflows/Monstache%20CI/badge.svg?branch=rel5)](https://github.com/rwynn/monstache/actions?query=branch%3Arel5)
 [![Go Report Card](https://goreportcard.com/badge/github.com/rwynn/monstache)](https://goreportcard.com/report/github.com/rwynn/monstache)
 
 ### Version 5
