@@ -2954,6 +2954,9 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 	}
 	ic.prepareDataForIndexing(op)
 	objectID, indexType := opIDToString(op), ic.mapIndex(op)
+	if objectID == "" {
+		return errors.New("Unable to index document due to empty _id value")
+	}
 	if ic.config.EnablePatches {
 		if patchNamespaces[op.Namespace] {
 			if e := ic.addPatch(op, objectID, indexType, meta); e != nil {
@@ -3807,6 +3810,10 @@ func (ic *indexClient) doDelete(op *gtm.Op) {
 		return
 	}
 	objectID, indexType, meta := opIDToString(op), ic.mapIndex(op), &indexingMeta{}
+	if objectID == "" {
+		errorLog.Println("Unable to delete document due to empty _id value")
+		return
+	}
 	req.Id(objectID)
 	if ic.config.IndexAsUpdate == false {
 		req.Version(tsVersion(op.Timestamp))
