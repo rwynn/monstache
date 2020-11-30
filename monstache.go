@@ -1258,11 +1258,10 @@ func (ic *indexClient) addFileContent(op *gtm.Op) (err error) {
 	if size, err = bucket.DownloadToStream(op.Id, encoder); err != nil {
 		return
 	}
-	if ic.config.MaxFileSize > 0 {
-		if size > ic.config.MaxFileSize {
-			warnLog.Printf("File size %d exceeds max file size. file content omitted.", size)
-			return
-		}
+	if ic.config.MaxFileSize > 0 && size > ic.config.MaxFileSize {
+		warnLog.Printf("File size %d exceeds max file size. file content omitted.", size)
+		encoder.Close()
+		return
 	}
 	if err = encoder.Close(); err != nil {
 		return
