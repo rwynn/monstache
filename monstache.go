@@ -527,21 +527,21 @@ func (config *configOptions) ignoreCollectionForDirectReads(col string) bool {
 }
 
 func afterBulk(executionID int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
-	if response != nil && response.Errors {
-		failed := response.Failed()
-		if failed != nil {
-			for _, item := range failed {
-				if item.Status == 409 {
-					// ignore version conflict since this simply means the doc
-					// is already in the index
-					continue
-				}
-				json, err := json.Marshal(item)
-				if err != nil {
-					errorLog.Printf("Unable to marshal bulk response item: %s", err)
-				} else {
-					errorLog.Printf("Bulk response item: %s", string(json))
-				}
+	if response == nil || !response.Errors {
+		return
+	}
+	if failed := response.Failed(); failed != nil {
+		for _, item := range failed {
+			if item.Status == 409 {
+				// ignore version conflict since this simply means the doc
+				// is already in the index
+				continue
+			}
+			json, err := json.Marshal(item)
+			if err != nil {
+				errorLog.Printf("Unable to marshal bulk response item: %s", err)
+			} else {
+				errorLog.Printf("Bulk response item: %s", string(json))
 			}
 		}
 	}
@@ -1090,12 +1090,14 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 	var q []*gtm.Op
 	batch := []*gtm.Op{root}
 	depth := 1
+	visits := map[string]bool{}
 	for len(batch) > 0 {
 		for _, e := range batch {
 			op := e
-			if op.Data == nil {
+			if op.Data == nil || visits[op.Namespace] {
 				continue
 			}
+			visits[op.Namespace] = true
 			rs := relates[op.Namespace]
 			if len(rs) == 0 {
 				continue
