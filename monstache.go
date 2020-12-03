@@ -95,7 +95,6 @@ const postProcessorsDefault = 10
 const redact = "REDACTED"
 const configDatabaseNameDefault = "monstache"
 const relateQueueOverloadMsg = "Relate queue is full. Skipping relate for %v.(%v) to keep pipeline healthy."
-const resumeStrategyInvalid = "resume-strategy 0 is incompatible with MongoDB API < 4.  Set resume-strategy = 1"
 
 type awsCredentialStrategy int
 
@@ -4934,21 +4933,32 @@ func mustConfig() *configOptions {
 	return config
 }
 
-func validateResumeStrategy(config *configOptions, mongoInfo *buildInfo) {
-	if len(mongoInfo.VersionArray) == 0 {
+func validateFeatures(config *configOptions, mongoInfo *buildInfo) {
+	if len(mongoInfo.VersionArray) < 2 {
 		return
 	}
-	if config.ResumeStrategy != timestampResumeStrategy {
-		return
+	const featErr1 = "Change streams are not supported by the server before version 3.6 (see enable-oplog)"
+	const featErr2 = "Resuming streams using timestamps requires server version 4.0 or greater (see resume-strategy)"
+	const featErr3 = "A token based resume strategy is only supported for server version 3.6 or greater"
+	major, minor := mongoInfo.VersionArray[0], mongoInfo.VersionArray[1]
+	streamsSupported := major > 3 || (major == 3 && minor >= 6)
+	startAtOperationTimeSupported := major >= 4
+	streamsConfigured := len(config.ChangeStreamNs) > 0
+	if streamsConfigured && !streamsSupported {
+		errorLog.Println(featErr1)
 	}
-	if len(config.ChangeStreamNs) == 0 {
-		return
+	if config.ResumeStrategy == timestampResumeStrategy {
+		if streamsConfigured && !startAtOperationTimeSupported {
+			errorLog.Println(featErr2)
+		}
+	} else if config.ResumeStrategy == tokenResumeStrategy {
+		if !streamsSupported {
+			errorLog.Println(featErr3)
+		}
 	}
-	if config.Resume || config.Replay || config.ResumeFromTimestamp > 0 {
-		const requiredMajorVersion = 4
-		majorVersion := mongoInfo.VersionArray[0]
-		if majorVersion < requiredMajorVersion {
-			errorLog.Println(resumeStrategyInvalid)
+	if config.ResumeFromTimestamp > 0 {
+		if streamsConfigured && !startAtOperationTimeSupported {
+			errorLog.Println(featErr2)
 		}
 	}
 }
@@ -4965,7 +4975,7 @@ func buildMongoClient(config *configOptions) *mongo.Client {
 	infoLog.Printf("Elasticsearch go driver %s", elastic.Version)
 	if mongoInfo, err := getBuildInfo(mongoClient); err == nil {
 		infoLog.Printf("Successfully connected to MongoDB version %s", mongoInfo.Version)
-		validateResumeStrategy(config, mongoInfo)
+		validateFeatures(config, mongoInfo)
 	} else {
 		infoLog.Println("Successfully connected to MongoDB")
 	}
