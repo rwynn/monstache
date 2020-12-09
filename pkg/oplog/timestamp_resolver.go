@@ -14,9 +14,9 @@ type TimestampResolver interface {
 }
 
 // A simple resolver immediately returns a timestamp it's been given.
-type TimestampResolverPolicySimple struct{}
+type TimestampResolverSimple struct{}
 
-func (r TimestampResolverPolicySimple) GetResumeTimestamp(candidateTs primitive.Timestamp) chan primitive.Timestamp {
+func (r TimestampResolverSimple) GetResumeTimestamp(candidateTs primitive.Timestamp) chan primitive.Timestamp {
 	tmpResultChan := make(chan primitive.Timestamp, 1)
 	tmpResultChan <- candidateTs
 

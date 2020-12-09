@@ -4594,7 +4594,7 @@ func (ic *indexClient) startListen() {
 		if config.ResumeFromEarliestTimestamp {
 			ic.oplogTsResolver = oplog.NewTimestampResolverEarliest(len(conns), infoLog)
 		} else {
-			ic.oplogTsResolver = oplog.TimestampResolverPolicySimple{}
+			ic.oplogTsResolver = oplog.TimestampResolverSimple{}
 		}
 	}
 
