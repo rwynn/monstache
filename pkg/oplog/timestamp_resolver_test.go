@@ -10,30 +10,41 @@ import (
 // Tests an earliest timestamp resolver with 3 mongodb shards
 func TestTimestampResolverEarliest_GetResumeTimestamp_ThreeShards(t *testing.T) {
 	resolver := NewTimestampResolverEarliest(3, log.New(os.Stdout, "INFO ", log.Flags()))
-	timestampA := primitive.Timestamp{
-		T: 1000,
-		I: 10,
-	}
-	timestampB := primitive.Timestamp{
-		T: 1000,
-		I: 5,
-	}
-	timestampC := primitive.Timestamp{
-		T: 100500,
-		I: 100500,
-	}
 
-	chanA := resolver.GetResumeTimestamp(timestampA)
-	chanB := resolver.GetResumeTimestamp(timestampB)
-	chanC := resolver.GetResumeTimestamp(timestampC)
+	chanB := resolver.GetResumeTimestamp(
+		// this value is not an expected result,
+		// because values with source=monstache have a higher priority
+		primitive.Timestamp{
+			T: 3,
+			I: 1,
+		},
+		TS_SOURCE_OPLOG,
+	)
+	chanC := resolver.GetResumeTimestamp(
+		// this value is not an expected result,
+		// because it's larger than the next one
+		primitive.Timestamp{
+			T: 10000,
+			I: 10050,
+		},
+		TS_SOURCE_MONSTACHE,
+	)
+	chanA := resolver.GetResumeTimestamp(
+		// this is  an expected result
+		primitive.Timestamp{
+			T: 10,
+			I: 15,
+		},
+		TS_SOURCE_MONSTACHE,
+	)
 
 	resultA := <-chanA
 	resultB := <-chanB
 	resultC := <-chanC
 
-	if resultA.T != 1000 || resultA.I != 5 {
+	if resultA.T != 10 || resultA.I != 15 {
 		t.Fatalf(
-			"Expected an earliest timestamp to be 1000.5, got %d.%d",
+			"Expected an earliest timestamp to be 10.15, got %d.%d",
 			resultA.T,
 			resultA.I,
 		)
@@ -48,7 +59,7 @@ func TestTimestampResolverEarliest_GetResumeTimestamp_ThreeShards(t *testing.T) 
 	repeatedCallResult := <-resolver.GetResumeTimestamp(primitive.Timestamp{
 		T: 1,
 		I: 1,
-	})
+	}, TS_SOURCE_OPLOG)
 	if !repeatedCallResult.Equal(resultA) {
 		t.Fatalf(
 			"A repeated call to GetResumeTimestamp must return a previously calculated timestamp; got %d.%d.",
@@ -65,7 +76,7 @@ func TestTimestampResolverEarliest_GetResumeTimestamp_SingleShard(t *testing.T) 
 	result := <-resolver.GetResumeTimestamp(primitive.Timestamp{
 		T: 1000,
 		I: 3,
-	})
+	}, TS_SOURCE_OPLOG)
 
 	if result.T != 1000 || result.I != 3 {
 		t.Fatalf(

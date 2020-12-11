@@ -4384,6 +4384,7 @@ func (ic *indexClient) buildTimestampGen() gtm.TimestampGenerator {
 	} else if config.Resume {
 		after = func(client *mongo.Client, options *gtm.Options) (primitive.Timestamp, error) {
 			var candidateTs primitive.Timestamp
+			var tsSource string
 			var err error
 			col := client.Database(config.ConfigDatabaseName).Collection("monstache")
 			result := col.FindOne(context.Background(), bson.M{
@@ -4395,14 +4396,16 @@ func (ic *indexClient) buildTimestampGen() gtm.TimestampGenerator {
 					if doc["ts"] != nil {
 						candidateTs = doc["ts"].(primitive.Timestamp)
 						candidateTs.I++
+						tsSource = oplog.TS_SOURCE_MONSTACHE
 					}
 				}
 			}
 			if candidateTs.T == 0 {
 				candidateTs, _ = gtm.LastOpTimestamp(client, options)
+				tsSource = oplog.TS_SOURCE_OPLOG
 			}
 
-			ts := <-ic.oplogTsResolver.GetResumeTimestamp(candidateTs)
+			ts := <-ic.oplogTsResolver.GetResumeTimestamp(candidateTs, tsSource)
 			infoLog.Printf("Resuming from timestamp %+v", ts)
 			return ts, nil
 		}
