@@ -1124,7 +1124,7 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 				// }
 
 				if r.MatchFieldType == "string" {
-					srcData = srcData.Hex()
+					srcData = srcData.(primitive.ObjectID).Hex()
 				}
 
 				fmt.Println("srcData: ", srcData)
