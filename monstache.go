@@ -1108,19 +1108,23 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 
 				fmt.Println("before srcData: ", srcData)
 
-				switch v := srcData.(type) {
-				case string:
-					fmt.Println("srcData string")
-					value := fmt.Sprintf("%v", v)
-					if srcData, err = primitive.ObjectIDFromHex(value); err != nil {
-						ic.processErr(err)
-						continue
-					}
-				case primitive.ObjectID:
-					fmt.Println("srcData ObjectID")
-					srcData = v.Hex()
-				default:
-					srcData = fmt.Sprintf("%v", v)
+				// switch v := srcData.(type) {
+				// case string:
+				// 	fmt.Println("srcData string")
+				// 	value := fmt.Sprintf("%v", v)
+				// 	if srcData, err = primitive.ObjectIDFromHex(value); err != nil {
+				// 		ic.processErr(err)
+				// 		continue
+				// 	}
+				// case primitive.ObjectID:
+				// 	fmt.Println("srcData ObjectID")
+				// 	srcData = v.Hex()
+				// default:
+				// 	srcData = fmt.Sprintf("%v", v)
+				// }
+
+				if r.MatchFieldType == "string" {
+					srcData = srcData.Hex()
 				}
 
 				fmt.Println("srcData: ", srcData)
