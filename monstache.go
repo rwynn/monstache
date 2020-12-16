@@ -1107,7 +1107,7 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 
 				switch v := srcData.(type) {
 				case string:
-					value := fmt.Printf("%v", v)
+					value := fmt.Sprintf("%v", v)
 					if srcData, err = primitive.ObjectIDFromHex(value); err != nil {
 						ic.processErr(err)
 						continue
