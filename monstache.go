@@ -11,7 +11,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/rwynn/monstache/pkg/oplog"
 	"io/ioutil"
 	"log"
 	"math"
@@ -30,6 +29,8 @@ import (
 	"syscall"
 	"text/template"
 	"time"
+
+	"github.com/rwynn/monstache/pkg/oplog"
 
 	"github.com/BurntSushi/toml"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -81,7 +82,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
 
-const version = "6.7.2"
+const version = "6.7.3"
 const mongoURLDefault string = "mongodb://localhost:27017"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
