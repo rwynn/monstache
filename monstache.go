@@ -1105,6 +1105,8 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 					continue
 				}
 
+				fmt.Println("before srcData: ", srcData)
+
 				switch v := srcData.(type) {
 				case string:
 					value := fmt.Sprintf("%v", v)
@@ -1137,6 +1139,9 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 						ic.processErr(err)
 						continue
 					}
+
+					fmt.Println("doc: ", doc)
+
 					now := time.Now().UTC()
 					tstamp := primitive.Timestamp{
 						T: uint32(now.Unix()),
