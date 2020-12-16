@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/rwynn/monstache/pkg/oplog"
 	"io/ioutil"
 	"log"
 	"math"
@@ -129,32 +130,33 @@ type buildInfo struct {
 type stringargs []string
 
 type indexClient struct {
-	gtmCtx      *gtm.OpCtxMulti
-	config      *configOptions
-	mongo       *mongo.Client
-	mongoConfig *mongo.Client
-	bulk        *elastic.BulkProcessor
-	bulkStats   *elastic.BulkProcessor
-	client      *elastic.Client
-	hsc         *httpServerCtx
-	fileWg      *sync.WaitGroup
-	indexWg     *sync.WaitGroup
-	processWg   *sync.WaitGroup
-	relateWg    *sync.WaitGroup
-	opsConsumed chan bool
-	closeC      chan bool
-	doneC       chan int
-	enabled     bool
-	lastTs      primitive.Timestamp
-	lastTsSaved primitive.Timestamp
-	tokens      bson.M
-	indexC      chan *gtm.Op
-	processC    chan *gtm.Op
-	fileC       chan *gtm.Op
-	relateC     chan *gtm.Op
-	filter      gtm.OpFilter
-	statusReqC  chan *statusRequest
-	sigH        *sigHandler
+	gtmCtx          *gtm.OpCtxMulti
+	config          *configOptions
+	mongo           *mongo.Client
+	mongoConfig     *mongo.Client
+	bulk            *elastic.BulkProcessor
+	bulkStats       *elastic.BulkProcessor
+	client          *elastic.Client
+	hsc             *httpServerCtx
+	fileWg          *sync.WaitGroup
+	indexWg         *sync.WaitGroup
+	processWg       *sync.WaitGroup
+	relateWg        *sync.WaitGroup
+	opsConsumed     chan bool
+	closeC          chan bool
+	doneC           chan int
+	enabled         bool
+	lastTs          primitive.Timestamp
+	lastTsSaved     primitive.Timestamp
+	tokens          bson.M
+	indexC          chan *gtm.Op
+	processC        chan *gtm.Op
+	fileC           chan *gtm.Op
+	relateC         chan *gtm.Op
+	filter          gtm.OpFilter
+	statusReqC      chan *statusRequest
+	sigH            *sigHandler
+	oplogTsResolver oplog.TimestampResolver
 }
 
 type sigHandler struct {
@@ -297,109 +299,110 @@ type statusRequest struct {
 }
 
 type configOptions struct {
-	EnableTemplate           bool
-	EnvDelimiter             string
-	MongoURL                 string         `toml:"mongo-url"`
-	MongoConfigURL           string         `toml:"mongo-config-url"`
-	MongoOpLogDatabaseName   string         `toml:"mongo-oplog-database-name"`
-	MongoOpLogCollectionName string         `toml:"mongo-oplog-collection-name"`
-	GtmSettings              gtmSettings    `toml:"gtm-settings"`
-	AWSConnect               awsConnect     `toml:"aws-connect"`
-	LogRotate                logRotate      `toml:"log-rotate"`
-	Logs                     logFiles       `toml:"logs"`
-	GraylogAddr              string         `toml:"graylog-addr"`
-	ElasticUrls              stringargs     `toml:"elasticsearch-urls"`
-	ElasticUser              string         `toml:"elasticsearch-user"`
-	ElasticPassword          string         `toml:"elasticsearch-password"`
-	ElasticPemFile           string         `toml:"elasticsearch-pem-file"`
-	ElasticValidatePemFile   bool           `toml:"elasticsearch-validate-pem-file"`
-	ElasticVersion           string         `toml:"elasticsearch-version"`
-	ElasticHealth0           int            `toml:"elasticsearch-healthcheck-timeout-startup"`
-	ElasticHealth1           int            `toml:"elasticsearch-healthcheck-timeout"`
-	ElasticPKIAuth           elasticPKIAuth `toml:"elasticsearch-pki-auth"`
-	ResumeName               string         `toml:"resume-name"`
-	NsRegex                  string         `toml:"namespace-regex"`
-	NsDropRegex              string         `toml:"namespace-drop-regex"`
-	NsExcludeRegex           string         `toml:"namespace-exclude-regex"`
-	NsDropExcludeRegex       string         `toml:"namespace-drop-exclude-regex"`
-	ClusterName              string         `toml:"cluster-name"`
-	Print                    bool           `toml:"print-config"`
-	Version                  bool
-	Pprof                    bool
-	EnableOplog              bool `toml:"enable-oplog"`
-	DisableChangeEvents      bool `toml:"disable-change-events"`
-	EnableEasyJSON           bool `toml:"enable-easy-json"`
-	Stats                    bool
-	IndexStats               bool   `toml:"index-stats"`
-	StatsDuration            string `toml:"stats-duration"`
-	StatsIndexFormat         string `toml:"stats-index-format"`
-	Gzip                     bool
-	Verbose                  bool
-	Resume                   bool
-	ResumeStrategy           resumeStrategy `toml:"resume-strategy"`
-	ResumeWriteUnsafe        bool           `toml:"resume-write-unsafe"`
-	ResumeFromTimestamp      int64          `toml:"resume-from-timestamp"`
-	Replay                   bool
-	DroppedDatabases         bool   `toml:"dropped-databases"`
-	DroppedCollections       bool   `toml:"dropped-collections"`
-	IndexFiles               bool   `toml:"index-files"`
-	IndexAsUpdate            bool   `toml:"index-as-update"`
-	FileHighlighting         bool   `toml:"file-highlighting"`
-	DisableFilePipelinePut   bool   `toml:"disable-file-pipeline-put"`
-	EnablePatches            bool   `toml:"enable-patches"`
-	FailFast                 bool   `toml:"fail-fast"`
-	IndexOplogTime           bool   `toml:"index-oplog-time"`
-	OplogTsFieldName         string `toml:"oplog-ts-field-name"`
-	OplogDateFieldName       string `toml:"oplog-date-field-name"`
-	OplogDateFieldFormat     string `toml:"oplog-date-field-format"`
-	ExitAfterDirectReads     bool   `toml:"exit-after-direct-reads"`
-	MergePatchAttr           string `toml:"merge-patch-attribute"`
-	ElasticMaxConns          int    `toml:"elasticsearch-max-conns"`
-	ElasticRetry             bool   `toml:"elasticsearch-retry"`
-	ElasticMaxDocs           int    `toml:"elasticsearch-max-docs"`
-	ElasticMaxBytes          int    `toml:"elasticsearch-max-bytes"`
-	ElasticMaxSeconds        int    `toml:"elasticsearch-max-seconds"`
-	ElasticClientTimeout     int    `toml:"elasticsearch-client-timeout"`
-	ElasticMajorVersion      int
-	ElasticMinorVersion      int
-	MaxFileSize              int64 `toml:"max-file-size"`
-	ConfigFile               string
-	Script                   []javascript
-	Filter                   []javascript
-	Pipeline                 []javascript
-	Mapping                  []indexMapping
-	Relate                   []relation
-	FileNamespaces           stringargs `toml:"file-namespaces"`
-	PatchNamespaces          stringargs `toml:"patch-namespaces"`
-	Workers                  stringargs
-	Worker                   string
-	ChangeStreamNs           stringargs     `toml:"change-stream-namespaces"`
-	DirectReadNs             stringargs     `toml:"direct-read-namespaces"`
-	DirectReadSplitMax       int            `toml:"direct-read-split-max"`
-	DirectReadConcur         int            `toml:"direct-read-concur"`
-	DirectReadNoTimeout      bool           `toml:"direct-read-no-timeout"`
-	DirectReadBounded        bool           `toml:"direct-read-bounded"`
-	DirectReadStateful       bool           `toml:"direct-read-stateful"`
-	DirectReadExcludeRegex   string         `toml:"direct-read-dynamic-exclude-regex"`
-	MapperPluginPath         string         `toml:"mapper-plugin-path"`
-	EnableHTTPServer         bool           `toml:"enable-http-server"`
-	HTTPServerAddr           string         `toml:"http-server-addr"`
-	TimeMachineNamespaces    stringargs     `toml:"time-machine-namespaces"`
-	TimeMachineIndexPrefix   string         `toml:"time-machine-index-prefix"`
-	TimeMachineIndexSuffix   string         `toml:"time-machine-index-suffix"`
-	TimeMachineDirectReads   bool           `toml:"time-machine-direct-reads"`
-	PipeAllowDisk            bool           `toml:"pipe-allow-disk"`
-	RoutingNamespaces        stringargs     `toml:"routing-namespaces"`
-	DeleteStrategy           deleteStrategy `toml:"delete-strategy"`
-	DeleteIndexPattern       string         `toml:"delete-index-pattern"`
-	ConfigDatabaseName       string         `toml:"config-database-name"`
-	FileDownloaders          int            `toml:"file-downloaders"`
-	RelateThreads            int            `toml:"relate-threads"`
-	RelateBuffer             int            `toml:"relate-buffer"`
-	PostProcessors           int            `toml:"post-processors"`
-	PruneInvalidJSON         bool           `toml:"prune-invalid-json"`
-	Debug                    bool
-	mongoClientOptions       *options.ClientOptions
+	EnableTemplate              bool
+	EnvDelimiter                string
+	MongoURL                    string         `toml:"mongo-url"`
+	MongoConfigURL              string         `toml:"mongo-config-url"`
+	MongoOpLogDatabaseName      string         `toml:"mongo-oplog-database-name"`
+	MongoOpLogCollectionName    string         `toml:"mongo-oplog-collection-name"`
+	GtmSettings                 gtmSettings    `toml:"gtm-settings"`
+	AWSConnect                  awsConnect     `toml:"aws-connect"`
+	LogRotate                   logRotate      `toml:"log-rotate"`
+	Logs                        logFiles       `toml:"logs"`
+	GraylogAddr                 string         `toml:"graylog-addr"`
+	ElasticUrls                 stringargs     `toml:"elasticsearch-urls"`
+	ElasticUser                 string         `toml:"elasticsearch-user"`
+	ElasticPassword             string         `toml:"elasticsearch-password"`
+	ElasticPemFile              string         `toml:"elasticsearch-pem-file"`
+	ElasticValidatePemFile      bool           `toml:"elasticsearch-validate-pem-file"`
+	ElasticVersion              string         `toml:"elasticsearch-version"`
+	ElasticHealth0              int            `toml:"elasticsearch-healthcheck-timeout-startup"`
+	ElasticHealth1              int            `toml:"elasticsearch-healthcheck-timeout"`
+	ElasticPKIAuth              elasticPKIAuth `toml:"elasticsearch-pki-auth"`
+	ResumeName                  string         `toml:"resume-name"`
+	NsRegex                     string         `toml:"namespace-regex"`
+	NsDropRegex                 string         `toml:"namespace-drop-regex"`
+	NsExcludeRegex              string         `toml:"namespace-exclude-regex"`
+	NsDropExcludeRegex          string         `toml:"namespace-drop-exclude-regex"`
+	ClusterName                 string         `toml:"cluster-name"`
+	Print                       bool           `toml:"print-config"`
+	Version                     bool
+	Pprof                       bool
+	EnableOplog                 bool `toml:"enable-oplog"`
+	DisableChangeEvents         bool `toml:"disable-change-events"`
+	EnableEasyJSON              bool `toml:"enable-easy-json"`
+	Stats                       bool
+	IndexStats                  bool   `toml:"index-stats"`
+	StatsDuration               string `toml:"stats-duration"`
+	StatsIndexFormat            string `toml:"stats-index-format"`
+	Gzip                        bool
+	Verbose                     bool
+	Resume                      bool
+	ResumeStrategy              resumeStrategy `toml:"resume-strategy"`
+	ResumeWriteUnsafe           bool           `toml:"resume-write-unsafe"`
+	ResumeFromTimestamp         int64          `toml:"resume-from-timestamp"`
+	ResumeFromEarliestTimestamp bool           `toml:"resume-from-earliest-timestamp"`
+	Replay                      bool
+	DroppedDatabases            bool   `toml:"dropped-databases"`
+	DroppedCollections          bool   `toml:"dropped-collections"`
+	IndexFiles                  bool   `toml:"index-files"`
+	IndexAsUpdate               bool   `toml:"index-as-update"`
+	FileHighlighting            bool   `toml:"file-highlighting"`
+	DisableFilePipelinePut      bool   `toml:"disable-file-pipeline-put"`
+	EnablePatches               bool   `toml:"enable-patches"`
+	FailFast                    bool   `toml:"fail-fast"`
+	IndexOplogTime              bool   `toml:"index-oplog-time"`
+	OplogTsFieldName            string `toml:"oplog-ts-field-name"`
+	OplogDateFieldName          string `toml:"oplog-date-field-name"`
+	OplogDateFieldFormat        string `toml:"oplog-date-field-format"`
+	ExitAfterDirectReads        bool   `toml:"exit-after-direct-reads"`
+	MergePatchAttr              string `toml:"merge-patch-attribute"`
+	ElasticMaxConns             int    `toml:"elasticsearch-max-conns"`
+	ElasticRetry                bool   `toml:"elasticsearch-retry"`
+	ElasticMaxDocs              int    `toml:"elasticsearch-max-docs"`
+	ElasticMaxBytes             int    `toml:"elasticsearch-max-bytes"`
+	ElasticMaxSeconds           int    `toml:"elasticsearch-max-seconds"`
+	ElasticClientTimeout        int    `toml:"elasticsearch-client-timeout"`
+	ElasticMajorVersion         int
+	ElasticMinorVersion         int
+	MaxFileSize                 int64 `toml:"max-file-size"`
+	ConfigFile                  string
+	Script                      []javascript
+	Filter                      []javascript
+	Pipeline                    []javascript
+	Mapping                     []indexMapping
+	Relate                      []relation
+	FileNamespaces              stringargs `toml:"file-namespaces"`
+	PatchNamespaces             stringargs `toml:"patch-namespaces"`
+	Workers                     stringargs
+	Worker                      string
+	ChangeStreamNs              stringargs     `toml:"change-stream-namespaces"`
+	DirectReadNs                stringargs     `toml:"direct-read-namespaces"`
+	DirectReadSplitMax          int            `toml:"direct-read-split-max"`
+	DirectReadConcur            int            `toml:"direct-read-concur"`
+	DirectReadNoTimeout         bool           `toml:"direct-read-no-timeout"`
+	DirectReadBounded           bool           `toml:"direct-read-bounded"`
+	DirectReadStateful          bool           `toml:"direct-read-stateful"`
+	DirectReadExcludeRegex      string         `toml:"direct-read-dynamic-exclude-regex"`
+	MapperPluginPath            string         `toml:"mapper-plugin-path"`
+	EnableHTTPServer            bool           `toml:"enable-http-server"`
+	HTTPServerAddr              string         `toml:"http-server-addr"`
+	TimeMachineNamespaces       stringargs     `toml:"time-machine-namespaces"`
+	TimeMachineIndexPrefix      string         `toml:"time-machine-index-prefix"`
+	TimeMachineIndexSuffix      string         `toml:"time-machine-index-suffix"`
+	TimeMachineDirectReads      bool           `toml:"time-machine-direct-reads"`
+	PipeAllowDisk               bool           `toml:"pipe-allow-disk"`
+	RoutingNamespaces           stringargs     `toml:"routing-namespaces"`
+	DeleteStrategy              deleteStrategy `toml:"delete-strategy"`
+	DeleteIndexPattern          string         `toml:"delete-index-pattern"`
+	ConfigDatabaseName          string         `toml:"config-database-name"`
+	FileDownloaders             int            `toml:"file-downloaders"`
+	RelateThreads               int            `toml:"relate-threads"`
+	RelateBuffer                int            `toml:"relate-buffer"`
+	PostProcessors              int            `toml:"post-processors"`
+	PruneInvalidJSON            bool           `toml:"prune-invalid-json"`
+	Debug                       bool
+	mongoClientOptions          *options.ClientOptions
 }
 
 func (eca elasticPKIAuth) enabled() bool {
@@ -1664,6 +1667,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.Resume, "resume", false, "True to capture the last timestamp of this run and resume on a subsequent run")
 	flag.Var(&config.ResumeStrategy, "resume-strategy", "Strategy to use for resuming. 0=timestamp,1=token")
 	flag.Int64Var(&config.ResumeFromTimestamp, "resume-from-timestamp", 0, "Timestamp to resume syncing from")
+	flag.BoolVar(&config.ResumeFromEarliestTimestamp, "resume-from-earliest-timestamp", false, "Automatically select an earliest timestamp to resume syncing from")
 	flag.BoolVar(&config.ResumeWriteUnsafe, "resume-write-unsafe", false, "True to speedup writes of the last timestamp synched for resuming at the cost of error checking")
 	flag.BoolVar(&config.Replay, "replay", false, "True to replay all events from the oplog and index them in elasticsearch")
 	flag.BoolVar(&config.IndexFiles, "index-files", false, "True to index gridfs files into elasticsearch. Requires the elasticsearch mapper-attachments (deprecated) or ingest-attachment plugin")
@@ -2144,6 +2148,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if config.ResumeFromTimestamp == 0 {
 			config.ResumeFromTimestamp = tomlConfig.ResumeFromTimestamp
+		}
+		if !config.ResumeFromEarliestTimestamp && tomlConfig.ResumeFromEarliestTimestamp {
+			config.ResumeFromEarliestTimestamp = true
 		}
 		if config.MergePatchAttr == "" {
 			config.MergePatchAttr = tomlConfig.MergePatchAttr
@@ -4374,7 +4381,8 @@ func (ic *indexClient) buildTimestampGen() gtm.TimestampGenerator {
 		}
 	} else if config.Resume {
 		after = func(client *mongo.Client, options *gtm.Options) (primitive.Timestamp, error) {
-			var ts primitive.Timestamp
+			var candidateTs primitive.Timestamp
+			var tsSource string
 			var err error
 			col := client.Database(config.ConfigDatabaseName).Collection("monstache")
 			result := col.FindOne(context.Background(), bson.M{
@@ -4384,14 +4392,18 @@ func (ic *indexClient) buildTimestampGen() gtm.TimestampGenerator {
 				doc := make(map[string]interface{})
 				if err = result.Decode(&doc); err == nil {
 					if doc["ts"] != nil {
-						ts = doc["ts"].(primitive.Timestamp)
-						ts.I++
+						candidateTs = doc["ts"].(primitive.Timestamp)
+						candidateTs.I++
+						tsSource = oplog.TS_SOURCE_MONSTACHE
 					}
 				}
 			}
-			if ts.T == 0 {
-				ts, _ = gtm.LastOpTimestamp(client, options)
+			if candidateTs.T == 0 {
+				candidateTs, _ = gtm.LastOpTimestamp(client, options)
+				tsSource = oplog.TS_SOURCE_OPLOG
 			}
+
+			ts := <-ic.oplogTsResolver.GetResumeTimestamp(candidateTs, tsSource)
 			infoLog.Printf("Resuming from timestamp %+v", ts)
 			return ts, nil
 		}
@@ -4577,8 +4589,18 @@ func (ic *indexClient) buildGtmOptions() *gtm.Options {
 
 func (ic *indexClient) startListen() {
 	config := ic.config
+	conns := ic.buildConnections()
+
+	if config.ResumeStrategy == timestampResumeStrategy {
+		if config.ResumeFromEarliestTimestamp {
+			ic.oplogTsResolver = oplog.NewTimestampResolverEarliest(len(conns), infoLog)
+		} else {
+			ic.oplogTsResolver = oplog.TimestampResolverSimple{}
+		}
+	}
+
 	gtmOpts := ic.buildGtmOptions()
-	ic.gtmCtx = gtm.StartMulti(ic.buildConnections(), gtmOpts)
+	ic.gtmCtx = gtm.StartMulti(conns, gtmOpts)
 	if config.readShards() && !config.DisableChangeEvents {
 		ic.gtmCtx.AddShardListener(ic.mongoConfig, gtmOpts, config.makeShardInsertHandler())
 	}
