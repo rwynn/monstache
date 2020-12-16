@@ -1118,7 +1118,7 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 					}
 				case primitive.ObjectID:
 					fmt.Println("srcData ObjectID")
-					srcData = fmt.Sprintf("%v", v)
+					srcData = v.Hex()
 				default:
 					srcData = fmt.Sprintf("%v", v)
 				}
