@@ -195,6 +195,7 @@ type relation struct {
 	DotNotation   bool   `toml:"dot-notation"`
 	KeepSrc       bool   `toml:"keep-src"`
 	MaxDepth      int    `toml:"max-depth"`
+	MatchFieldType string `toml:"match-field-type"`
 	db            string
 	col           string
 }
@@ -1114,6 +1115,8 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 						ic.processErr(err)
 						continue
 					}
+				case primitive.ObjectID:
+					srcData = fmt.Sprintf("%v", v)
 				default:
 					srcData = v
 				}
