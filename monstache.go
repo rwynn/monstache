@@ -1761,7 +1761,7 @@ func (config *configOptions) loadReplacements() {
 					KeepSrc:       r.KeepSrc,
 					DotNotation:   r.DotNotation,
 					MaxDepth:      r.MaxDepth,
-					MatchFieldType: r.MatchFieldType
+					MatchFieldType: r.MatchFieldType,
 					db:            database,
 					col:           collection,
 				}
