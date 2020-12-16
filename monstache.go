@@ -1105,6 +1105,17 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 					continue
 				}
 
+				switch v := srcData.(type) {
+				case string:
+					value := fmt.Printf("%v", v)
+					if srcData, err = primitive.ObjectIDFromHex(value); err != nil {
+						ic.processErr(err)
+						continue
+					}
+				default:
+					srcData = v
+			}
+
 				opts := &options.FindOptions{}
 				if ic.config.DirectReadNoTimeout {
 					opts.SetNoCursorTimeout(true)
