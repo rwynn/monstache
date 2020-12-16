@@ -1107,7 +1107,7 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 				}
 
 				fmt.Println("before srcData: ", srcData)
-
+				fmt.Println("MatchFieldType: ", r.MatchFieldType)
 				// switch v := srcData.(type) {
 				// case string:
 				// 	fmt.Println("srcData string")
@@ -1761,6 +1761,7 @@ func (config *configOptions) loadReplacements() {
 					KeepSrc:       r.KeepSrc,
 					DotNotation:   r.DotNotation,
 					MaxDepth:      r.MaxDepth,
+					MatchFieldType: r.MatchFieldType
 					db:            database,
 					col:           collection,
 				}
@@ -1769,6 +1770,9 @@ func (config *configOptions) loadReplacements() {
 				}
 				if r.MatchField == "" {
 					r.MatchField = "_id"
+				}
+				if r.MatchFieldType == "" {
+					r.MatchFieldType = "ObjectID"
 				}
 				relates[r.Namespace] = append(relates[r.Namespace], r)
 			} else {
