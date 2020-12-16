@@ -1106,28 +1106,9 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 					continue
 				}
 
-				fmt.Println("before srcData: ", srcData)
-				fmt.Println("MatchFieldType: ", r.MatchFieldType)
-				// switch v := srcData.(type) {
-				// case string:
-				// 	fmt.Println("srcData string")
-				// 	value := fmt.Sprintf("%v", v)
-				// 	if srcData, err = primitive.ObjectIDFromHex(value); err != nil {
-				// 		ic.processErr(err)
-				// 		continue
-				// 	}
-				// case primitive.ObjectID:
-				// 	fmt.Println("srcData ObjectID")
-				// 	srcData = v.Hex()
-				// default:
-				// 	srcData = fmt.Sprintf("%v", v)
-				// }
-
 				if r.MatchFieldType == "string" {
 					srcData = srcData.(primitive.ObjectID).Hex()
 				}
-
-				fmt.Println("srcData: ", srcData)
 
 				opts := &options.FindOptions{}
 				if ic.config.DirectReadNoTimeout {
@@ -1148,9 +1129,6 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 						ic.processErr(err)
 						continue
 					}
-
-					fmt.Println("doc: ", doc)
-
 					now := time.Now().UTC()
 					tstamp := primitive.Timestamp{
 						T: uint32(now.Unix()),
