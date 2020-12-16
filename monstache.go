@@ -1089,14 +1089,12 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 	var q []*gtm.Op
 	batch := []*gtm.Op{root}
 	depth := 1
-	visits := map[string]bool{}
 	for len(batch) > 0 {
 		for _, e := range batch {
 			op := e
-			if op.Data == nil || visits[op.Namespace] {
+			if op.Data == nil {
 				continue
 			}
-			visits[op.Namespace] = true
 			rs := relates[op.Namespace]
 			if len(rs) == 0 {
 				continue
