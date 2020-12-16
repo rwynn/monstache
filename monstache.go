@@ -1114,7 +1114,9 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 					}
 				default:
 					srcData = v
-			}
+				}
+
+				fmt.Println("srcData: ", srcData)
 
 				opts := &options.FindOptions{}
 				if ic.config.DirectReadNoTimeout {
