@@ -18,6 +18,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/bsontype"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 /*
@@ -201,6 +202,8 @@ func TestBuildRelateSelector(t *testing.T) {
 
 func TestMatchFieldTypeRelatedData(t *testing.T) {
 	var err error
+	var objectId primitive.ObjectID
+	
 	data := convertSrcDataToString(123)
 	if data != "123" {
 		t.Fatalf("Expected string value")
