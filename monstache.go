@@ -1081,13 +1081,13 @@ func convertSrcDataToString(srcData interface{}) (value string) {
 	return
 }
 
-func convertSrcDataToObjectId(srcData interface{}) (objectId primitive.ObjectID, err error) {
+func convertSrcDataToObjectId(srcData interface{}) (objectId interface{}, err error) {
 	defer func() {
 		if r:= recover(); r != nil {
 			err = r.(error)
 		}
 	}()
-	value := srcData.(string)
+	value := fmt.Sprintf("%v", srcData)
 	objectId, err =  primitive.ObjectIDFromHex(value)
 	return
 }
