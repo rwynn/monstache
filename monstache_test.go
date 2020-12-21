@@ -202,8 +202,8 @@ func TestBuildRelateSelector(t *testing.T) {
 
 func TestMatchFieldTypeRelatedData(t *testing.T) {
 	var err error
-	var objectId primitive.ObjectID
-	
+	var objectId, value primitive.ObjectID
+
 	data := convertSrcDataToString(123)
 	if data != "123" {
 		t.Fatalf("Expected string value")
@@ -212,14 +212,20 @@ func TestMatchFieldTypeRelatedData(t *testing.T) {
 	objectId, err = convertSrcDataToObjectId("5fae4b4e4138d2fcf16cfd64")
 
 	if err != nil {
-		t.Fatalf("Unable to convert string to objectId: %s", err)
+		t.Fatalf("Expected objectId value: %v", err)
 	}
 
-	if objectId == "5fae4b4e4138d2fcf16cfd64" {
-		t.Fatalf("Expected nil error")
-	}else {
-		t.Fatalf("Expected matching data to ObjectId: %v", data)
+	if value, err = primitive.ObjectIDFromHex("5fae4b4e4138d2fcf16cfd64"); err == nil {
+		if objectId != value {
+			t.Fatalf("Expected matching data to ObjectId: %v", data)
+		}
 	}
+
+	// if objectId == "5fae4b4e4138d2fcf16cfd64" {
+	// 	t.Fatalf("Expected nil error")
+	// }else {
+	// 	t.Fatalf("Expected matching data to ObjectId: %v", data)
+	// }
 }
 
 func TestOpIdToString(t *testing.T) {
