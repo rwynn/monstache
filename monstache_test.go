@@ -199,6 +199,22 @@ func TestBuildRelateSelector(t *testing.T) {
 	}
 }
 
+func TestMatchFieldTypeRelatedData(t *testing.T) {
+	data, err := convertSrcDataToString("123") 
+	if err != nil {
+		t.Fatalf("Expected nil error")
+	}
+	data, err = convertSrcDataToString("5fae4b4e4138d2fcf16cfd64")
+	if err != nil {
+		t.Fatalf("Expected nil error")
+	}
+	if data == "5fae4b4e4138d2fcf16cfd64" {
+		t.Fatalf("Expected nil error")
+	}else {
+		t.Fatalf("Expected matching data to ObjectId: %v", data)
+	}
+}
+
 func TestOpIdToString(t *testing.T) {
 	var result string
 	var id = 10.0
