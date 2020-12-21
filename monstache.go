@@ -1071,7 +1071,7 @@ func buildSelector(matchField string, data interface{}) bson.M {
 	return sel
 }
 
-func convertSrcDataToString(srcData: interface{}) (value string, err error) {
+func convertSrcDataToString(srcData interface{}) (value string, err error) {
 	defer func() {
 		if r:= recover(); r != nil {
 			err = r.(error)
