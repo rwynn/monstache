@@ -18,6 +18,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/bsontype"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 /*
@@ -196,6 +197,28 @@ func TestBuildRelateSelector(t *testing.T) {
 	}
 	if bar["bar"] != 1 {
 		t.Fatalf("Expected matching foo.bar to 1: %v", sel)
+	}
+}
+
+func TestMatchFieldTypeRelatedData(t *testing.T) {
+	var err error
+	var objectId, value primitive.ObjectID
+
+	data := convertSrcDataToString(123)
+	if data != "123" {
+		t.Fatalf("Expected string value")
+	}
+	
+	objectId, err = convertSrcDataToObjectId("5fae4b4e4138d2fcf16cfd64")
+
+	if err != nil {
+		t.Fatalf("Expected objectId value: %v", err)
+	}
+
+	if value, err = primitive.ObjectIDFromHex("5fae4b4e4138d2fcf16cfd64"); err == nil {
+		if objectId != value {
+			t.Fatalf("Expected matching data to ObjectId: %v", data)
+		}
 	}
 }
 
