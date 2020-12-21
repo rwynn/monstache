@@ -206,13 +206,13 @@ func TestMatchFieldTypeRelatedData(t *testing.T) {
 		t.Fatalf("Expected string value")
 	}
 	
-	data, err = convertSrcDataToObjectId("5fae4b4e4138d2fcf16cfd64")
+	objectId, err = convertSrcDataToObjectId("5fae4b4e4138d2fcf16cfd64")
 
 	if err != nil {
 		t.Fatalf("Unable to convert string to objectId: %s", err)
 	}
 
-	if data == "5fae4b4e4138d2fcf16cfd64" {
+	if objectId == "5fae4b4e4138d2fcf16cfd64" {
 		t.Fatalf("Expected nil error")
 	}else {
 		t.Fatalf("Expected matching data to ObjectId: %v", data)

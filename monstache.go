@@ -1081,7 +1081,7 @@ func convertSrcDataToString(srcData interface{}) (value string) {
 	return
 }
 
-func convertSrcDataToObjectId(srcData interface{}) (objectId interface{}, err error) {
+func convertSrcDataToObjectId(srcData interface{}) (objectId primitive.ObjectID, err error) {
 	defer func() {
 		if r:= recover(); r != nil {
 			err = r.(error)
