@@ -1076,7 +1076,7 @@ func convertSrcDataToString(srcData interface{}) (value string, err error) {
 		if r:= recover(); r != nil {
 			err = r.(error)
 		}
-	}
+	}()
 	value = srcData.(primitive.ObjectID).Hex()
 	return
 } 
