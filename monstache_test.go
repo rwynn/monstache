@@ -202,7 +202,7 @@ func TestBuildRelateSelector(t *testing.T) {
 func TestMatchFieldTypeRelatedData(t *testing.T) {
 	data, err := convertSrcDataToString("123") 
 	if err != nil {
-		t.Fatalf("Expected nil error")
+		t.Fatalf("Unable to convert objectId to string: %s", err)
 	}
 	data, err = convertSrcDataToString("5fae4b4e4138d2fcf16cfd64")
 	if err != nil {
