@@ -1088,7 +1088,7 @@ func convertSrcDataToObjectId(srcData interface{}) (objectId primitive.ObjectID,
 		}
 	}()
 	value := fmt.Sprintf("%v", srcData)
-	objectId, err :=  primitive.ObjectIDFromHex(value)
+	objectId, err =  primitive.ObjectIDFromHex(value)
 	return
 }
 
