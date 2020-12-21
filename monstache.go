@@ -1076,7 +1076,7 @@ func convertSrcDataToString(srcData interface{}) (value string) {
 	case primitive.ObjectID:
 		value = srcData.(primitive.ObjectID).Hex()
 	default:
-		value := fmt.Sprintf("%v", id)
+		value = fmt.Sprintf("%v", v)
 	}
 	return
 }
