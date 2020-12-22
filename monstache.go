@@ -208,7 +208,7 @@ type indexMapping struct {
 	Index     string
 	Pipeline  string
 }
-
+	
 type findConf struct {
 	vm            *otto.Otto
 	ns            string
@@ -1071,6 +1071,27 @@ func buildSelector(matchField string, data interface{}) bson.M {
 	return sel
 }
 
+func convertSrcDataToString(srcData interface{}) (value string) {
+	switch v := srcData.(type){
+	case primitive.ObjectID:
+		value = srcData.(primitive.ObjectID).Hex()
+	default:
+		value = fmt.Sprintf("%v", v)
+	}
+	return
+}
+
+func convertSrcDataToObjectId(srcData interface{}) (objectId primitive.ObjectID, err error) {
+	defer func() {
+		if r:= recover(); r != nil {
+			err = r.(error)
+		}
+	}()
+	value := fmt.Sprintf("%v", srcData)
+	objectId, err =  primitive.ObjectIDFromHex(value)
+	return
+}
+
 func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 	var q []*gtm.Op
 	batch := []*gtm.Op{root}
@@ -1108,8 +1129,13 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 					continue
 				}
 
-				if r.MatchFieldType == "string" {
-					srcData = srcData.(primitive.ObjectID).Hex()
+				if r.MatchFieldType == "objectId" {
+					if srcData, err = convertSrcDataToObjectId(srcData); err != nil {
+						ic.processErr(err)
+						continue
+					}
+				} else if r.MatchFieldType == "string" {
+					srcData = convertSrcDataToString(srcData)
 				}
 
 				opts := &options.FindOptions{}
@@ -1751,9 +1777,6 @@ func (config *configOptions) loadReplacements() {
 				}
 				if r.MatchField == "" {
 					r.MatchField = "_id"
-				}
-				if r.MatchFieldType == "" {
-					r.MatchFieldType = "ObjectID"
 				}
 				relates[r.Namespace] = append(relates[r.Namespace], r)
 			} else {
