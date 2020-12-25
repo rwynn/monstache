@@ -191,15 +191,16 @@ type javascript struct {
 }
 
 type relation struct {
-	Namespace     string
-	WithNamespace string `toml:"with-namespace"`
-	SrcField      string `toml:"src-field"`
-	MatchField    string `toml:"match-field"`
-	DotNotation   bool   `toml:"dot-notation"`
-	KeepSrc       bool   `toml:"keep-src"`
-	MaxDepth      int    `toml:"max-depth"`
-	db            string
-	col           string
+	Namespace      string
+	WithNamespace  string `toml:"with-namespace"`
+	SrcField       string `toml:"src-field"`
+	MatchField     string `toml:"match-field"`
+	DotNotation    bool   `toml:"dot-notation"`
+	KeepSrc        bool   `toml:"keep-src"`
+	MaxDepth       int    `toml:"max-depth"`
+	MatchFieldType string `toml:"match-field-type"`
+	db             string
+	col            string
 }
 
 type indexMapping struct {
@@ -207,7 +208,7 @@ type indexMapping struct {
 	Index     string
 	Pipeline  string
 }
-
+	
 type findConf struct {
 	vm            *otto.Otto
 	ns            string
@@ -1070,6 +1071,31 @@ func buildSelector(matchField string, data interface{}) bson.M {
 	return sel
 }
 
+func convertSrcDataToString(srcData interface{}) (value string) {
+	switch v := srcData.(type) {
+	case primitive.ObjectID:
+		value = v.Hex()
+	default:
+		value = fmt.Sprintf("%v", v)
+	}
+	return
+}
+
+func convertSrcDataToObjectId(srcData interface{}) (objectId primitive.ObjectID, err error) {
+	value := fmt.Sprintf("%v", srcData)
+	objectId, err = primitive.ObjectIDFromHex(value)
+	return
+}
+
+func convertSrcDataToMatchFieldType(srcData interface{}, matchFieldType string) (result interface{}, err error) {
+	if matchFieldType == "objectId" {
+		result, err = convertSrcDataToObjectId(srcData)
+	} else if matchFieldType == "string" {
+		result = convertSrcDataToString(srcData)
+	}
+	return
+}
+
 func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 	var q []*gtm.Op
 	batch := []*gtm.Op{root}
@@ -1105,6 +1131,13 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 				if srcData, err = extractData(r.SrcField, op.Data); err != nil {
 					ic.processErr(err)
 					continue
+				}
+
+				if r.MatchFieldType != "" {
+					if srcData, err = convertSrcDataToMatchFieldType(srcData, r.MatchFieldType); err != nil {
+						ic.processErr(err)
+						continue
+					}
 				}
 
 				opts := &options.FindOptions{}
@@ -1730,15 +1763,16 @@ func (config *configOptions) loadReplacements() {
 				}
 				database, collection := dbCol[0], dbCol[1]
 				r := &relation{
-					Namespace:     r.Namespace,
-					WithNamespace: r.WithNamespace,
-					SrcField:      r.SrcField,
-					MatchField:    r.MatchField,
-					KeepSrc:       r.KeepSrc,
-					DotNotation:   r.DotNotation,
-					MaxDepth:      r.MaxDepth,
-					db:            database,
-					col:           collection,
+					Namespace:      r.Namespace,
+					WithNamespace:  r.WithNamespace,
+					SrcField:       r.SrcField,
+					MatchField:     r.MatchField,
+					KeepSrc:        r.KeepSrc,
+					DotNotation:    r.DotNotation,
+					MaxDepth:       r.MaxDepth,
+					MatchFieldType: r.MatchFieldType,
+					db:             database,
+					col:            collection,
 				}
 				if r.SrcField == "" {
 					r.SrcField = "_id"
