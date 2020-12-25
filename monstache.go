@@ -1074,7 +1074,7 @@ func buildSelector(matchField string, data interface{}) bson.M {
 func convertSrcDataToString(srcData interface{}) (value string) {
 	switch v := srcData.(type) {
 	case primitive.ObjectID:
-		value = srcData.(primitive.ObjectID).Hex()
+		value = v.(primitive.ObjectID).Hex()
 	default:
 		value = fmt.Sprintf("%v", v)
 	}
