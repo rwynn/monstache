@@ -208,7 +208,7 @@ type indexMapping struct {
 	Index     string
 	Pipeline  string
 }
-	
+
 type findConf struct {
 	vm            *otto.Otto
 	ns            string
@@ -1081,17 +1081,56 @@ func convertSrcDataToString(srcData interface{}) (value string) {
 	return
 }
 
-func convertSrcDataToObjectId(srcData interface{}) (objectId primitive.ObjectID, err error) {
+func convertSrcDataToObjectID(srcData interface{}) (objectID primitive.ObjectID, err error) {
 	value := fmt.Sprintf("%v", srcData)
-	objectId, err = primitive.ObjectIDFromHex(value)
+	objectID, err = primitive.ObjectIDFromHex(value)
 	return
+}
+
+func convertSrcDataToInt(srcData interface{}) (val int64, err error) {
+	switch v := srcData.(type) {
+	case int:
+		return int64(v), nil
+	case int64:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case float64:
+		return int64(v), nil
+	case float32:
+		return int64(v), nil
+	case string:
+		return strconv.ParseInt(v, 10, 64)
+	case bool:
+		vals := map[bool]int64{false: 0, true: 1}
+		return vals[v], nil
+	case primitive.Decimal128:
+		return strconv.ParseInt(v.String(), 10, 64)
+	}
+	return 0, fmt.Errorf("Failed to convert match field of type %T to int64", srcData)
+}
+
+func convertSrcDataToDecimal(srcData interface{}) (decimal primitive.Decimal128, err error) {
+	switch v := srcData.(type) {
+	case int, int64, int32, float64, float32:
+		return primitive.ParseDecimal128(fmt.Sprintf("%v", v))
+	case string:
+		return primitive.ParseDecimal128(v)
+	case primitive.Decimal128:
+		return v, nil
+	}
+	return decimal, fmt.Errorf("Failed to convert match field of type %T to decimal", srcData)
 }
 
 func convertSrcDataToMatchFieldType(srcData interface{}, matchFieldType string) (result interface{}, err error) {
 	if matchFieldType == "objectId" {
-		result, err = convertSrcDataToObjectId(srcData)
+		result, err = convertSrcDataToObjectID(srcData)
 	} else if matchFieldType == "string" {
 		result = convertSrcDataToString(srcData)
+	} else if matchFieldType == "int" || matchFieldType == "long" {
+		result, err = convertSrcDataToInt(srcData)
+	} else if matchFieldType == "decimal" {
+		result, err = convertSrcDataToDecimal(srcData)
 	}
 	return
 }
