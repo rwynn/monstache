@@ -16,9 +16,9 @@ import (
 	"github.com/rwynn/monstache/monstachemap"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/bsontype"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 /*
@@ -202,21 +202,35 @@ func TestBuildRelateSelector(t *testing.T) {
 
 func TestMatchFieldTypeRelatedData(t *testing.T) {
 	var err error
-	var objectId, value primitive.ObjectID
+	var objectID, value primitive.ObjectID
 
 	data := convertSrcDataToString(123)
 	if data != "123" {
 		t.Fatalf("Expected string value")
 	}
-	
-	objectId, err = convertSrcDataToObjectId("5fae4b4e4138d2fcf16cfd64")
+
+	intVal, err := convertSrcDataToInt("123")
+	if intVal != int64(123) {
+		t.Fatalf("Expected int value")
+	}
+
+	_, err = convertSrcDataToDecimal(1.23)
+	if err != nil {
+		t.Fatalf("Expected decimal value but got %s", err)
+	}
+	_, err = convertSrcDataToDecimal(true)
+	if err == nil || err.Error() != "Failed to convert match field of type bool to decimal" {
+		t.Fatalf("Expected error converting to decimal but got %s", err)
+	}
+
+	objectID, err = convertSrcDataToObjectID("5fae4b4e4138d2fcf16cfd64")
 
 	if err != nil {
 		t.Fatalf("Expected objectId value: %v", err)
 	}
 
 	if value, err = primitive.ObjectIDFromHex("5fae4b4e4138d2fcf16cfd64"); err == nil {
-		if objectId != value {
+		if objectID != value {
 			t.Fatalf("Expected matching data to ObjectId: %v", data)
 		}
 	}
