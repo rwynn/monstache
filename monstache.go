@@ -3382,7 +3382,13 @@ func (ic *indexClient) processErr(err error) {
 	mux.Lock()
 	defer mux.Unlock()
 	exitStatus = 1
-	errorLog.Println(err)
+	var ee *elastic.Error
+	if errors.As(err, &ee) {
+		edata, _ := json.Marshal(ee.Details)
+		errorLog.Printf("%s: [details=%s]\n", err, edata)
+	} else {
+		errorLog.Println(err)
+	}
 	if config.FailFast {
 		os.Exit(exitStatus)
 	}
