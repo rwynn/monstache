@@ -388,6 +388,7 @@ type configOptions struct {
 	DirectReadBounded           bool           `toml:"direct-read-bounded"`
 	DirectReadStateful          bool           `toml:"direct-read-stateful"`
 	DirectReadExcludeRegex      string         `toml:"direct-read-dynamic-exclude-regex"`
+	DirectReadIncludeRegex      string         `toml:"direct-read-dynamic-include-regex"`
 	MapperPluginPath            string         `toml:"mapper-plugin-path"`
 	EnableHTTPServer            bool           `toml:"enable-http-server"`
 	HTTPServerAddr              string         `toml:"http-server-addr"`
@@ -1776,6 +1777,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.Worker, "worker", "", "The name of this worker in a multi-worker configuration")
 	flag.StringVar(&config.MapperPluginPath, "mapper-plugin-path", "", "The path to a .so file to load as a document mapper plugin")
 	flag.StringVar(&config.DirectReadExcludeRegex, "direct-read-dynamic-exclude-regex", "", "A regex to use for excluding namespaces when using dynamic direct reads")
+	flag.StringVar(&config.DirectReadIncludeRegex, "direct-read-dynamic-include-regex", "", "A regex to use for including namespaces when using dynamic direct reads")
 	flag.StringVar(&config.NsRegex, "namespace-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which match are synched to elasticsearch")
 	flag.StringVar(&config.NsDropRegex, "namespace-drop-regex", "", "A regex which is matched against a drop operation's namespace (<database>.<collection>).  Only drop operations which match are synched to elasticsearch")
 	flag.StringVar(&config.NsExcludeRegex, "namespace-exclude-regex", "", "A regex which is matched against an operation's namespace (<database>.<collection>).  Only operations which do not match are synched to elasticsearch")
@@ -2282,6 +2284,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.DirectReadExcludeRegex == "" {
 			config.DirectReadExcludeRegex = tomlConfig.DirectReadExcludeRegex
 		}
+		if config.DirectReadIncludeRegex == "" {
+			config.DirectReadIncludeRegex = tomlConfig.DirectReadIncludeRegex
+		}
 		if config.NsRegex == "" {
 			config.NsRegex = tomlConfig.NsRegex
 		}
@@ -2531,6 +2536,11 @@ func (config *configOptions) loadEnvironment() *configOptions {
 		case "MONSTACHE_DIRECT_READ_NS_DYNAMIC_EXCLUDE_REGEX":
 			if config.DirectReadExcludeRegex == "" {
 				config.DirectReadExcludeRegex = val
+			}
+			break
+		case "MONSTACHE_DIRECT_READ_NS_DYNAMIC_INCLUDE_REGEX":
+			if config.DirectReadIncludeRegex == "" {
+				config.DirectReadIncludeRegex = val
 			}
 			break
 		case "MONSTACHE_NS_REGEX":
@@ -4605,6 +4615,10 @@ func (ic *indexClient) buildDynamicDirectReadNs(filter gtm.OpFilter) (names []st
 	if config.DirectReadExcludeRegex != "" {
 		filter = gtm.ChainOpFilters(filterInverseWithRegex(config.DirectReadExcludeRegex), filter)
 	}
+	if config.DirectReadIncludeRegex != "" {
+		filter = gtm.ChainOpFilters(filterWithRegex(config.DirectReadIncludeRegex), filter)
+	}
+
 	dbs, err := client.ListDatabaseNames(context.Background(), bson.M{})
 	if err != nil {
 		errorLog.Fatalf("Failed to read database names for dynamic direct reads: %s", err)
@@ -4631,6 +4645,7 @@ func (ic *indexClient) buildDynamicDirectReadNs(filter gtm.OpFilter) (names []st
 			}
 		}
 	}
+
 	if len(names) == 0 {
 		warnLog.Println("Dynamic direct read candidates: NONE")
 	} else {
