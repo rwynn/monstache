@@ -518,7 +518,7 @@ func (config *configOptions) readShards() bool {
 }
 
 func (config *configOptions) dynamicDirectReadList() bool {
-	return len(config.DirectReadNs) == 1 && config.DirectReadNs[0] == "" || config.DirectReadIncludeRegex != ""
+	return len(config.DirectReadNs) == 1 && config.DirectReadNs[0] == ""
 }
 
 func (config *configOptions) ignoreDatabaseForDirectReads(db string) bool {
