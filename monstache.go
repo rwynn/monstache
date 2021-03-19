@@ -1523,38 +1523,10 @@ func (ic *indexClient) enableProcess() (bool, error) {
 			return true, nil
 		}
 	}
-	if isDup(err) {
+	if mongo.IsDuplicateKeyError(err) {
 		return false, nil
 	}
 	return false, err
-}
-
-func isDup(err error) bool {
-	checkCodeAndMessage := func(code int, message string) bool {
-		return code == 11000 ||
-			code == 11001 ||
-			code == 12582 ||
-			strings.Contains(message, "E11000")
-	}
-	if we, ok := err.(mongo.WriteException); ok {
-		if we.WriteConcernError != nil {
-			wce := we.WriteConcernError
-			code, message := wce.Code, wce.Message
-			if checkCodeAndMessage(code, message) {
-				return true
-			}
-		}
-		if we.WriteErrors != nil {
-			we := we.WriteErrors
-			for _, e := range we {
-				code, message := e.Code, e.Message
-				if checkCodeAndMessage(code, message) {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }
 
 func (ic *indexClient) resetClusterState() error {
