@@ -39,7 +39,7 @@ type MapperPluginOutput struct {
 	VersionType     string                 // the version type of the document (internal, external, external_gte)
 	Pipeline        string                 // the pipeline to index with
 	RetryOnConflict int                    // how many times to retry updates before failing
-	Skip            bool                   // set to true to indicate the the document should be ignored
+	Skip            bool                   // set to true to indicate that the document should be ignored
 	ID              string                 // override the _id of the indexed document; not recommended
 }
 
