@@ -521,12 +521,24 @@ func (config *configOptions) dynamicDirectReadList() bool {
 	return len(config.DirectReadNs) == 1 && config.DirectReadNs[0] == ""
 }
 
+func (config *configOptions) dynamicChangeStreamList() bool {
+	return len(config.ChangeStreamNs) == 1 && config.ChangeStreamNs[0] == ""
+}
+
 func (config *configOptions) ignoreDatabaseForDirectReads(db string) bool {
 	return db == "local" || db == "admin" || db == "config" || db == config.ConfigDatabaseName
 }
 
 func (config *configOptions) ignoreCollectionForDirectReads(col string) bool {
 	return strings.HasPrefix(col, "system.")
+}
+
+func (config *configOptions) ignoreDatabaseForChangeStreamReads(db string) bool {
+	return config.ignoreDatabaseForDirectReads(db)
+}
+
+func (config *configOptions) ignoreCollectionForChangeStreamReads(col string) bool {
+	return config.ignoreCollectionForDirectReads(col)
 }
 
 func afterBulk(executionID int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
@@ -4573,11 +4585,63 @@ func (ic *indexClient) buildDynamicDirectReadNs(filter gtm.OpFilter) (names []st
 			}
 		}
 	}
-
 	if len(names) == 0 {
 		warnLog.Println("Dynamic direct read candidates: NONE")
 	} else {
 		infoLog.Printf("Dynamic direct read candidates: %v", names)
+	}
+	return
+}
+
+func (ic *indexClient) buildDynamicChangeStreamNs(filter gtm.OpFilter) (names []string) {
+	client, config := ic.mongo, ic.config
+	if config.DirectReadExcludeRegex != "" {
+		filter = gtm.ChainOpFilters(filterInverseWithRegex(config.NsRegex), filter)
+	}
+	if config.DirectReadIncludeRegex != "" {
+		filter = gtm.ChainOpFilters(filterWithRegex(config.NsRegex), filter)
+	}
+
+	dbs, err := client.ListDatabaseNames(context.Background(), bson.M{})
+	if err != nil {
+		errorLog.Fatalf("Failed to read database names for dynamic direct reads: %s", err)
+	}
+	uniqueNSMap := make(map[string]struct{}, 0)
+	// has dynamic rules, watch database 
+	// at the same time match the exact table name as much as possible 
+	for _, d := range dbs {
+		if config.ignoreDatabaseForChangeStreamReads(d) {
+			continue
+		}
+	
+		uniqueNSMap[d] = struct{}{}
+		db := client.Database(d)
+		cols, err := db.ListCollectionNames(context.Background(), bson.M{})
+		if err != nil {
+			errorLog.Fatalf("Failed to read db %s collection names for dynamic direct reads: %s", d, err)
+			return
+		}
+		for _, c := range cols {
+			if config. ignoreCollectionForChangeStreamReads(c) {
+				continue
+			}
+			ns := strings.Join([]string{d, c}, ".")
+			if filter(&gtm.Op{Namespace: ns}) {
+				names = append(names, ns)
+			} else {
+				infoLog.Printf("Excluding collection [%s] for dynamic direct reads", ns)
+			}
+		}
+	}
+
+	// has dynamic rules, watch database 
+	for name := range uniqueNSMap {
+		names = append(names, name )
+	}
+	if len(names) == 0 {
+		warnLog.Println("Dynamic change stream read candidates: NONE")
+	} else {
+		infoLog.Printf("Dynamic change stream read candidates: %v", names)
 	}
 	return
 }
@@ -4617,9 +4681,11 @@ func (ic *indexClient) buildGtmOptions() *gtm.Options {
 	directReadFilter = gtm.ChainOpFilters(filterArray...)
 	after := ic.buildTimestampGen()
 	token := ic.buildTokenGen()
+
 	if config.dynamicDirectReadList() {
 		config.DirectReadNs = ic.buildDynamicDirectReadNs(nsFilter)
 	}
+
 	if config.DirectReadStateful {
 		var err error
 		config.DirectReadNs, err = ic.filterDirectReadNamespaces(config.DirectReadNs)
@@ -4627,6 +4693,11 @@ func (ic *indexClient) buildGtmOptions() *gtm.Options {
 			errorLog.Fatalf("Error retrieving direct read state: %s", err)
 		}
 	}
+	if config.dynamicChangeStreamList() {
+		config.ChangeStreamNs =  ic.buildDynamicChangeStreamNs(nsFilter)
+	}
+
+
 	gtmOpts := &gtm.Options{
 		After:               after,
 		Token:               token,
