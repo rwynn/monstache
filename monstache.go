@@ -3017,6 +3017,8 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 	objectID, indexType := opIDToString(op), ic.mapIndex(op)
 	if objectID == "" {
 		return errors.New("Unable to index document due to empty _id value")
+	} else if len(objectID) > 512 {
+		return fmt.Errorf("Unable to index document with _id %s: _id length exceeds max of 512 bytes", objectID)
 	}
 	if ic.config.EnablePatches {
 		if patchNamespaces[op.Namespace] {
@@ -3041,8 +3043,6 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 		}
 		if meta.Index != "" {
 			req.Index(meta.Index)
-		}
-		if meta.Type != "" {
 		}
 		if meta.Routing != "" {
 			req.Routing(meta.Routing)
