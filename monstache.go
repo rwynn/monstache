@@ -334,6 +334,7 @@ type configOptions struct {
 	Pprof                       bool
 	EnableOplog                 bool `toml:"enable-oplog"`
 	DisableChangeEvents         bool `toml:"disable-change-events"`
+	DisableDeleteProtection     bool `toml:"disable-delete-protection"`
 	EnableEasyJSON              bool `toml:"enable-easy-json"`
 	Stats                       bool
 	IndexStats                  bool   `toml:"index-stats"`
@@ -1724,6 +1725,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.BoolVar(&config.Pprof, "pprof", false, "True to enable pprof endpoints")
 	flag.BoolVar(&config.EnableOplog, "enable-oplog", false, "True to enable direct tailing of the oplog")
 	flag.BoolVar(&config.DisableChangeEvents, "disable-change-events", false, "True to disable listening for changes.  You must provide direct-reads in this case")
+	flag.BoolVar(&config.DisableDeleteProtection, "disable-delete-protection", false, "True to disable delete protection and allow multiple deletes in Elasticsearch per event in MongoDB")
 	flag.BoolVar(&config.EnableEasyJSON, "enable-easy-json", false, "True to enable easy-json serialization")
 	flag.BoolVar(&config.Stats, "stats", false, "True to print out statistics")
 	flag.BoolVar(&config.IndexStats, "index-stats", false, "True to index stats in elasticsearch")
@@ -2180,6 +2182,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		}
 		if !config.DisableChangeEvents && tomlConfig.DisableChangeEvents {
 			config.DisableChangeEvents = true
+		}
+		if !config.DisableDeleteProtection && tomlConfig.DisableDeleteProtection {
+			config.DisableDeleteProtection = true
 		}
 		if !config.IndexStats && tomlConfig.IndexStats {
 			config.IndexStats = true
@@ -3923,7 +3928,7 @@ func (ic *indexClient) doDelete(op *gtm.Op) {
 		return
 	}
 	req.Id(objectID)
-	if ic.config.IndexAsUpdate == false {
+	if !ic.config.IndexAsUpdate {
 		req.Version(tsVersion(op.Timestamp))
 		req.VersionType("external")
 	}
@@ -3948,6 +3953,21 @@ func (ic *indexClient) doDelete(op *gtm.Op) {
 	} else if ic.config.DeleteStrategy == statelessDeleteStrategy {
 		if routingNamespaces[""] || routingNamespaces[op.Namespace] {
 			termQuery := elastic.NewTermQuery("_id", objectID)
+			if ic.config.DisableDeleteProtection {
+				delete := ic.client.DeleteByQuery()
+				delete.Index(ic.config.DeleteIndexPattern)
+				delete.ProceedOnVersionConflict()
+				delete.Query(termQuery)
+				deleteResult, err := delete.Do(context.Background())
+				if err != nil {
+					ic.processErr(err)
+				} else if len(deleteResult.Failures) > 0 {
+					errorLog.Printf(
+						"There were failures deleting document %s using index pattern %s: %+v",
+						objectID, ic.config.DeleteIndexPattern, deleteResult.Failures)
+				}
+				return
+			}
 			search := ic.client.Search()
 			search.FetchSource(false)
 			search.Size(1)
@@ -3970,8 +3990,10 @@ func (ic *indexClient) doDelete(op *gtm.Op) {
 					req.Parent(hit.Parent)
 				}
 			} else {
-				errorLog.Printf("Failed to find unique document %s for deletion using index pattern %s",
-					objectID, ic.config.DeleteIndexPattern)
+				errorLog.Printf(
+					"Failed to find unique document %s for deletion using index pattern %s",
+					objectID, ic.config.DeleteIndexPattern,
+				)
 				return
 			}
 		} else {
@@ -3982,7 +4004,6 @@ func (ic *indexClient) doDelete(op *gtm.Op) {
 		return
 	}
 	ic.bulk.Add(req)
-	return
 }
 
 func logRotateDefaults() logRotate {
