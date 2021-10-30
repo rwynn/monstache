@@ -1291,7 +1291,7 @@ func (ic *indexClient) prepareDataForIndexing(op *gtm.Op) {
 
 func parseIndexMeta(op *gtm.Op) (meta *indexingMeta) {
 	meta = &indexingMeta{
-		Version:     tsVersion(op.Timestamp),
+		Version:     tsVersion(op),
 		VersionType: "external",
 	}
 	if m, ok := op.Data["_meta_monstache"]; ok {
@@ -3869,9 +3869,15 @@ func (ic *indexClient) findDeletedSrcDoc(op *gtm.Op) map[string]interface{} {
 	return nil
 }
 
-func tsVersion(ts primitive.Timestamp) int64 {
+func tsVersion(op *gtm.Op) int64 {
+	ts := op.Timestamp
 	t, i := int64(ts.T), int64(ts.I)
 	version := (t << 32) | i
+	if op.IsUpdate() {
+		version++
+	} else if op.IsDelete() {
+		version += 2
+	}
 	return version
 }
 
@@ -3888,7 +3894,7 @@ func (ic *indexClient) doDelete(op *gtm.Op) {
 	}
 	req.Id(objectID)
 	if !ic.config.IndexAsUpdate {
-		req.Version(tsVersion(op.Timestamp))
+		req.Version(tsVersion(op))
 		req.VersionType("external")
 	}
 	if ic.config.DeleteStrategy == statefulDeleteStrategy {
