@@ -1844,6 +1844,9 @@ func (config *configOptions) loadPipelines() {
 		if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
 			errorLog.Fatalln(err)
 		}
+		if err := env.VM.Set("stringFromBinData", jsStringFromBinData); err != nil {
+			errorLog.Fatalln(err)
+		}
 		if _, err := env.VM.Run(env.Script); err != nil {
 			errorLog.Fatalln(err)
 		}
@@ -1879,6 +1882,9 @@ func (config *configOptions) loadFilters() {
 				lock:   &sync.Mutex{},
 			}
 			if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
+				errorLog.Fatalln(err)
+			}
+			if err := env.VM.Set("stringFromBinData", jsStringFromBinData); err != nil {
 				errorLog.Fatalln(err)
 			}
 			if _, err := env.VM.Run(env.Script); err != nil {
