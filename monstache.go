@@ -1844,6 +1844,9 @@ func (config *configOptions) loadPipelines() {
 		if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
 			errorLog.Fatalln(err)
 		}
+		if err := env.VM.Set("stringFromBinData", jsStringFromBinData); err != nil {
+			errorLog.Fatalln(err)
+		}
 		if _, err := env.VM.Run(env.Script); err != nil {
 			errorLog.Fatalln(err)
 		}
@@ -1881,6 +1884,9 @@ func (config *configOptions) loadFilters() {
 			if err := env.VM.Set("module", make(map[string]interface{})); err != nil {
 				errorLog.Fatalln(err)
 			}
+			if err := env.VM.Set("stringFromBinData", jsStringFromBinData); err != nil {
+				errorLog.Fatalln(err)
+			}
 			if _, err := env.VM.Run(env.Script); err != nil {
 				errorLog.Fatalln(err)
 			}
@@ -1895,6 +1901,20 @@ func (config *configOptions) loadFilters() {
 			errorLog.Fatalln("Filters must specify path or script attributes")
 		}
 	}
+}
+func jsStringFromBinData(call otto.FunctionCall) otto.Value {
+	exported, err := call.Argument(0).Export()
+	if err != nil {
+		errorLog.Printf("error exporting argument in stringFromBinData: %s", err)
+		return otto.NullValue()
+	}
+	binData, ok := exported.(primitive.Binary)
+	if !ok {
+		errorLog.Println("error could not convert bindata to type primitve.Binary")
+		return otto.NullValue()
+	}
+	s, _ := otto.ToValue(monstachemap.EncodeBinData(monstachemap.Binary{binData}))
+	return s
 }
 
 func (config *configOptions) loadScripts() {
@@ -3520,6 +3540,9 @@ func loadBuiltinFunctionsForEnvs(envMaps []map[string]*executionEnv, client *mon
 				byID:   true,
 			}
 			if err := env.VM.Set(fa.name, makeFind(fa)); err != nil {
+				errorLog.Fatalln(err)
+			}
+			if err := env.VM.Set("stringFromBinData", jsStringFromBinData); err != nil {
 				errorLog.Fatalln(err)
 			}
 			fa = &findConf{
