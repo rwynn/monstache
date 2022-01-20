@@ -10,8 +10,8 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/olivere/elastic/v7 v7.0.28
 	github.com/robertkrimen/otto v0.0.0-20200922221731-ef014fd054ac
-	github.com/rwynn/gtm/v2 v2.0.12
-	go.mongodb.org/mongo-driver v1.8.0
+	github.com/rwynn/gtm/v2 v2.1.0
+	go.mongodb.org/mongo-driver v1.8.2
 	golang.org/x/crypto v0.0.0-20210513164829-c07d793c2f9a // indirect
 	golang.org/x/sys v0.0.0-20210531080801-fdfd190a6549 // indirect
 	gopkg.in/Graylog2/go-gelf.v2 v2.0.0-20191017102106-1550ee647df0
