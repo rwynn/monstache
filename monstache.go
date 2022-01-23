@@ -321,6 +321,7 @@ type configOptions struct {
 	ElasticHealth0              int            `toml:"elasticsearch-healthcheck-timeout-startup"`
 	ElasticHealth1              int            `toml:"elasticsearch-healthcheck-timeout"`
 	ElasticPKIAuth              elasticPKIAuth `toml:"elasticsearch-pki-auth"`
+	ElasticAPIKey               string         `toml:"elasticsearch-api-key"`
 	ResumeName                  string         `toml:"resume-name"`
 	NsRegex                     string         `toml:"namespace-regex"`
 	NsDropRegex                 string         `toml:"namespace-drop-regex"`
@@ -407,6 +408,16 @@ type configOptions struct {
 	PruneInvalidJSON            bool           `toml:"prune-invalid-json"`
 	Debug                       bool
 	mongoClientOptions          *options.ClientOptions
+}
+
+type ElasticAPIKeyTransport struct {
+	apiKey string
+	next   http.RoundTripper
+}
+
+func (tr *ElasticAPIKeyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r.Header.Set("Authorization", fmt.Sprintf("ApiKey %s", tr.apiKey))
+	return tr.next.RoundTrip(r)
 }
 
 func (eca elasticPKIAuth) enabled() bool {
@@ -1682,6 +1693,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.MongoOpLogCollectionName, "mongo-oplog-collection-name", "", "Override the collection name which contains the mongodb oplog")
 	flag.StringVar(&config.GraylogAddr, "graylog-addr", "", "Send logs to a Graylog server at this address")
 	flag.StringVar(&config.ElasticVersion, "elasticsearch-version", "", "Specify elasticsearch version directly instead of getting it from the server")
+	flag.StringVar(&config.ElasticAPIKey, "elasticsearch-api-key", "", "Base64 encoded elasticsearch APIKey value")
 	flag.StringVar(&config.ElasticUser, "elasticsearch-user", "", "The elasticsearch user name for basic auth")
 	flag.StringVar(&config.ElasticPassword, "elasticsearch-password", "", "The elasticsearch password for basic auth")
 	flag.StringVar(&config.ElasticPemFile, "elasticsearch-pem-file", "", "Path to a PEM file for secure connections to elasticsearch")
@@ -2483,6 +2495,11 @@ func (config *configOptions) loadEnvironment() *configOptions {
 				config.ElasticPKIAuth.KeyFile = val
 			}
 			break
+		case "MONSTACHE_ES_API_KEY":
+			if config.ElasticAPIKey == "" {
+				config.ElasticAPIKey = val
+			}
+			break
 		case "MONSTACHE_ES_VALIDATE_PEM":
 			v, err := strconv.ParseBool(val)
 			if err != nil {
@@ -2887,14 +2904,18 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 		}
 		tlsConfig.Certificates = []tls.Certificate{clientCert}
 	}
-	if config.ElasticValidatePemFile == false {
+	if !config.ElasticValidatePemFile {
 		// Turn off validation
 		tlsConfig.InsecureSkipVerify = true
 	}
-	transport := &http.Transport{
+	var transport http.RoundTripper
+	transport = &http.Transport{
 		DisableCompression:  !config.Gzip,
 		TLSHandshakeTimeout: time.Duration(30) * time.Second,
 		TLSClientConfig:     tlsConfig,
+	}
+	if config.ElasticAPIKey != "" {
+		transport = elasticAPIKeyRoundTripper(config.ElasticAPIKey, transport)
 	}
 	client = &http.Client{
 		Timeout:   time.Duration(config.ElasticClientTimeout) * time.Second,
@@ -2927,6 +2948,13 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 		client = aws.NewV4SigningClientWithHTTPClient(creds, config.AWSConnect.Region, client)
 	}
 	return client, err
+}
+
+func elasticAPIKeyRoundTripper(apiKey string, wrapped http.RoundTripper) http.RoundTripper {
+	return &ElasticAPIKeyTransport{
+		apiKey: apiKey,
+		next:   wrapped,
+	}
 }
 
 func (ic *indexClient) doDrop(op *gtm.Op) (err error) {
