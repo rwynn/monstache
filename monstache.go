@@ -2090,6 +2090,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if config.ElasticUser == "" {
 			config.ElasticUser = tomlConfig.ElasticUser
 		}
+		if config.ElasticAPIKey == "" {
+			config.ElasticAPIKey = tomlConfig.ElasticAPIKey
+		}
 		if config.ElasticPassword == "" {
 			config.ElasticPassword = tomlConfig.ElasticPassword
 		}
