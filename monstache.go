@@ -30,7 +30,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/rwynn/monstache/pkg/oplog"
+	"github.com/rwynn/monstache/v6/pkg/oplog"
 
 	"github.com/BurntSushi/toml"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -44,7 +44,7 @@ import (
 	_ "github.com/robertkrimen/otto/underscore"
 	"github.com/rwynn/gtm/v2"
 	"github.com/rwynn/gtm/v2/consistent"
-	"github.com/rwynn/monstache/monstachemap"
+	"github.com/rwynn/monstache/v6/monstachemap"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/bsontype"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -82,7 +82,7 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
 
-const version = "6.7.7"
+const version = "6.7.8"
 const mongoURLDefault string = "mongodb://localhost:27017"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
