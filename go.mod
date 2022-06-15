@@ -1,4 +1,4 @@
-module github.com/rwynn/monstache
+module github.com/rwynn/monstache/v5
 
 require (
 	github.com/BurntSushi/toml v1.0.0

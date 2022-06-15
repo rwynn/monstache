@@ -13,7 +13,7 @@ import (
 
 	"github.com/olivere/elastic"
 	"github.com/rwynn/gtm/v2"
-	"github.com/rwynn/monstache/monstachemap"
+	"github.com/rwynn/monstache/v5/monstachemap"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/bsontype"
 	"go.mongodb.org/mongo-driver/bson/primitive"
