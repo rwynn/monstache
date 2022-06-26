@@ -13,7 +13,7 @@ require (
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/olivere/elastic v6.2.37+incompatible
 	github.com/robertkrimen/otto v0.0.0-20211024170158-b87d35c0b86f
-	github.com/rwynn/gtm/v2 v2.1.1
+	github.com/rwynn/gtm/v2 v2.1.2
 	github.com/xdg-go/scram v1.1.1 // indirect
 	go.mongodb.org/mongo-driver v1.9.1
 	golang.org/x/crypto v0.0.0-20220312131142-6068a2e6cfdc // indirect
