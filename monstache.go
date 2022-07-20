@@ -132,33 +132,36 @@ type buildInfo struct {
 type stringargs []string
 
 type indexClient struct {
-	gtmCtx          *gtm.OpCtxMulti
-	config          *configOptions
-	mongo           *mongo.Client
-	mongoConfig     *mongo.Client
-	bulk            *elastic.BulkProcessor
-	bulkStats       *elastic.BulkProcessor
-	client          *elastic.Client
-	hsc             *httpServerCtx
-	fileWg          *sync.WaitGroup
-	indexWg         *sync.WaitGroup
-	processWg       *sync.WaitGroup
-	relateWg        *sync.WaitGroup
-	opsConsumed     chan bool
-	closeC          chan bool
-	doneC           chan int
-	enabled         bool
-	lastTs          primitive.Timestamp
-	lastTsSaved     primitive.Timestamp
-	tokens          bson.M
-	indexC          chan *gtm.Op
-	processC        chan *gtm.Op
-	fileC           chan *gtm.Op
-	relateC         chan *gtm.Op
-	filter          gtm.OpFilter
-	statusReqC      chan *statusRequest
-	sigH            *sigHandler
-	oplogTsResolver oplog.TimestampResolver
+	gtmCtx             *gtm.OpCtxMulti
+	config             *configOptions
+	mongo              *mongo.Client
+	mongoConfig        *mongo.Client
+	bulk               *elastic.BulkProcessor
+	bulkStats          *elastic.BulkProcessor
+	client             *elastic.Client
+	hsc                *httpServerCtx
+	fileWg             *sync.WaitGroup
+	indexWg            *sync.WaitGroup
+	processWg          *sync.WaitGroup
+	relateWg           *sync.WaitGroup
+	opsConsumed        chan bool
+	closeC             chan bool
+	doneC              chan int
+	enabled            bool
+	lastTs             primitive.Timestamp
+	lastTsSaved        primitive.Timestamp
+	tokens             bson.M
+	indexC             chan *gtm.Op
+	processC           chan *gtm.Op
+	fileC              chan *gtm.Op
+	relateC            chan *gtm.Op
+	filter             gtm.OpFilter
+	statusReqC         chan *statusRequest
+	sigH               *sigHandler
+	oplogTsResolver    oplog.TimestampResolver
+	directReadsPending bool
+	externalShutdown   bool
+	rwmutex            sync.RWMutex
 }
 
 type sigHandler struct {
@@ -4098,7 +4101,7 @@ func (ctx *httpServerCtx) buildServer() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/started", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		data := (time.Now().Sub(ctx.started)).String()
+		data := time.Since(ctx.started).String()
 		w.Write([]byte(data))
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, req *http.Request) {
@@ -4298,6 +4301,11 @@ func (sh *sigHandler) start() {
 				os.Exit(1)
 			}()
 			// we started processing events so do a clean shutdown
+			infoLog.Println("Starting clean shutdown")
+			ic.rwmutex.Lock()
+			ic.externalShutdown = true
+			ic.rwmutex.Unlock()
+			ic.checkDirectReads()
 			ic.stopAllWorkers()
 			ic.doneC <- 10
 		}
@@ -4392,6 +4400,31 @@ func (ic *indexClient) startPostProcess() {
 	}
 }
 
+func (ic *indexClient) checkDirectReads() {
+	if len(ic.config.DirectReadNs) == 0 {
+		return
+	}
+	drc := ic.directReadChan()
+	t := time.NewTimer(time.Duration(1) * time.Second)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		ic.rwmutex.Lock()
+		ic.directReadsPending = true
+		ic.rwmutex.Unlock()
+	case <-drc:
+	}
+}
+
+func (ic *indexClient) directReadChan() chan struct{} {
+	c := make(chan struct{})
+	go func() {
+		ic.gtmCtx.DirectReadWg.Wait()
+		close(c)
+	}()
+	return c
+}
+
 func (ic *indexClient) stopAllWorkers() {
 	infoLog.Println("Stopping all workers")
 	ic.gtmCtx.Stop()
@@ -4407,21 +4440,33 @@ func (ic *indexClient) stopAllWorkers() {
 }
 
 func (ic *indexClient) startReadWait() {
-	if len(ic.config.DirectReadNs) > 0 || ic.config.ExitAfterDirectReads {
+	directReadsEnabled := len(ic.config.DirectReadNs) > 0
+	if directReadsEnabled {
+		exitAfterDirectReads := ic.config.ExitAfterDirectReads
 		go func() {
 			ic.gtmCtx.DirectReadWg.Wait()
-			infoLog.Println("Direct reads completed")
 			if ic.config.Resume {
 				ic.saveTimestampFromReplStatus()
 			}
-			if ic.config.DirectReadStateful && len(ic.config.DirectReadNs) > 0 {
-				if err := ic.saveDirectReadNamespaces(); err != nil {
-					errorLog.Printf("Error saving direct read state: %s", err)
+			ic.rwmutex.RLock()
+			if !ic.directReadsPending {
+				infoLog.Println("Direct reads completed")
+				if ic.config.DirectReadStateful {
+					if err := ic.saveDirectReadNamespaces(); err != nil {
+						errorLog.Printf("Error saving direct read state: %s", err)
+					}
 				}
 			}
-			if ic.config.ExitAfterDirectReads {
-				ic.stopAllWorkers()
-				ic.doneC <- 30
+			ic.rwmutex.RUnlock()
+			if exitAfterDirectReads {
+				var exit bool
+				ic.rwmutex.RLock()
+				exit = !ic.externalShutdown
+				ic.rwmutex.RUnlock()
+				if exit {
+					ic.stopAllWorkers()
+					ic.doneC <- 30
+				}
 			}
 		}()
 	}
