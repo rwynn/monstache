@@ -1207,6 +1207,10 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 					sel = buildSelector(r.MatchField, srcData)
 				}
 				cursor, err := col.Find(context.Background(), sel, opts)
+				if err != nil {
+					ic.processErr(err)
+					continue
+				}
 
 				doc := make(map[string]interface{})
 				for cursor.Next(context.Background()) {
