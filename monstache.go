@@ -3794,14 +3794,32 @@ func (fc *findCall) restoreIds(v interface{}) (r interface{}) {
 			avs = append(avs, mvs)
 		}
 		r = avs
+	case primitive.A:
+		var avs []interface{}
+		for _, av := range vt {
+			avs = append(avs, fc.restoreIds(av))
+		}
+		r = avs
 	case []interface{}:
 		var avs []interface{}
 		for _, av := range vt {
 			avs = append(avs, fc.restoreIds(av))
 		}
 		r = avs
+	case primitive.M:
+		mvs := make(map[string]interface{}, len(vt))
+		for k, v := range vt {
+			mvs[k] = fc.restoreIds(v)
+		}
+		r = mvs
+	case primitive.D:
+		mvs := make(map[string]interface{}, len(vt))
+		for k, v := range vt.Map() {
+			mvs[k] = fc.restoreIds(v)
+		}
+		r = mvs
 	case map[string]interface{}:
-		mvs := make(map[string]interface{})
+		mvs := make(map[string]interface{}, len(vt))
 		for k, v := range vt {
 			mvs[k] = fc.restoreIds(v)
 		}
