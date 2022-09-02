@@ -88,8 +88,14 @@ func ConvertSliceForJSON(a []interface{}) []interface{} {
 		switch achild := av.(type) {
 		case map[string]interface{}:
 			avc = ConvertMapForJSON(achild)
+		case primitive.M:
+			avc = ConvertMapForJSON(map[string]interface{}(achild))
+		case primitive.D:
+			avc = ConvertMapForJSON(map[string]interface{}(achild.Map()))
 		case []interface{}:
 			avc = ConvertSliceForJSON(achild)
+		case primitive.A:
+			avc = ConvertSliceForJSON([]interface{}(achild))
 		case primitive.Binary:
 			avc = Binary{achild}
 		case primitive.Decimal128:
@@ -110,8 +116,14 @@ func ConvertMapForJSON(m map[string]interface{}) map[string]interface{} {
 		switch child := v.(type) {
 		case map[string]interface{}:
 			o[k] = ConvertMapForJSON(child)
+		case primitive.M:
+			o[k] = ConvertMapForJSON(map[string]interface{}(child))
+		case primitive.D:
+			o[k] = ConvertMapForJSON(map[string]interface{}(child.Map()))
 		case []interface{}:
 			o[k] = ConvertSliceForJSON(child)
+		case primitive.A:
+			o[k] = ConvertSliceForJSON([]interface{}(child))
 		case primitive.Binary:
 			o[k] = Binary{child}
 		case primitive.Decimal128:
