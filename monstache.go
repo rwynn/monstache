@@ -4316,6 +4316,7 @@ func (sh *sigHandler) start() {
 			os.Exit(0)
 		case ic := <-sh.clientStartedC:
 			<-sigs
+			ic.onExternalShutdown()
 			go func() {
 				// forced shutdown on 2nd signal
 				<-sigs
@@ -4324,10 +4325,6 @@ func (sh *sigHandler) start() {
 			}()
 			// we started processing events so do a clean shutdown
 			infoLog.Println("Starting clean shutdown")
-			ic.rwmutex.Lock()
-			ic.externalShutdown = true
-			ic.rwmutex.Unlock()
-			ic.checkDirectReads()
 			ic.stopAllWorkers()
 			ic.doneC <- 10
 		}
@@ -4422,18 +4419,23 @@ func (ic *indexClient) startPostProcess() {
 	}
 }
 
+func (ic *indexClient) onExternalShutdown() {
+	ic.rwmutex.Lock()
+	defer ic.rwmutex.Unlock()
+	ic.externalShutdown = true
+	ic.checkDirectReads()
+}
+
 func (ic *indexClient) checkDirectReads() {
 	if len(ic.config.DirectReadNs) == 0 {
 		return
 	}
 	drc := ic.directReadChan()
-	t := time.NewTimer(time.Duration(1) * time.Second)
+	t := time.NewTimer(time.Duration(500) * time.Millisecond)
 	defer t.Stop()
 	select {
 	case <-t.C:
-		ic.rwmutex.Lock()
 		ic.directReadsPending = true
-		ic.rwmutex.Unlock()
 	case <-drc:
 	}
 }
@@ -4470,16 +4472,6 @@ func (ic *indexClient) startReadWait() {
 			if ic.config.Resume {
 				ic.saveTimestampFromReplStatus()
 			}
-			ic.rwmutex.RLock()
-			if !ic.directReadsPending {
-				infoLog.Println("Direct reads completed")
-				if ic.config.DirectReadStateful {
-					if err := ic.saveDirectReadNamespaces(); err != nil {
-						errorLog.Printf("Error saving direct read state: %s", err)
-					}
-				}
-			}
-			ic.rwmutex.RUnlock()
 			if exitAfterDirectReads {
 				var exit bool
 				ic.rwmutex.RLock()
@@ -5086,6 +5078,18 @@ func (ic *indexClient) closeClient() {
 	}
 	if ic.bulkStats != nil {
 		ic.bulkStats.Close()
+	}
+	if len(ic.config.DirectReadNs) > 0 {
+		ic.rwmutex.RLock()
+		if !ic.directReadsPending {
+			infoLog.Println("Direct reads completed")
+			if ic.config.DirectReadStateful {
+				if err := ic.saveDirectReadNamespaces(); err != nil {
+					errorLog.Printf("Error saving direct read state: %s", err)
+				}
+			}
+		}
+		ic.rwmutex.RUnlock()
 	}
 	close(ic.closeC)
 }
