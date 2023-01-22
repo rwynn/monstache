@@ -11,7 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -1846,7 +1846,7 @@ func (config *configOptions) loadPipelines() {
 			errorLog.Fatalln("Pipelines must specify path or script but not both")
 		}
 		if s.Path != "" {
-			if script, err := ioutil.ReadFile(s.Path); err == nil {
+			if script, err := os.ReadFile(s.Path); err == nil {
 				s.Script = string(script[:])
 			} else {
 				errorLog.Fatalf("Unable to load pipeline at path %s: %s", s.Path, err)
@@ -1886,7 +1886,7 @@ func (config *configOptions) loadFilters() {
 				errorLog.Fatalln("Filters must specify path or script but not both")
 			}
 			if s.Path != "" {
-				if script, err := ioutil.ReadFile(s.Path); err == nil {
+				if script, err := os.ReadFile(s.Path); err == nil {
 					s.Script = string(script[:])
 				} else {
 					errorLog.Fatalf("Unable to load filter at path %s: %s", s.Path, err)
@@ -1943,7 +1943,7 @@ func (config *configOptions) loadScripts() {
 				errorLog.Fatalln("Scripts must specify path or script but not both")
 			}
 			if s.Path != "" {
-				if script, err := ioutil.ReadFile(s.Path); err == nil {
+				if script, err := os.ReadFile(s.Path); err == nil {
 					s.Script = string(script[:])
 				} else {
 					errorLog.Fatalf("Unable to load script at path %s: %s", s.Path, err)
@@ -2045,7 +2045,7 @@ func (config *configOptions) decodeAsTemplate() *configOptions {
 		name, val := pair[0], pair[1]
 		env[name] = val
 	}
-	tpl, err := ioutil.ReadFile(config.ConfigFile)
+	tpl, err := os.ReadFile(config.ConfigFile)
 	if err != nil {
 		errorLog.Fatalln(err)
 	}
@@ -2643,7 +2643,7 @@ func (config *configOptions) loadVariableValueFromFile(name string, path string)
 		return name, "", fmt.Errorf("read value for %s from file failed: %s", name, err)
 	}
 	defer f.Close()
-	c, err := ioutil.ReadAll(f)
+	c, err := io.ReadAll(f)
 	if err != nil {
 		return name, "", fmt.Errorf("read value for %s from file failed: %s", name, err)
 	}
@@ -2893,7 +2893,7 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 	if config.ElasticPemFile != "" {
 		var ca []byte
 		certs := x509.NewCertPool()
-		if ca, err = ioutil.ReadFile(config.ElasticPemFile); err == nil {
+		if ca, err = os.ReadFile(config.ElasticPemFile); err == nil {
 			if ok := certs.AppendCertsFromPEM(ca); !ok {
 				errorLog.Printf("No certs parsed successfully from %s", config.ElasticPemFile)
 			}
