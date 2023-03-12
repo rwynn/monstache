@@ -1423,7 +1423,7 @@ func filterDropWithRegex(regex string) gtm.OpFilter {
 	}
 }
 
-func filterWithPlugin() gtm.OpFilter {
+func filterWithPlugin(mc *mongo.Client) gtm.OpFilter {
 	return func(op *gtm.Op) bool {
 		var keep = true
 		if (op.IsInsert() || op.IsUpdate()) && op.Data != nil {
@@ -1435,6 +1435,7 @@ func filterWithPlugin() gtm.OpFilter {
 				Collection:        op.GetCollection(),
 				Operation:         op.Operation,
 				UpdateDescription: op.UpdateDescription,
+				MongoClient:       mc,
 			}
 			if ok, err := filterPlugin(input); err == nil {
 				keep = ok
@@ -4690,7 +4691,7 @@ func (ic *indexClient) buildFilterArray() []gtm.OpFilter {
 		errorLog.Fatalln("Workers configured but this worker is undefined. worker must be set to one of the workers.")
 	}
 	if filterPlugin != nil {
-		pluginFilter = filterWithPlugin()
+		pluginFilter = filterWithPlugin(ic.mongo)
 		filterArray = append(filterArray, pluginFilter)
 	} else if len(filterEnvs) > 0 {
 		pluginFilter = filterWithScript()
