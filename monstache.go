@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"io/ioutil"
 	"log"
 	"math"
@@ -2948,6 +2949,7 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 		} else if config.AWSConnect.Strategy == awsCredentialStrategyChained {
 			creds = credentials.NewChainCredentials([]credentials.Provider{
 				&credentials.EnvProvider{},
+				&stscreds.WebIdentityRoleProvider{},
 				&credentials.SharedCredentialsProvider{
 					Filename: config.AWSConnect.CredentialsFile,
 					Profile:  config.AWSConnect.Profile,
