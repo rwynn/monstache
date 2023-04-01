@@ -109,8 +109,8 @@ const (
 	awsCredentialStrategyFile
 	awsCredentialStrategyEnv
 	awsCredentialStrategyEndpoint
-	awsWebIdentityStrategy
 	awsCredentialStrategyChained
+	awsWebIdentityStrategy
 )
 
 type deleteStrategy int
