@@ -3287,6 +3287,19 @@ func (ic *indexClient) routeDrop(op *gtm.Op) (err error) {
 	return
 }
 
+func (ic *indexClient) skipDelete(op *gtm.Op) bool {
+	if rs := relates[op.Namespace]; len(rs) != 0 {
+		for _, r := range rs {
+			if r.KeepSrc {
+				return false
+			}
+		}
+		// none of the source events kept
+		return true
+	}
+	return false
+}
+
 func (ic *indexClient) routeDeleteRelate(op *gtm.Op) (err error) {
 	if rs := relates[op.Namespace]; len(rs) != 0 {
 		var delData map[string]interface{}
@@ -3327,6 +3340,9 @@ func (ic *indexClient) routeDeleteRelate(op *gtm.Op) (err error) {
 func (ic *indexClient) routeDelete(op *gtm.Op) (err error) {
 	if len(ic.config.Relate) > 0 {
 		err = ic.routeDeleteRelate(op)
+		if ic.skipDelete(op) {
+			return
+		}
 	}
 	ic.doDelete(op)
 	return
