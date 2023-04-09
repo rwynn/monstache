@@ -110,7 +110,7 @@ const (
 	awsCredentialStrategyEnv
 	awsCredentialStrategyEndpoint
 	awsCredentialStrategyChained
-	awsWebIdentityStrategy
+	awsCredentialStrategyWebIdentity
 )
 
 type deleteStrategy int
@@ -2938,23 +2938,27 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 	}
 	if config.AWSConnect.enabled() {
 		var creds *credentials.Credentials
-		var providers []credentials.Provider
 		if config.AWSConnect.Strategy == awsCredentialStrategyStatic {
 			creds = credentials.NewStaticCredentials(config.AWSConnect.AccessKey, config.AWSConnect.SecretKey, "")
 		} else {
-			if config.AWSConnect.Strategy == awsCredentialStrategyEnv || config.AWSConnect.Strategy == awsCredentialStrategyChained {
+			var providers []credentials.Provider
+			if config.AWSConnect.Strategy == awsCredentialStrategyEnv ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
 				providers = append(providers, &credentials.EnvProvider{})
 			}
-			if config.AWSConnect.Strategy == awsCredentialStrategyFile || config.AWSConnect.Strategy == awsCredentialStrategyChained {
+			if config.AWSConnect.Strategy == awsCredentialStrategyFile ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
 				providers = append(providers, &credentials.SharedCredentialsProvider{
 					Filename: config.AWSConnect.CredentialsFile,
 					Profile:  config.AWSConnect.Profile,
 				})
 			}
-			if config.AWSConnect.Strategy == awsCredentialStrategyEndpoint || config.AWSConnect.Strategy == awsCredentialStrategyChained {
+			if config.AWSConnect.Strategy == awsCredentialStrategyEndpoint ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
 				providers = append(providers, defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()))
 			}
-			if config.AWSConnect.Strategy == awsWebIdentityStrategy || config.AWSConnect.Strategy == awsCredentialStrategyChained {
+			if config.AWSConnect.Strategy == awsCredentialStrategyWebIdentity ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
 				// Create a new session using the default AWS configuration
 				sess, err := session.NewSession()
 				if err != nil {
@@ -2971,8 +2975,9 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 				)
 				providers = append(providers, roleProvider)
 			}
+			creds = credentials.NewChainCredentials(providers)
 		}
-		config.AWSConnect.creds = credentials.NewChainCredentials(providers)
+		config.AWSConnect.creds = creds
 		client = aws.NewV4SigningClientWithHTTPClient(creds, config.AWSConnect.Region, client)
 	}
 	return client, err
