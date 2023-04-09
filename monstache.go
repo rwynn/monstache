@@ -30,6 +30,10 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/sts"
+
 	"github.com/rwynn/monstache/v6/pkg/oplog"
 
 	"github.com/BurntSushi/toml"
@@ -106,6 +110,7 @@ const (
 	awsCredentialStrategyEnv
 	awsCredentialStrategyEndpoint
 	awsCredentialStrategyChained
+	awsWebIdentityStrategy
 )
 
 type deleteStrategy int
@@ -2934,28 +2939,41 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 	}
 	if config.AWSConnect.enabled() {
 		var creds *credentials.Credentials
+		var providers []credentials.Provider
 		if config.AWSConnect.Strategy == awsCredentialStrategyStatic {
 			creds = credentials.NewStaticCredentials(config.AWSConnect.AccessKey, config.AWSConnect.SecretKey, "")
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyFile {
-			creds = credentials.NewCredentials(&credentials.SharedCredentialsProvider{
-				Filename: config.AWSConnect.CredentialsFile,
-				Profile:  config.AWSConnect.Profile,
-			})
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyEnv {
-			creds = credentials.NewCredentials(&credentials.EnvProvider{})
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyEndpoint {
-			creds = credentials.NewCredentials(defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()))
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyChained {
-			creds = credentials.NewChainCredentials([]credentials.Provider{
-				&credentials.EnvProvider{},
-				&credentials.SharedCredentialsProvider{
+		} else {
+			if config.AWSConnect.Strategy == awsCredentialStrategyEnv || config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				providers = append(providers, &credentials.EnvProvider{})
+			}
+			if config.AWSConnect.Strategy == awsCredentialStrategyFile || config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				providers = append(providers, &credentials.SharedCredentialsProvider{
 					Filename: config.AWSConnect.CredentialsFile,
 					Profile:  config.AWSConnect.Profile,
-				},
-				defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()),
-			})
+				})
+			}
+			if config.AWSConnect.Strategy == awsCredentialStrategyEndpoint || config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				providers = append(providers, defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()))
+			}
+			if config.AWSConnect.Strategy == awsWebIdentityStrategy || config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				// Create a new session using the default AWS configuration
+				sess, err := session.NewSession()
+				if err != nil {
+					return nil, err
+				}
+				// Create a new STS client using the session
+				stsClient := sts.New(sess)
+				// Assume the IAM role associated with the pod using STS
+				roleProvider := stscreds.NewWebIdentityRoleProviderWithOptions(
+					stsClient,
+					os.Getenv("AWS_ROLE_ARN"),
+					"monstache",
+					stscreds.FetchTokenPath(os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")),
+				)
+				providers = append(providers, roleProvider)
+			}
 		}
-		config.AWSConnect.creds = creds
+		config.AWSConnect.creds = credentials.NewChainCredentials(providers)
 		client = aws.NewV4SigningClientWithHTTPClient(creds, config.AWSConnect.Region, client)
 	}
 	return client, err
