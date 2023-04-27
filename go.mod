@@ -1,8 +1,10 @@
 module github.com/rwynn/monstache/v6
 
+go 1.19
+
 require (
-	github.com/BurntSushi/toml v1.0.0
-	github.com/aws/aws-sdk-go v1.43.17
+	github.com/BurntSushi/toml v1.2.1
+	github.com/aws/aws-sdk-go v1.44.239
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
 	github.com/evanphx/json-patch v5.6.0+incompatible
 	github.com/fsnotify/fsnotify v1.5.1
@@ -35,5 +37,3 @@ require (
 	golang.org/x/text v0.3.7 // indirect
 	gopkg.in/sourcemap.v1 v1.0.5 // indirect
 )
-
-go 1.19

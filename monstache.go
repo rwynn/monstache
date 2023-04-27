@@ -30,6 +30,10 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/sts"
+
 	"github.com/rwynn/monstache/v6/pkg/oplog"
 
 	"github.com/BurntSushi/toml"
@@ -106,6 +110,7 @@ const (
 	awsCredentialStrategyEnv
 	awsCredentialStrategyEndpoint
 	awsCredentialStrategyChained
+	awsCredentialStrategyWebIdentity
 )
 
 type deleteStrategy int
@@ -1404,7 +1409,7 @@ func filterDropWithRegex(regex string) gtm.OpFilter {
 	}
 }
 
-func filterWithPlugin() gtm.OpFilter {
+func filterWithPlugin(mc *mongo.Client) gtm.OpFilter {
 	return func(op *gtm.Op) bool {
 		var keep = true
 		if (op.IsInsert() || op.IsUpdate()) && op.Data != nil {
@@ -1416,6 +1421,7 @@ func filterWithPlugin() gtm.OpFilter {
 				Collection:        op.GetCollection(),
 				Operation:         op.Operation,
 				UpdateDescription: op.UpdateDescription,
+				MongoClient:       mc,
 			}
 			if ok, err := filterPlugin(input); err == nil {
 				keep = ok
@@ -2935,24 +2941,42 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 		var creds *credentials.Credentials
 		if config.AWSConnect.Strategy == awsCredentialStrategyStatic {
 			creds = credentials.NewStaticCredentials(config.AWSConnect.AccessKey, config.AWSConnect.SecretKey, "")
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyFile {
-			creds = credentials.NewCredentials(&credentials.SharedCredentialsProvider{
-				Filename: config.AWSConnect.CredentialsFile,
-				Profile:  config.AWSConnect.Profile,
-			})
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyEnv {
-			creds = credentials.NewCredentials(&credentials.EnvProvider{})
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyEndpoint {
-			creds = credentials.NewCredentials(defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()))
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyChained {
-			creds = credentials.NewChainCredentials([]credentials.Provider{
-				&credentials.EnvProvider{},
-				&credentials.SharedCredentialsProvider{
+		} else {
+			var providers []credentials.Provider
+			if config.AWSConnect.Strategy == awsCredentialStrategyEnv ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				providers = append(providers, &credentials.EnvProvider{})
+			}
+			if config.AWSConnect.Strategy == awsCredentialStrategyFile ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				providers = append(providers, &credentials.SharedCredentialsProvider{
 					Filename: config.AWSConnect.CredentialsFile,
 					Profile:  config.AWSConnect.Profile,
-				},
-				defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()),
-			})
+				})
+			}
+			if config.AWSConnect.Strategy == awsCredentialStrategyEndpoint ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				providers = append(providers, defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()))
+			}
+			if config.AWSConnect.Strategy == awsCredentialStrategyWebIdentity ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				// Create a new session using the default AWS configuration
+				sess, err := session.NewSession()
+				if err != nil {
+					return nil, err
+				}
+				// Create a new STS client using the session
+				stsClient := sts.New(sess)
+				// Assume the IAM role associated with the pod using STS
+				roleProvider := stscreds.NewWebIdentityRoleProviderWithOptions(
+					stsClient,
+					os.Getenv("AWS_ROLE_ARN"),
+					"monstache",
+					stscreds.FetchTokenPath(os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")),
+				)
+				providers = append(providers, roleProvider)
+			}
+			creds = credentials.NewChainCredentials(providers)
 		}
 		config.AWSConnect.creds = creds
 		client = aws.NewV4SigningClientWithHTTPClient(creds, config.AWSConnect.Region, client)
@@ -3269,6 +3293,19 @@ func (ic *indexClient) routeDrop(op *gtm.Op) (err error) {
 	return
 }
 
+func (ic *indexClient) skipDelete(op *gtm.Op) bool {
+	if rs := relates[op.Namespace]; len(rs) != 0 {
+		for _, r := range rs {
+			if r.KeepSrc {
+				return false
+			}
+		}
+		// none of the source events kept
+		return true
+	}
+	return false
+}
+
 func (ic *indexClient) routeDeleteRelate(op *gtm.Op) (err error) {
 	if rs := relates[op.Namespace]; len(rs) != 0 {
 		var delData map[string]interface{}
@@ -3309,6 +3346,9 @@ func (ic *indexClient) routeDeleteRelate(op *gtm.Op) (err error) {
 func (ic *indexClient) routeDelete(op *gtm.Op) (err error) {
 	if len(ic.config.Relate) > 0 {
 		err = ic.routeDeleteRelate(op)
+		if ic.skipDelete(op) {
+			return
+		}
 	}
 	ic.doDelete(op)
 	return
@@ -4666,7 +4706,7 @@ func (ic *indexClient) buildFilterArray() []gtm.OpFilter {
 		errorLog.Fatalln("Workers configured but this worker is undefined. worker must be set to one of the workers.")
 	}
 	if filterPlugin != nil {
-		pluginFilter = filterWithPlugin()
+		pluginFilter = filterWithPlugin(ic.mongo)
 		filterArray = append(filterArray, pluginFilter)
 	} else if len(filterEnvs) > 0 {
 		pluginFilter = filterWithScript()
