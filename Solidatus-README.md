@@ -9,3 +9,6 @@ SO:
 - cherry-picked all commits from `rel6` that update Mongo driver or other dependencies. This fixes all CVEs
 - Updated version to `6.7.10.0` in `monstache.go`
 - Created new release by using new `./build.sh` script
+
+# 2023-06-20
+Golang has 3 vulnerabilities CVE-2023-24540, CVE-2023-29400, CVE-2023-24539 which were fixed in 1.20.4 hence manually updated go.mod to use 1.20. (latest on main branch was 1.19)
