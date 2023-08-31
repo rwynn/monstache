@@ -30,6 +30,10 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/sts"
+
 	"github.com/rwynn/monstache/v6/pkg/oplog"
 
 	"github.com/BurntSushi/toml"
@@ -82,7 +86,10 @@ var chunksRegex = regexp.MustCompile("\\.chunks$")
 var systemsRegex = regexp.MustCompile("system\\..+$")
 var exitStatus = 0
 
+
 const version = "6.7.10.2"
+
+
 const mongoURLDefault string = "mongodb://localhost:27017"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
@@ -106,6 +113,7 @@ const (
 	awsCredentialStrategyEnv
 	awsCredentialStrategyEndpoint
 	awsCredentialStrategyChained
+	awsCredentialStrategyWebIdentity
 )
 
 type deleteStrategy int
@@ -131,33 +139,36 @@ type buildInfo struct {
 type stringargs []string
 
 type indexClient struct {
-	gtmCtx          *gtm.OpCtxMulti
-	config          *configOptions
-	mongo           *mongo.Client
-	mongoConfig     *mongo.Client
-	bulk            *elastic.BulkProcessor
-	bulkStats       *elastic.BulkProcessor
-	client          *elastic.Client
-	hsc             *httpServerCtx
-	fileWg          *sync.WaitGroup
-	indexWg         *sync.WaitGroup
-	processWg       *sync.WaitGroup
-	relateWg        *sync.WaitGroup
-	opsConsumed     chan bool
-	closeC          chan bool
-	doneC           chan int
-	enabled         bool
-	lastTs          primitive.Timestamp
-	lastTsSaved     primitive.Timestamp
-	tokens          bson.M
-	indexC          chan *gtm.Op
-	processC        chan *gtm.Op
-	fileC           chan *gtm.Op
-	relateC         chan *gtm.Op
-	filter          gtm.OpFilter
-	statusReqC      chan *statusRequest
-	sigH            *sigHandler
-	oplogTsResolver oplog.TimestampResolver
+	gtmCtx             *gtm.OpCtxMulti
+	config             *configOptions
+	mongo              *mongo.Client
+	mongoConfig        *mongo.Client
+	bulk               *elastic.BulkProcessor
+	bulkStats          *elastic.BulkProcessor
+	client             *elastic.Client
+	hsc                *httpServerCtx
+	fileWg             *sync.WaitGroup
+	indexWg            *sync.WaitGroup
+	processWg          *sync.WaitGroup
+	relateWg           *sync.WaitGroup
+	opsConsumed        chan bool
+	closeC             chan bool
+	doneC              chan int
+	enabled            bool
+	lastTs             primitive.Timestamp
+	lastTsSaved        primitive.Timestamp
+	tokens             bson.M
+	indexC             chan *gtm.Op
+	processC           chan *gtm.Op
+	fileC              chan *gtm.Op
+	relateC            chan *gtm.Op
+	filter             gtm.OpFilter
+	statusReqC         chan *statusRequest
+	sigH               *sigHandler
+	oplogTsResolver    oplog.TimestampResolver
+	directReadsPending bool
+	externalShutdown   bool
+	rwmutex            sync.RWMutex
 }
 
 type sigHandler struct {
@@ -1204,6 +1215,10 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 					sel = buildSelector(r.MatchField, srcData)
 				}
 				cursor, err := col.Find(context.Background(), sel, opts)
+				if err != nil {
+					ic.processErr(err)
+					continue
+				}
 
 				doc := make(map[string]interface{})
 				for cursor.Next(context.Background()) {
@@ -1397,7 +1412,7 @@ func filterDropWithRegex(regex string) gtm.OpFilter {
 	}
 }
 
-func filterWithPlugin() gtm.OpFilter {
+func filterWithPlugin(mc *mongo.Client) gtm.OpFilter {
 	return func(op *gtm.Op) bool {
 		var keep = true
 		if (op.IsInsert() || op.IsUpdate()) && op.Data != nil {
@@ -1409,6 +1424,7 @@ func filterWithPlugin() gtm.OpFilter {
 				Collection:        op.GetCollection(),
 				Operation:         op.Operation,
 				UpdateDescription: op.UpdateDescription,
+				MongoClient:       mc,
 			}
 			if ok, err := filterPlugin(input); err == nil {
 				keep = ok
@@ -2928,24 +2944,42 @@ func (config *configOptions) NewHTTPClient() (client *http.Client, err error) {
 		var creds *credentials.Credentials
 		if config.AWSConnect.Strategy == awsCredentialStrategyStatic {
 			creds = credentials.NewStaticCredentials(config.AWSConnect.AccessKey, config.AWSConnect.SecretKey, "")
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyFile {
-			creds = credentials.NewCredentials(&credentials.SharedCredentialsProvider{
-				Filename: config.AWSConnect.CredentialsFile,
-				Profile:  config.AWSConnect.Profile,
-			})
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyEnv {
-			creds = credentials.NewCredentials(&credentials.EnvProvider{})
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyEndpoint {
-			creds = credentials.NewCredentials(defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()))
-		} else if config.AWSConnect.Strategy == awsCredentialStrategyChained {
-			creds = credentials.NewChainCredentials([]credentials.Provider{
-				&credentials.EnvProvider{},
-				&credentials.SharedCredentialsProvider{
+		} else {
+			var providers []credentials.Provider
+			if config.AWSConnect.Strategy == awsCredentialStrategyEnv ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				providers = append(providers, &credentials.EnvProvider{})
+			}
+			if config.AWSConnect.Strategy == awsCredentialStrategyFile ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				providers = append(providers, &credentials.SharedCredentialsProvider{
 					Filename: config.AWSConnect.CredentialsFile,
 					Profile:  config.AWSConnect.Profile,
-				},
-				defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()),
-			})
+				})
+			}
+			if config.AWSConnect.Strategy == awsCredentialStrategyEndpoint ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				providers = append(providers, defaults.RemoteCredProvider(*defaults.Config(), defaults.Handlers()))
+			}
+			if config.AWSConnect.Strategy == awsCredentialStrategyWebIdentity ||
+				config.AWSConnect.Strategy == awsCredentialStrategyChained {
+				// Create a new session using the default AWS configuration
+				sess, err := session.NewSession()
+				if err != nil {
+					return nil, err
+				}
+				// Create a new STS client using the session
+				stsClient := sts.New(sess)
+				// Assume the IAM role associated with the pod using STS
+				roleProvider := stscreds.NewWebIdentityRoleProviderWithOptions(
+					stsClient,
+					os.Getenv("AWS_ROLE_ARN"),
+					"monstache",
+					stscreds.FetchTokenPath(os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")),
+				)
+				providers = append(providers, roleProvider)
+			}
+			creds = credentials.NewChainCredentials(providers)
 		}
 		config.AWSConnect.creds = creds
 		client = aws.NewV4SigningClientWithHTTPClient(creds, config.AWSConnect.Region, client)
@@ -3262,6 +3296,19 @@ func (ic *indexClient) routeDrop(op *gtm.Op) (err error) {
 	return
 }
 
+func (ic *indexClient) skipDelete(op *gtm.Op) bool {
+	if rs := relates[op.Namespace]; len(rs) != 0 {
+		for _, r := range rs {
+			if r.KeepSrc {
+				return false
+			}
+		}
+		// none of the source events kept
+		return true
+	}
+	return false
+}
+
 func (ic *indexClient) routeDeleteRelate(op *gtm.Op) (err error) {
 	if rs := relates[op.Namespace]; len(rs) != 0 {
 		var delData map[string]interface{}
@@ -3302,6 +3349,9 @@ func (ic *indexClient) routeDeleteRelate(op *gtm.Op) (err error) {
 func (ic *indexClient) routeDelete(op *gtm.Op) (err error) {
 	if len(ic.config.Relate) > 0 {
 		err = ic.routeDeleteRelate(op)
+		if ic.skipDelete(op) {
+			return
+		}
 	}
 	ic.doDelete(op)
 	return
@@ -3769,14 +3819,32 @@ func (fc *findCall) restoreIds(v interface{}) (r interface{}) {
 			avs = append(avs, mvs)
 		}
 		r = avs
+	case primitive.A:
+		var avs []interface{}
+		for _, av := range vt {
+			avs = append(avs, fc.restoreIds(av))
+		}
+		r = avs
 	case []interface{}:
 		var avs []interface{}
 		for _, av := range vt {
 			avs = append(avs, fc.restoreIds(av))
 		}
 		r = avs
+	case primitive.M:
+		mvs := make(map[string]interface{}, len(vt))
+		for k, v := range vt {
+			mvs[k] = fc.restoreIds(v)
+		}
+		r = mvs
+	case primitive.D:
+		mvs := make(map[string]interface{}, len(vt))
+		for k, v := range vt.Map() {
+			mvs[k] = fc.restoreIds(v)
+		}
+		r = mvs
 	case map[string]interface{}:
-		mvs := make(map[string]interface{})
+		mvs := make(map[string]interface{}, len(vt))
 		for k, v := range vt {
 			mvs[k] = fc.restoreIds(v)
 		}
@@ -4074,7 +4142,7 @@ func (ctx *httpServerCtx) buildServer() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/started", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		data := (time.Now().Sub(ctx.started)).String()
+		data := time.Since(ctx.started).String()
 		w.Write([]byte(data))
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, req *http.Request) {
@@ -4267,6 +4335,7 @@ func (sh *sigHandler) start() {
 			os.Exit(0)
 		case ic := <-sh.clientStartedC:
 			<-sigs
+			ic.onExternalShutdown()
 			go func() {
 				// forced shutdown on 2nd signal
 				<-sigs
@@ -4274,6 +4343,7 @@ func (sh *sigHandler) start() {
 				os.Exit(1)
 			}()
 			// we started processing events so do a clean shutdown
+			infoLog.Println("Starting clean shutdown")
 			ic.stopAllWorkers()
 			ic.doneC <- 10
 		}
@@ -4368,6 +4438,36 @@ func (ic *indexClient) startPostProcess() {
 	}
 }
 
+func (ic *indexClient) onExternalShutdown() {
+	ic.rwmutex.Lock()
+	defer ic.rwmutex.Unlock()
+	ic.externalShutdown = true
+	ic.checkDirectReads()
+}
+
+func (ic *indexClient) checkDirectReads() {
+	if len(ic.config.DirectReadNs) == 0 {
+		return
+	}
+	drc := ic.directReadChan()
+	t := time.NewTimer(time.Duration(500) * time.Millisecond)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		ic.directReadsPending = true
+	case <-drc:
+	}
+}
+
+func (ic *indexClient) directReadChan() chan struct{} {
+	c := make(chan struct{})
+	go func() {
+		ic.gtmCtx.DirectReadWg.Wait()
+		close(c)
+	}()
+	return c
+}
+
 func (ic *indexClient) stopAllWorkers() {
 	infoLog.Println("Stopping all workers")
 	ic.gtmCtx.Stop()
@@ -4383,21 +4483,23 @@ func (ic *indexClient) stopAllWorkers() {
 }
 
 func (ic *indexClient) startReadWait() {
-	if len(ic.config.DirectReadNs) > 0 || ic.config.ExitAfterDirectReads {
+	directReadsEnabled := len(ic.config.DirectReadNs) > 0
+	if directReadsEnabled {
+		exitAfterDirectReads := ic.config.ExitAfterDirectReads
 		go func() {
 			ic.gtmCtx.DirectReadWg.Wait()
-			infoLog.Println("Direct reads completed")
 			if ic.config.Resume {
 				ic.saveTimestampFromReplStatus()
 			}
-			if ic.config.DirectReadStateful && len(ic.config.DirectReadNs) > 0 {
-				if err := ic.saveDirectReadNamespaces(); err != nil {
-					errorLog.Printf("Error saving direct read state: %s", err)
+			if exitAfterDirectReads {
+				var exit bool
+				ic.rwmutex.RLock()
+				exit = !ic.externalShutdown
+				ic.rwmutex.RUnlock()
+				if exit {
+					ic.stopAllWorkers()
+					ic.doneC <- 30
 				}
-			}
-			if ic.config.ExitAfterDirectReads {
-				ic.stopAllWorkers()
-				ic.doneC <- 30
 			}
 		}()
 	}
@@ -4607,7 +4709,7 @@ func (ic *indexClient) buildFilterArray() []gtm.OpFilter {
 		errorLog.Fatalln("Workers configured but this worker is undefined. worker must be set to one of the workers.")
 	}
 	if filterPlugin != nil {
-		pluginFilter = filterWithPlugin()
+		pluginFilter = filterWithPlugin(ic.mongo)
 		filterArray = append(filterArray, pluginFilter)
 	} else if len(filterEnvs) > 0 {
 		pluginFilter = filterWithScript()
@@ -4995,6 +5097,18 @@ func (ic *indexClient) closeClient() {
 	}
 	if ic.bulkStats != nil {
 		ic.bulkStats.Close()
+	}
+	if len(ic.config.DirectReadNs) > 0 {
+		ic.rwmutex.RLock()
+		if !ic.directReadsPending {
+			infoLog.Println("Direct reads completed")
+			if ic.config.DirectReadStateful {
+				if err := ic.saveDirectReadNamespaces(); err != nil {
+					errorLog.Printf("Error saving direct read state: %s", err)
+				}
+			}
+		}
+		ic.rwmutex.RUnlock()
 	}
 	close(ic.closeC)
 }

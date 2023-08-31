@@ -2,7 +2,7 @@
 # Step 1: Build the app
 ####################################################################################################
 
-FROM rwynn/monstache-builder-cache-rel6:1.0.7 AS build-app
+FROM rwynn/monstache-builder-cache-rel6:1.0.8 AS build-app
 
 RUN mkdir /app
 
@@ -18,7 +18,7 @@ RUN make release
 # Step 2: Copy output build file to an alpine image
 ####################################################################################################
 
-FROM rwynn/monstache-alpine:3.15.0
+FROM rwynn/monstache-alpine:3.17.3
 
 ENTRYPOINT ["/bin/monstache"]
 
