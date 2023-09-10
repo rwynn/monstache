@@ -12,8 +12,8 @@ require (
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/olivere/elastic v6.2.37+incompatible
 	github.com/robertkrimen/otto v0.0.0-20211024170158-b87d35c0b86f
-	github.com/rwynn/gtm/v2 v2.1.2
-	go.mongodb.org/mongo-driver v1.11.7
+	github.com/rwynn/gtm/v2 v2.1.3
+	go.mongodb.org/mongo-driver v1.12.1
 	gopkg.in/Graylog2/go-gelf.v2 v2.0.0-20191017102106-1550ee647df0
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
 )
