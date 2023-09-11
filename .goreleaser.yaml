@@ -1,0 +1,38 @@
+before:
+  hooks:
+    - go mod download
+builds:
+- id: monstache
+  binary: monstache
+  env:
+  - CGO_ENABLED=0
+  goos:
+    - linux
+    - darwin
+    - windows
+  goarch:
+    - amd64
+    - arm64
+archives:
+- id: monstache-archive
+  name_template: |-
+    monstache_{{ .Tag }}_{{ .Os }}_
+    {{- with .Arch -}}
+      {{- if (eq . "amd64") -}}x86_64
+      {{- else -}}{{- . -}}
+      {{- end -}}
+    {{ end }}
+    {{- with .Arm -}}
+      {{- if (eq . "6") -}}hf
+      {{- else -}}v{{- . -}}
+      {{- end -}}
+    {{- end -}}
+  builds:
+    - monstache
+  format_overrides:
+    - goos: windows
+      format: zip
+  files: ["LICENSE"]
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
