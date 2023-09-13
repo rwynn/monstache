@@ -24,7 +24,7 @@ jobs:
         uses: actions/setup-go@v4
       -
         name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v4
+        uses: goreleaser/goreleaser-action@5fdedb94abba051217030cc86d4523cf3f02243d
         with:
           distribution: goreleaser
           version: ~> 1.20
