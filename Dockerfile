@@ -1,25 +1,13 @@
-####################################################################################################
-# Step 1: Build the app
-####################################################################################################
+FROM --platform=$BUILDPLATFORM golang:1.20.4-alpine3.17 AS build
+WORKDIR /src
+ARG TARGETOS TARGETARCH
+RUN --mount=target=. \
+    --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+	go mod download; \
+    GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/monstache .
 
-FROM rwynn/monstache-builder-cache-rel6:1.0.8 AS build-app
-
-RUN mkdir /app
-
-WORKDIR /app
-
-COPY . .
-
-RUN go mod download
-
-RUN make release
-
-####################################################################################################
-# Step 2: Copy output build file to an alpine image
-####################################################################################################
-
-FROM rwynn/monstache-alpine:3.17.3
-
+FROM alpine:3.17
+RUN apk --no-cache add ca-certificates
 ENTRYPOINT ["/bin/monstache"]
-
-COPY --from=build-app /app/build/linux-amd64/monstache /bin/monstache
+COPY --from=build /out/monstache /bin
