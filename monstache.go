@@ -1366,7 +1366,7 @@ func (ic *indexClient) addFileContent(op *gtm.Op) (err error) {
 	if err = encoder.Close(); err != nil {
 		return
 	}
-	op.Data["file"] = string(gridByteBuffer.Bytes())
+	op.Data["file"] = gridByteBuffer.String()
 	return
 }
 
