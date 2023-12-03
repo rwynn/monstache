@@ -169,7 +169,8 @@ type indexClient struct {
 	rwmutex            sync.RWMutex
 	bulkErrs           atomic.Int64
 	bulkBackoff        elastic.Backoff
-	bulkBackoffC       chan struct{}
+	bulkBackoffC       chan time.Duration
+	bulkBackoffMax     time.Duration
 }
 
 type sigHandler struct {
@@ -301,11 +302,13 @@ type instanceStatus struct {
 	ResumeName   string              `json:"resumeName"`
 	LastTs       primitive.Timestamp `json:"lastTs"`
 	LastTsFormat string              `json:"lastTsFormat,omitempty"`
+	Backoff      bool                `json:"inBackoff,omitempty"`
 }
 
 type statusResponse struct {
 	enabled bool
 	lastTs  primitive.Timestamp
+	backoff bool
 }
 
 type statusRequest struct {
@@ -576,33 +579,48 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 				}
 			}
 			if backoff {
-				infoLog.Println("Backing off after bulk indexing failures")
-				ic.bulkErrs.Add(1)
+				wait := ic.backoffDuration()
+				infoLog.Printf("Backing off for %.1f minutes after bulk indexing failures.", wait.Minutes())
 				// signal the event loop to pause pulling new events for a duration
-				ic.bulkBackoffC <- struct{}{}
+				ic.bulkBackoffC <- wait
 				// pause the bulk worker for a duration
-				ic.backoff()
+				ic.backoff(wait)
+				ic.bulkErrs.Add(1)
 			}
 		}
 	}
 }
 
-func (ic *indexClient) backoff() {
+func (ic *indexClient) backoffDuration() time.Duration {
 	consecutiveErrors := int(ic.bulkErrs.Load())
 	wait, ok := ic.bulkBackoff.Next(consecutiveErrors)
 	if !ok {
-		return
+		wait = ic.bulkBackoffMax
 	}
+	return wait
+}
+
+func (ic *indexClient) backoff(wait time.Duration) {
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigs)
-	select {
-	case <-timer.C:
-		return
-	case <-sigs:
-		return
+	for {
+		select {
+		case <-timer.C:
+			return
+		case <-sigs:
+			return
+		case req := <-ic.statusReqC:
+			enabled, lastTs := ic.enabled, ic.lastTs
+			statusResp := &statusResponse{
+				enabled: enabled,
+				lastTs:  lastTs,
+				backoff: true,
+			}
+			req.responseC <- statusResp
+		}
 	}
 }
 
@@ -4222,6 +4240,7 @@ func (ctx *httpServerCtx) buildServer() {
 			if srsp != nil {
 				status.Enabled = srsp.enabled
 				status.LastTs = srsp.lastTs
+				status.Backoff = srsp.backoff
 				if srsp.lastTs.T != 0 {
 					status.LastTsFormat = time.Unix(int64(srsp.lastTs.T), 0).Format("2006-01-02T15:04:05")
 				}
@@ -5013,8 +5032,8 @@ func (ic *indexClient) eventLoop() {
 	ic.sigH.clientStartedC <- ic
 	for {
 		select {
-		case <-ic.bulkBackoffC:
-			ic.backoff()
+		case wait := <-ic.bulkBackoffC:
+			ic.backoff(wait)
 		case timeout := <-ic.doneC:
 			ic.enabled = false
 			ic.shutdown(timeout)
@@ -5334,26 +5353,27 @@ func main() {
 	elasticClient := buildElasticClient(config)
 
 	ic := &indexClient{
-		config:       config,
-		mongo:        mongoClient,
-		client:       elasticClient,
-		fileWg:       &sync.WaitGroup{},
-		indexWg:      &sync.WaitGroup{},
-		processWg:    &sync.WaitGroup{},
-		relateWg:     &sync.WaitGroup{},
-		opsConsumed:  make(chan bool),
-		closeC:       make(chan bool),
-		doneC:        make(chan int),
-		enabled:      true,
-		indexC:       make(chan *gtm.Op),
-		processC:     make(chan *gtm.Op),
-		fileC:        make(chan *gtm.Op),
-		relateC:      make(chan *gtm.Op, config.RelateBuffer),
-		statusReqC:   make(chan *statusRequest),
-		sigH:         sh,
-		tokens:       bson.M{},
-		bulkBackoffC: make(chan struct{}),
-		bulkBackoff:  elastic.NewExponentialBackoff(1*time.Minute, 1*time.Hour),
+		config:         config,
+		mongo:          mongoClient,
+		client:         elasticClient,
+		fileWg:         &sync.WaitGroup{},
+		indexWg:        &sync.WaitGroup{},
+		processWg:      &sync.WaitGroup{},
+		relateWg:       &sync.WaitGroup{},
+		opsConsumed:    make(chan bool),
+		closeC:         make(chan bool),
+		doneC:          make(chan int),
+		enabled:        true,
+		indexC:         make(chan *gtm.Op),
+		processC:       make(chan *gtm.Op),
+		fileC:          make(chan *gtm.Op),
+		relateC:        make(chan *gtm.Op, config.RelateBuffer),
+		statusReqC:     make(chan *statusRequest),
+		sigH:           sh,
+		tokens:         bson.M{},
+		bulkBackoffC:   make(chan time.Duration),
+		bulkBackoff:    elastic.NewExponentialBackoff(1*time.Minute, 1*time.Hour),
+		bulkBackoffMax: 1 * time.Hour,
 	}
 
 	ic.run()
