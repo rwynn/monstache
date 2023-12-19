@@ -565,18 +565,17 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 		if failed := response.Failed(); failed != nil {
 			backoff := false
 			for _, item := range failed {
-				if item.Status == 409 {
+				if item.Status == http.StatusConflict {
 					// ignore version conflict since this simply means the doc
 					// is already in the index
 					continue
 				}
-				backoff = true
-				json, err := json.Marshal(item)
-				if err != nil {
-					errorLog.Printf("Unable to marshal bulk response item: %s", err)
-				} else {
-					errorLog.Printf("Bulk response item: %s", string(json))
+				logFailedResponseItem(item)
+				if item.Status == http.StatusNotFound {
+					// status not found should not initiate back off
+					continue
 				}
+				backoff = true
 			}
 			if backoff {
 				wait := ic.backoffDuration()
@@ -588,6 +587,14 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 				ic.bulkErrs.Add(1)
 			}
 		}
+	}
+}
+
+func logFailedResponseItem(item *elastic.BulkResponseItem) {
+	if encoded, err := json.Marshal(item); err == nil {
+		errorLog.Printf("Bulk response item: %s", string(encoded))
+	} else {
+		errorLog.Printf("Unable to marshal bulk response item: %s", err)
 	}
 }
 
