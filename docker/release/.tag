@@ -1,1 +1,1 @@
-rwynn/monstache:6.7.16
+rwynn/monstache:6.7.17
