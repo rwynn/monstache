@@ -11,7 +11,7 @@ require (
 	github.com/olivere/elastic/v7 v7.0.31
 	github.com/robertkrimen/otto v0.0.0-20211024170158-b87d35c0b86f
 	github.com/rwynn/gtm/v2 v2.1.3
-	go.mongodb.org/mongo-driver v1.12.1
+	go.mongodb.org/mongo-driver v1.13.1
 	gopkg.in/Graylog2/go-gelf.v2 v2.0.0-20191017102106-1550ee647df0
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
 )
