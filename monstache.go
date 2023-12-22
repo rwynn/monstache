@@ -840,7 +840,7 @@ func opIDToString(op *gtm.Op) string {
 }
 
 func convertSliceJavascript(a []interface{}) []interface{} {
-	var avs []interface{}
+	avs := make([]interface{}, 0, len(a))
 	for _, av := range a {
 		var avc interface{}
 		switch achild := av.(type) {
@@ -859,7 +859,7 @@ func convertSliceJavascript(a []interface{}) []interface{} {
 }
 
 func convertMapJavascript(e map[string]interface{}) map[string]interface{} {
-	o := make(map[string]interface{})
+	o := make(map[string]interface{}, len(e))
 	for k, v := range e {
 		switch child := v.(type) {
 		case map[string]interface{}:
@@ -876,7 +876,7 @@ func convertMapJavascript(e map[string]interface{}) map[string]interface{} {
 }
 
 func fixSlicePruneInvalidJSON(id string, key string, a []interface{}) []interface{} {
-	var avs []interface{}
+	avs := make([]interface{}, 0, len(a))
 	for _, av := range a {
 		var avc interface{}
 		switch achild := av.(type) {
@@ -914,7 +914,7 @@ func fixSlicePruneInvalidJSON(id string, key string, a []interface{}) []interfac
 }
 
 func fixPruneInvalidJSON(id string, e map[string]interface{}) map[string]interface{} {
-	o := make(map[string]interface{})
+	o := make(map[string]interface{}, len(e))
 	for k, v := range e {
 		switch child := v.(type) {
 		case map[string]interface{}:
@@ -974,7 +974,7 @@ func deepExportValue(a interface{}) (b interface{}) {
 }
 
 func deepExportMapSlice(a []map[string]interface{}) []interface{} {
-	var avs []interface{}
+	avs := make([]interface{}, 0, len(a))
 	for _, av := range a {
 		avs = append(avs, deepExportMap(av))
 	}
@@ -982,7 +982,7 @@ func deepExportMapSlice(a []map[string]interface{}) []interface{} {
 }
 
 func deepExportSlice(a []interface{}) []interface{} {
-	var avs []interface{}
+	avs := make([]interface{}, 0, len(a))
 	for _, av := range a {
 		avs = append(avs, deepExportValue(av))
 	}
@@ -990,7 +990,7 @@ func deepExportSlice(a []interface{}) []interface{} {
 }
 
 func deepExportMap(e map[string]interface{}) map[string]interface{} {
-	o := make(map[string]interface{})
+	o := make(map[string]interface{}, len(e))
 	for k, v := range e {
 		o[k] = deepExportValue(v)
 	}
@@ -3869,9 +3869,9 @@ func (fc *findCall) restoreIds(v interface{}) (r interface{}) {
 			r = v
 		}
 	case []map[string]interface{}:
-		var avs []interface{}
+		avs := make([]interface{}, 0, len(vt))
 		for _, av := range vt {
-			mvs := make(map[string]interface{})
+			mvs := make(map[string]interface{}, len(av))
 			for k, v := range av {
 				mvs[k] = fc.restoreIds(v)
 			}
@@ -3879,13 +3879,13 @@ func (fc *findCall) restoreIds(v interface{}) (r interface{}) {
 		}
 		r = avs
 	case primitive.A:
-		var avs []interface{}
+		avs := make([]interface{}, 0, len(vt))
 		for _, av := range vt {
 			avs = append(avs, fc.restoreIds(av))
 		}
 		r = avs
 	case []interface{}:
-		var avs []interface{}
+		avs := make([]interface{}, 0, len(vt))
 		for _, av := range vt {
 			avs = append(avs, fc.restoreIds(av))
 		}

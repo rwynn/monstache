@@ -111,7 +111,7 @@ func ConvertSliceForJSON(a []interface{}) []interface{} {
 }
 
 func ConvertMapForJSON(m map[string]interface{}) map[string]interface{} {
-	o := map[string]interface{}{}
+	o := make(map[string]interface{}, len(m))
 	for k, v := range m {
 		switch child := v.(type) {
 		case map[string]interface{}:
