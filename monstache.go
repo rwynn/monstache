@@ -337,6 +337,7 @@ type configOptions struct {
 	ElasticHealth1              int            `toml:"elasticsearch-healthcheck-timeout"`
 	ElasticPKIAuth              elasticPKIAuth `toml:"elasticsearch-pki-auth"`
 	ElasticAPIKey               string         `toml:"elasticsearch-api-key"`
+	WaitForIndices              stringargs     `toml:"wait-for-indices"`
 	ResumeName                  string         `toml:"resume-name"`
 	NsRegex                     string         `toml:"namespace-regex"`
 	NsDropRegex                 string         `toml:"namespace-drop-regex"`
@@ -1841,6 +1842,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.Var(&config.FileNamespaces, "file-namespace", "A list of file namespaces")
 	flag.Var(&config.PatchNamespaces, "patch-namespace", "A list of patch namespaces")
 	flag.Var(&config.Workers, "workers", "A list of worker names")
+	flag.Var(&config.WaitForIndices, "wait-for-indices", "A list of index names to wait for before starting synchronisation")
 	flag.BoolVar(&config.EnableHTTPServer, "enable-http-server", false, "True to enable an internal http server")
 	flag.StringVar(&config.HTTPServerAddr, "http-server-addr", "", "The address the internal http server listens on")
 	flag.BoolVar(&config.PruneInvalidJSON, "prune-invalid-json", false, "True to omit values which do not serialize to JSON such as +Inf and -Inf and thus cause errors")
@@ -4462,6 +4464,7 @@ func (ic *indexClient) run() {
 	ic.startDownload()
 	ic.startPostProcess()
 	ic.clusterWait()
+	ic.waitForIndices()
 	ic.startListen()
 	ic.startReadWait()
 	ic.startExpireCreds()
@@ -4922,6 +4925,25 @@ func (ic *indexClient) clusterWait() {
 		} else {
 			infoLog.Printf("Pausing work for cluster %s", ic.config.ClusterName)
 			ic.waitEnabled()
+		}
+	}
+}
+
+func (ic *indexClient) waitForIndices() {
+	if len(ic.config.WaitForIndices) > 0 {
+		for {
+			exists, err := ic.client.IndexExists(ic.config.WaitForIndices...).Do(context.Background())
+			if err != nil {
+				errorLog.Printf("Error waiting for indices %v", ic.config.WaitForIndices)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			if !exists {
+				infoLog.Printf("Waiting for indices %v", ic.config.WaitForIndices)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			break
 		}
 	}
 }
