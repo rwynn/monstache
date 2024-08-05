@@ -21,6 +21,6 @@ path = "./formatElasticRelations.js"
 
 [[mapping]]
 namespace = "invoice-hub.relationships"
-index = "invoicehub-relationships_tests"
+index = "invoicehub-relationships_tests" # need to change this to invoicehub-relationships_${env}
 
 

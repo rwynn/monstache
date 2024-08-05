@@ -56,8 +56,10 @@ module.exports = function (doc) {
       { collection: "clientSettings" }
     )[0];
 
-    doc.supplierClientId = clientSettings.supplierClientId;
-    doc.customerClientId = clientSettings.customerClientId;
+    if (clientSettings) {
+      doc.supplierClientId = clientSettings.supplierClientId;
+      doc.customerClientId = clientSettings.customerClientId;
+    }
   }
 
   if (doc.supplier || doc.customer) {
