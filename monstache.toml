@@ -1,8 +1,10 @@
 verbose = true
 
-mongo-url="mongodb://localhost:30017"
+mongo-url = "mongodb://localhost:30017"
 
-elasticsearch-urls = [ "https://elk-2.pytheascapital.net:9200"]
+elasticsearch-urls = ["https://elk-2.pytheascapital.net:9200"]
+
+direct-read-namespaces = ["invoice-hub.relationships"]
 
 elasticsearch-user = "invoicehub-devs"
 
@@ -22,5 +24,3 @@ path = "./formatElasticRelations.js"
 [[mapping]]
 namespace = "invoice-hub.relationships"
 index = "invoicehub-relationships_tests" # need to change this to invoicehub-relationships_${env}
-
-
