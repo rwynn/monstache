@@ -1,0 +1,26 @@
+verbose = true
+
+mongo-url="mongodb://localhost:30017"
+
+elasticsearch-urls = [ "https://elk-2.pytheascapital.net:9200"]
+
+elasticsearch-user = "invoicehub-devs"
+
+elasticsearch-password = "pEneexz3rCRbM4XcuYqC9WU!9qNL2nnCKeyscHvcPtE6"
+
+stats = true
+
+namespace-regex = '^invoice-hub\.relationships$'
+
+elasticsearch-pem-file = "http_ca.pem"
+
+elasticsearch-validate-pem-file = false
+[[script]]
+namespace = "invoice-hub.relationships"
+path = "./formatElasticRelations.js"
+
+[[mapping]]
+namespace = "invoice-hub.relationships"
+index = "invoicehub-relationships_tests"
+
+
