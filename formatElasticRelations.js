@@ -64,10 +64,10 @@ module.exports = function (doc) {
 
   if (doc.supplier || doc.customer) {
     if (doc.supplier && doc.supplier.companyName) {
-      doc.supplierName = doc.supplier.companyName.toLowerCase();
+      doc.supplierName = doc.supplier.companyName;
     }
     if (doc.customer && doc.customer.companyName) {
-      doc.customerName = doc.customer.companyName.toLowerCase();
+      doc.customerName = doc.customer.companyName;
     }
 
     var addressFields = ["street", "zipCode", "city", "country", "countryCode"];
