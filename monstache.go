@@ -87,7 +87,7 @@ var chunksRegex = regexp.MustCompile(`\.chunks$`)
 var systemsRegex = regexp.MustCompile(`system\..+$`)
 var exitStatus = 0
 
-const version = "6.7.20"
+const version = "6.7.21"
 const mongoURLDefault string = "mongodb://localhost:27017"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
@@ -730,15 +730,16 @@ func (config *configOptions) newElasticClient() (client *elastic.Client, err err
 	return elastic.NewClient(clientOptions...)
 }
 
-func (config *configOptions) testElasticsearchConn(client *elastic.Client) (err error) {
-	var number string
-	url := config.ElasticUrls[0]
-	number, err = client.ElasticsearchVersion(url)
-	if err == nil {
-		infoLog.Printf("Successfully connected to Elasticsearch version %s", number)
-		err = config.parseElasticsearchVersion(number)
+func (config *configOptions) getElasticsearchVersion(client *elastic.Client) {
+	for _, url := range config.ElasticUrls {
+		version, err := client.ElasticsearchVersion(url)
+		if err == nil {
+			if err = config.parseElasticsearchVersion(version); err == nil {
+				infoLog.Printf("Successfully connected to Elasticsearch version %s", version)
+				break
+			}
+		}
 	}
-	return
 }
 
 func (ic *indexClient) deleteIndexes(db string) (err error) {
@@ -5323,9 +5324,7 @@ func buildElasticClient(config *configOptions) *elastic.Client {
 		errorLog.Fatalf("Unable to create Elasticsearch client: %s", err)
 	}
 	if config.ElasticVersion == "" {
-		if err := config.testElasticsearchConn(elasticClient); err != nil {
-			errorLog.Fatalf("Unable to validate connection to Elasticsearch: %s", err)
-		}
+		config.getElasticsearchVersion(elasticClient)
 	} else {
 		if err := config.parseElasticsearchVersion(config.ElasticVersion); err != nil {
 			errorLog.Fatalf("Elasticsearch version must conform to major.minor.fix: %s", err)
