@@ -425,6 +425,7 @@ type configOptions struct {
 	PruneInvalidJSON            bool           `toml:"prune-invalid-json"`
 	Debug                       bool
 	mongoClientOptions          *options.ClientOptions
+	SkipBackoffOnBadRequest     bool `toml:"skip-backoff-on-bad-request"`
 }
 
 type ElasticAPIKeyTransport struct {
@@ -575,6 +576,10 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 				logFailedResponseItem(item)
 				if item.Status == http.StatusNotFound {
 					// status not found should not initiate back off
+					continue
+				}
+				if item.Status == http.StatusBadRequest && ic.config.SkipBackoffOnBadRequest {
+					// skip backoff for "Bad Request" status if configured
 					continue
 				}
 				backoff = true
@@ -2441,6 +2446,7 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if !config.ElasticPKIAuth.enabled() {
 			config.ElasticPKIAuth = tomlConfig.ElasticPKIAuth
 		}
+		config.SkipBackoffOnBadRequest = tomlConfig.SkipBackoffOnBadRequest
 		config.GtmSettings = tomlConfig.GtmSettings
 		config.Relate = tomlConfig.Relate
 		config.LogRotate = tomlConfig.LogRotate
