@@ -58,6 +58,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	mongoversion "go.mongodb.org/mongo-driver/version"
 	"go.mongodb.org/mongo-driver/x/bsonx/bsoncore"
+	"go.uber.org/automaxprocs/maxprocs"
 	"gopkg.in/Graylog2/go-gelf.v2/gelf"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -87,7 +88,7 @@ var chunksRegex = regexp.MustCompile(`\.chunks$`)
 var systemsRegex = regexp.MustCompile(`system\..+$`)
 var exitStatus = 0
 
-const version = "6.7.21"
+const version = "6.7.22"
 const mongoURLDefault string = "mongodb://localhost:27017"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
@@ -135,6 +136,7 @@ type buildInfo struct {
 }
 
 type stringargs []string
+type intargs []int
 
 type indexClient struct {
 	gtmCtx             *gtm.OpCtxMulti
@@ -424,6 +426,7 @@ type configOptions struct {
 	PostProcessors              int            `toml:"post-processors"`
 	PruneInvalidJSON            bool           `toml:"prune-invalid-json"`
 	Debug                       bool
+	BackoffExemptStatusCodes    intargs `toml:"backoff-exempt-status-codes"`
 	mongoClientOptions          *options.ClientOptions
 }
 
@@ -533,6 +536,19 @@ func (arg *resumeStrategy) Set(value string) (err error) {
 	return
 }
 
+func (args *intargs) String() string {
+	return fmt.Sprintf("%d", *args)
+}
+
+func (args *intargs) Set(value string) error {
+	i, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+	*args = append(*args, i)
+	return nil
+}
+
 func (args *stringargs) String() string {
 	return fmt.Sprintf("%s", *args)
 }
@@ -559,6 +575,12 @@ func (config *configOptions) ignoreCollectionForDirectReads(col string) bool {
 }
 
 func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elastic.BulkResponse, error) {
+	var sentinel = struct{}{}
+	backoffExemptStatusCodes := make(map[int]struct{}, len(ic.config.BackoffExemptStatusCodes))
+	for _, statusCode := range ic.config.BackoffExemptStatusCodes {
+		backoffExemptStatusCodes[statusCode] = sentinel
+	}
+
 	return func(executionID int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
 		if response == nil || !response.Errors {
 			ic.bulkErrs.Store(0)
@@ -573,8 +595,7 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 					continue
 				}
 				logFailedResponseItem(item)
-				if item.Status == http.StatusNotFound {
-					// status not found should not initiate back off
+				if _, ok := backoffExemptStatusCodes[item.Status]; ok {
 					continue
 				}
 				backoff = true
@@ -663,7 +684,7 @@ func (ic *indexClient) newBulkProcessor(client *elastic.Client) (bulk *elastic.B
 	bulkService.Stats(config.Stats)
 	bulkService.BulkActions(config.ElasticMaxDocs)
 	bulkService.BulkSize(config.ElasticMaxBytes)
-	if config.ElasticRetry == false {
+	if !config.ElasticRetry {
 		bulkService.Backoff(&elastic.StopBackoff{})
 	}
 	bulkService.After(ic.afterBulk())
@@ -1855,6 +1876,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 	flag.StringVar(&config.OplogDateFieldName, "oplog-date-field-name", "", "Field name to use for the oplog date")
 	flag.StringVar(&config.OplogDateFieldFormat, "oplog-date-field-format", "", "Format to use for the oplog date")
 	flag.BoolVar(&config.Debug, "debug", false, "True to enable verbose debug information")
+	flag.Var(&config.BackoffExemptStatusCodes, "backoff-exempt-status-codes", "HTTP status codes that must not initiate backoff")
 	flag.Parse()
 	return config
 }
@@ -2441,6 +2463,9 @@ func (config *configOptions) loadConfigFile() *configOptions {
 		if !config.ElasticPKIAuth.enabled() {
 			config.ElasticPKIAuth = tomlConfig.ElasticPKIAuth
 		}
+		if len(config.BackoffExemptStatusCodes) == 0 {
+			config.BackoffExemptStatusCodes = tomlConfig.BackoffExemptStatusCodes
+		}
 		config.GtmSettings = tomlConfig.GtmSettings
 		config.Relate = tomlConfig.Relate
 		config.LogRotate = tomlConfig.LogRotate
@@ -2674,6 +2699,18 @@ func (config *configOptions) loadEnvironment() *configOptions {
 			if len(config.TimeMachineNamespaces) == 0 {
 				config.TimeMachineNamespaces = strings.Split(val, del)
 			}
+		case "MONSTACHE_BACKOFF_EXEMPT_STATUS_CODES":
+			if len(config.BackoffExemptStatusCodes) == 0 {
+				var statusCodes []int
+				for _, v := range strings.Split(val, del) {
+					if statusCode, err := strconv.Atoi(v); err == nil {
+						statusCodes = append(statusCodes, statusCode)
+					} else {
+						panic(err)
+					}
+				}
+				config.BackoffExemptStatusCodes = statusCodes
+			}
 		}
 	}
 	return config
@@ -2870,6 +2907,9 @@ func (config *configOptions) setDefaults() *configOptions {
 		if config.ResumeFromTimestamp <= math.MaxInt32 {
 			config.ResumeFromTimestamp = config.ResumeFromTimestamp << 32
 		}
+	}
+	if len(config.BackoffExemptStatusCodes) == 0 {
+		config.BackoffExemptStatusCodes = []int{http.StatusNotFound}
 	}
 	return config
 }
@@ -5369,9 +5409,18 @@ func main() {
 		sigH:           sh,
 		tokens:         bson.M{},
 		bulkBackoffC:   make(chan time.Duration),
-		bulkBackoff:    elastic.NewExponentialBackoff(1*time.Minute, 1*time.Hour),
+		bulkBackoff:    elastic.NewExponentialBackoff(30*time.Second, 1*time.Hour),
 		bulkBackoffMax: 1 * time.Hour,
 	}
 
 	ic.run()
+}
+
+func init() {
+	maxprocs.Set(
+		maxprocs.Min(2),
+		maxprocs.RoundQuotaFunc(func(v float64) int {
+			return int(math.Ceil(v))
+		}),
+	)
 }

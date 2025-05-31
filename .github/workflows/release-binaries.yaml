@@ -22,6 +22,8 @@ jobs:
       -
         name: Set up Go
         uses: actions/setup-go@v4
+        with:
+          go-version: 'stable'
       -
         name: Run GoReleaser
         uses: goreleaser/goreleaser-action@5fdedb94abba051217030cc86d4523cf3f02243d
