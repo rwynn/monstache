@@ -2,7 +2,7 @@
 # Step 1: Build the app
 ####################################################################################################
 
-FROM rwynn/monstache-builder-cache-rel6:1.0.8 AS build-app
+FROM golang:1.24.4-alpine3.21 AS build-app
 
 RUN mkdir /app
 
@@ -18,7 +18,9 @@ RUN make release
 # Step 2: Copy output build file to an alpine image
 ####################################################################################################
 
-FROM rwynn/monstache-alpine:3.17.3 AS final
+FROM alpine:3.21.3 AS final
+
+RUN apk --no-cache add ca-certificates curl wget
 
 ARG BUILD_DATE
 

@@ -1,4 +1,4 @@
-FROM rwynn/monstache-builder-cache-rel6:1.0.8 AS build-app
+FROM golang:1.24.4-alpine3.21 AS build-app
 
 RUN mkdir /app
 

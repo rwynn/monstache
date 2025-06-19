@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.24.3-alpine3.21 AS build
+FROM --platform=$BUILDPLATFORM golang:1.24.4-alpine3.21 AS build
 WORKDIR /src
 ARG TARGETOS TARGETARCH
 RUN --mount=target=. \

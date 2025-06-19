@@ -1,4 +1,4 @@
-FROM rwynn/monstache-builder:1.0.15
+FROM golang:1.24.4-alpine3.21
 
 RUN mkdir /app
 
