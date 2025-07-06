@@ -1923,7 +1923,7 @@ func (config *configOptions) loadIndexTypes() {
 				mapIndexTypes[m.Namespace] = &indexMapping{
 					Namespace: m.Namespace,
 					Index:     strings.ToLower(m.Index),
-					Pipeline:  m.Pipeline
+					Pipeline:  m.Pipeline,
 				}
 			} else {
 				errorLog.Fatalln("Mappings must specify namespace and index")
