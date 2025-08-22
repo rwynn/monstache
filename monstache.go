@@ -58,7 +58,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	mongoversion "go.mongodb.org/mongo-driver/version"
 	"go.mongodb.org/mongo-driver/x/bsonx/bsoncore"
-	"go.uber.org/automaxprocs/maxprocs"
 	"gopkg.in/Graylog2/go-gelf.v2/gelf"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -88,7 +87,7 @@ var chunksRegex = regexp.MustCompile(`\.chunks$`)
 var systemsRegex = regexp.MustCompile(`system\..+$`)
 var exitStatus = 0
 
-const version = "6.7.22"
+const version = "6.8.0"
 const mongoURLDefault string = "mongodb://localhost:27017"
 const resumeNameDefault string = "default"
 const elasticMaxConnsDefault int = 4
@@ -5415,13 +5414,4 @@ func main() {
 	}
 
 	ic.run()
-}
-
-func init() {
-	maxprocs.Set(
-		maxprocs.Min(2),
-		maxprocs.RoundQuotaFunc(func(v float64) int {
-			return int(math.Ceil(v))
-		}),
-	)
 }

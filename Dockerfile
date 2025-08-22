@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.24.4-alpine3.21 AS build
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine3.22 AS build
 WORKDIR /src
 ARG TARGETOS TARGETARCH
 RUN --mount=target=. \
@@ -7,7 +7,7 @@ RUN --mount=target=. \
 	go mod download; \
     GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/monstache .
 
-FROM alpine:3.21
+FROM alpine:3.22
 RUN apk --no-cache add ca-certificates
 ENTRYPOINT ["/bin/monstache"]
 COPY --from=build /out/monstache /bin

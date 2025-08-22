@@ -2,7 +2,7 @@
 # Step 1: Build the app
 ####################################################################################################
 
-FROM golang:1.24.4-alpine3.21 AS build-app
+FROM golang:1.25-alpine3.22 AS build-app
 
 RUN mkdir /app
 
@@ -18,7 +18,7 @@ RUN make release
 # Step 2: Copy output build file to an alpine image
 ####################################################################################################
 
-FROM alpine:3.21.3 AS final
+FROM alpine:3.22 AS final
 
 RUN apk --no-cache add ca-certificates curl wget
 
