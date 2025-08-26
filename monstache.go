@@ -4573,6 +4573,18 @@ func (ic *indexClient) startReadWait() {
 					ic.stopAllWorkers()
 					ic.doneC <- 30
 				}
+				return
+			}
+
+			if len(ic.config.DirectReadNs) > 0 {
+				ic.rwmutex.RLock()
+				infoLog.Println("Direct reads completed")
+				if ic.config.DirectReadStateful {
+					if err := ic.saveDirectReadNamespaces(); err != nil {
+						errorLog.Printf("Error saving direct read state: %s", err)
+					}
+				}
+				ic.rwmutex.RUnlock()
 			}
 		}()
 	}
@@ -5172,18 +5184,6 @@ func (ic *indexClient) closeClient() {
 	}
 	if ic.bulkStats != nil {
 		ic.bulkStats.Close()
-	}
-	if len(ic.config.DirectReadNs) > 0 {
-		ic.rwmutex.RLock()
-		if !ic.directReadsPending {
-			infoLog.Println("Direct reads completed")
-			if ic.config.DirectReadStateful {
-				if err := ic.saveDirectReadNamespaces(); err != nil {
-					errorLog.Printf("Error saving direct read state: %s", err)
-				}
-			}
-		}
-		ic.rwmutex.RUnlock()
 	}
 	close(ic.closeC)
 }
