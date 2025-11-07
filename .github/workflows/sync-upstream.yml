@@ -1,0 +1,127 @@
+name: Sync with Upstream
+
+on:
+  # Run weekly on Mondays at 9 AM UTC
+  schedule:
+    - cron: '0 9 * * 1'
+  
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      force_sync:
+        description: 'Force sync even if no changes'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  sync:
+    name: Sync with Upstream Monstache
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0  # Full history for proper sync
+      
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: Add Upstream Remote
+        run: |
+          git remote add upstream https://github.com/rwynn/monstache.git || true
+          git fetch upstream
+      
+      - name: Check for Updates
+        id: check_updates
+        run: |
+          # Compare our rel6 with upstream rel6
+          LOCAL_COMMIT=$(git rev-parse rel6)
+          UPSTREAM_COMMIT=$(git rev-parse upstream/rel6)
+          
+          echo "Local rel6: $LOCAL_COMMIT"
+          echo "Upstream rel6: $UPSTREAM_COMMIT"
+          
+          if [ "$LOCAL_COMMIT" = "$UPSTREAM_COMMIT" ]; then
+            echo "✅ Already up to date with upstream"
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+          else
+            echo "🔄 Updates available from upstream"
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            
+            # Show what's new
+            echo "📋 New commits from upstream:"
+            git log --oneline --no-merges $LOCAL_COMMIT..$UPSTREAM_COMMIT
+          fi
+      
+      - name: Sync with Upstream
+        id: sync
+        if: steps.check_updates.outputs.has_updates == 'true' || github.event.inputs.force_sync == 'true'
+        run: |
+          echo "🔄 Syncing rel6 branch with upstream..."
+          
+          # Switch to rel6 branch
+          git checkout rel6
+          
+          # Try to merge upstream changes
+          if git merge upstream/rel6 --no-edit; then
+            echo "✅ Successfully merged upstream changes"
+            git push origin rel6
+            echo "sync_success=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Merge conflict detected"
+            echo "🔧 Manual intervention required"
+            git merge --abort
+            echo "sync_success=false" >> $GITHUB_OUTPUT
+            
+            # Create an issue for manual resolution
+            gh issue create \
+              --title "🔄 Upstream Sync Conflict - Manual Resolution Required" \
+              --body "**Automatic upstream sync failed due to merge conflicts.**
+              
+              **Next Steps:**
+              1. Manually sync the fork:
+                 \`\`\`bash
+                 git fetch upstream
+                 git checkout rel6
+                 git merge upstream/rel6
+                 # Resolve conflicts
+                 git commit
+                 git push origin rel6
+                 \`\`\`
+              
+              **Upstream Changes:**
+              See recent commits in upstream rel6 branch.
+              
+              This issue was created automatically by the sync workflow." \
+              --label "upstream-sync,manual-action-required"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Trigger Build
+        if: steps.check_updates.outputs.has_updates == 'true' && steps.sync.outputs.sync_success == 'true'
+        run: |
+          echo "🔨 Triggering build for updated fork..."
+          gh workflow run build-fork.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Summary
+        run: |
+          if [ "${{ steps.check_updates.outputs.has_updates }}" = "true" ]; then
+            if [ "${{ steps.sync.outputs.sync_success }}" = "true" ]; then
+              echo "✅ Fork successfully synced with upstream and build triggered"
+            elif [ "${{ steps.sync.outputs.sync_success }}" = "false" ]; then
+              echo "⚠️  Merge conflicts detected - issue created for manual resolution"
+            fi
+          else
+            echo "ℹ️  Fork already up to date"
+          fi

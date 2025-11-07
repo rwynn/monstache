@@ -1,0 +1,138 @@
+name: Build Monstache Fork
+
+on:
+  workflow_call:
+    inputs:
+      force_build:
+        description: 'Force build even if recent image exists'
+        required: false
+        default: false
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Force build even if recent image exists'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+  push:
+    branches:
+      - rel6  # Build on pushes to main branch
+    paths-ignore:
+      - '**.md'
+      - '.github/workflows/release-docker-images.yml.disabled'
+
+env:
+  # Use same configuration as build-monstache-datadog.yml
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+  IMAGE_NAME: monstache/fork
+
+jobs:
+  build-and-push:
+    name: Build and Push Monstache Fork
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Login to Azure Container Registry
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      
+      - name: Determine Upstream Monstache Version
+        id: upstream_version
+        run: |
+          # Get latest upstream version from Docker Hub (matching your existing pattern)
+          echo "Checking for latest upstream Monstache version..."
+          RESPONSE=$(curl -sL "https://registry.hub.docker.com/v2/repositories/rwynn/monstache/tags?page_size=100")
+          
+          LATEST_UPSTREAM=$(echo "$RESPONSE" | \
+            jq -r '.results[]? | select(.name | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) | .name' 2>/dev/null | \
+            sort -V | tail -1)
+          
+          if [ -z "$LATEST_UPSTREAM" ]; then
+            echo "❌ Could not determine upstream version from Docker Hub"
+            exit 1
+          fi
+          
+          echo "Upstream monstache version: $LATEST_UPSTREAM"
+          echo "upstream_version=$LATEST_UPSTREAM" >> $GITHUB_OUTPUT
+      
+      - name: Generate Build Tag
+        id: build_tag
+        run: |
+          UPSTREAM_VERSION="${{ steps.upstream_version.outputs.upstream_version }}"
+          COMMIT_SHA="${{ github.sha }}"
+          SHORT_SHA="${COMMIT_SHA:0:8}"
+          
+          # Format: upstream_version-commit_sha (e.g., 6.7.12-a1b2c3d4)
+          BUILD_TAG="${UPSTREAM_VERSION}-${SHORT_SHA}"
+          
+          echo "Build tag: $BUILD_TAG"
+          echo "build_tag=$BUILD_TAG" >> $GITHUB_OUTPUT
+      
+      - name: Check if Build Needed
+        id: build_decision
+        run: |
+          BUILD_TAG="${{ steps.build_tag.outputs.build_tag }}"
+          FORCE_BUILD="${{ inputs.force_build || github.event.inputs.force_build }}"
+          
+          echo "Checking if build needed for: $BUILD_TAG"
+          echo "Force build: ${FORCE_BUILD:-false}"
+          
+          SHOULD_BUILD=true
+          if [ "${FORCE_BUILD:-false}" != "true" ]; then
+            # Check if this exact tag already exists
+            EXISTING_TAG=$(az acr repository show-tags \
+              --name $(echo ${{ secrets.ACR_LOGIN_SERVER }} | cut -d'.' -f1) \
+              --repository ${{ env.IMAGE_NAME }} \
+              --output tsv 2>/dev/null | grep "^${BUILD_TAG}$" || echo "")
+            
+            if [ -n "$EXISTING_TAG" ]; then
+              echo "✅ Tag $BUILD_TAG already exists, skipping build"
+              SHOULD_BUILD=false
+            else
+              echo "🔨 Tag $BUILD_TAG not found, building new image"
+            fi
+          else
+            echo "🔨 Force build requested, skipping checks"
+          fi
+          
+          echo "should_build=$SHOULD_BUILD" >> $GITHUB_OUTPUT
+      
+      - name: Build and Push
+        if: steps.build_decision.outputs.should_build == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.build_tag.outputs.build_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Build Summary
+        if: steps.build_decision.outputs.should_build == 'true'
+        run: |
+          BUILD_TAG="${{ steps.build_tag.outputs.build_tag }}"
+          echo "✅ Successfully built and pushed:"
+          echo "📦 ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:$BUILD_TAG"
+      
+      - name: Skipped Summary
+        if: steps.build_decision.outputs.should_build == 'false'
+        run: |
+          BUILD_TAG="${{ steps.build_tag.outputs.build_tag }}"
+          echo "⏭️  Skipped build - image already exists:"
+          echo "📦 ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:$BUILD_TAG"
