@@ -1,0 +1,32 @@
+linters-settings:
+  staticcheck:
+    # ST1005: Incorrectly formatted error string
+    # We disable this because "Elasticsearch" is a proper noun and should remain capitalized
+    checks: [ "all", "-ST1005" ]
+
+linters:
+  enable:
+    - staticcheck
+    - govet
+    - errcheck
+    - gosimple
+    - ineffassign
+    - unused
+  disable:
+    - deadcode  # deprecated
+    - varcheck  # deprecated
+    - structcheck  # deprecated
+
+run:
+  timeout: 5m
+  go: "1.21"
+
+issues:
+  # Excluding configuration per-path, per-linter, per-text and per-source
+  exclude-rules:
+    # Ignore specific files if needed
+    - path: _test\.go
+      linters:
+        - errcheck
+
+

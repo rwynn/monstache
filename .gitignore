@@ -23,6 +23,9 @@ _testmain.go
 *.test
 *.prof
 
+# Monstache binary
+monstache
+
 # Swap files
 *.swp
 

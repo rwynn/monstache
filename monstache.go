@@ -62,17 +62,12 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-// Standard system log format with timestamp, app context, and level
-func createSystemLogger(level string, output io.Writer) *log.Logger {
-	prefix := fmt.Sprintf("monstache[%d]: %s ", os.Getpid(), level)
-	return log.New(output, prefix, log.LstdFlags|log.LUTC)
-}
-
-var infoLog = createSystemLogger("INFO", os.Stdout)
-var warnLog = createSystemLogger("WARN", os.Stdout)
-var statsLog = createSystemLogger("STATS", os.Stdout)
-var traceLog = createSystemLogger("TRACE", os.Stdout)
-var errorLog = createSystemLogger("ERROR", os.Stderr)
+var infoLog = log.New(io.Discard, "INFO ", log.Flags())
+var warnLog = log.New(os.Stdout, "WARN ", log.Flags())
+var noticeLog = log.New(os.Stdout, "NOTICE ", log.Flags())
+var statsLog = log.New(io.Discard, "STATS ", log.Flags())
+var traceLog = log.New(io.Discard, "TRACE ", log.Flags())
+var errorLog = log.New(os.Stderr, "ERROR ", log.Flags())
 
 var mapperPlugin func(*monstachemap.MapperPluginInput) (*monstachemap.MapperPluginOutput, error)
 var filterPlugin func(*monstachemap.MapperPluginInput) (bool, error)
@@ -146,14 +141,38 @@ type intargs []int
 // mongoContext holds MongoDB context information for error reporting
 type mongoContext struct {
 	Database   string
-	Collection string 
+	Collection string
 	DocumentID string
 	Namespace  string
 	Operation  string
+	Completed  bool
 }
 
 // requestContext tracks request contexts for error reporting
 var requestContexts sync.Map
+
+// Simple memory leak fix: clean up completed contexts
+func cleanupCompletedContexts() {
+	// Clean up contexts marked as completed to prevent memory leak
+	keysToDelete := make([]interface{}, 0)
+
+	requestContexts.Range(func(key, value interface{}) bool {
+		if ctx, ok := value.(*mongoContext); ok {
+			if ctx.Completed {
+				keysToDelete = append(keysToDelete, key)
+			}
+		}
+		return true
+	})
+
+	for _, key := range keysToDelete {
+		requestContexts.Delete(key)
+	}
+
+	if len(keysToDelete) > 0 {
+		infoLog.Printf("Cleaned up %d completed request contexts", len(keysToDelete))
+	}
+}
 
 type indexClient struct {
 	gtmCtx             *gtm.OpCtxMulti
@@ -600,6 +619,13 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 
 	return func(executionID int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
 		if response == nil || !response.Errors {
+			// Mark all contexts as completed for successful batch
+			requestContexts.Range(func(key, value interface{}) bool {
+				if ctx, ok := value.(*mongoContext); ok {
+					ctx.Completed = true
+				}
+				return true
+			})
 			ic.bulkErrs.Store(0)
 			return
 		}
@@ -627,6 +653,14 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 				ic.bulkErrs.Add(1)
 			}
 		}
+
+		// Mark all remaining contexts as completed (successful operations)
+		requestContexts.Range(func(key, value interface{}) bool {
+			if ctx, ok := value.(*mongoContext); ok && !ctx.Completed {
+				ctx.Completed = true
+			}
+			return true
+		})
 	}
 }
 
@@ -634,23 +668,23 @@ func logFailedResponseItem(item *elastic.BulkResponseItem) {
 	// Extract context information from the response item
 	var database, collection, documentID, esError string
 	var mongoCtx *mongoContext
-	
+
 	// Try to get document ID from the response item
 	if item.Index != "" {
 		documentID = item.Id
-		
+
 		// Parse database and collection from index name if possible
 		// Many configurations use namespace patterns like "db.collection" in index names
 		indexName := item.Index
 		if idx := strings.LastIndex(indexName, "."); idx > 0 {
-			database = indexName[:idx] 
+			database = indexName[:idx]
 			collection = indexName[idx+1:]
 		} else {
 			database = "unknown"
 			collection = indexName
 		}
 	}
-	
+
 	// Extract error information
 	if item.Error != nil {
 		if errBytes, err := json.Marshal(item.Error); err == nil {
@@ -659,7 +693,7 @@ func logFailedResponseItem(item *elastic.BulkResponseItem) {
 			esError = fmt.Sprintf("Error marshaling failed: %v", item.Error)
 		}
 	}
-	
+
 	// Look up stored context if available
 	if contextKey := documentID + ":" + item.Index; contextKey != ":" {
 		if ctx, ok := requestContexts.Load(contextKey); ok {
@@ -669,23 +703,31 @@ func logFailedResponseItem(item *elastic.BulkResponseItem) {
 				collection = storedCtx.Collection
 				documentID = storedCtx.DocumentID
 			}
-			// Clean up the stored context
-			requestContexts.Delete(contextKey)
+			// Don't mark completed yet - logging function is still using the context
 		}
 	}
-	
+
 	// Log detailed error to STDERR
 	if mongoCtx != nil {
-		errorLog.Printf("BULK INDEX FAILURE - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: %s, ES Error: %s", 
+		errorLog.Printf("BULK INDEX FAILURE - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: %s, ES Error: %s",
 			documentID, database, collection, mongoCtx.Namespace, mongoCtx.Operation, esError)
 	} else {
-		errorLog.Printf("BULK INDEX FAILURE - MongoDB _id: %s, Database: %s, Collection: %s, ES Index: %s, ES Error: %s", 
+		errorLog.Printf("BULK INDEX FAILURE - MongoDB _id: %s, Database: %s, Collection: %s, ES Index: %s, ES Error: %s",
 			documentID, database, collection, item.Index, esError)
 	}
-	
+
 	// Also log the full response item in verbose mode for debugging
 	if encoded, err := json.Marshal(item); err == nil {
 		errorLog.Printf("Full bulk response item: %s", string(encoded))
+	}
+
+	// Mark the stored context as completed for cleanup
+	if contextKey := documentID + ":" + item.Index; contextKey != ":" {
+		if ctx, ok := requestContexts.Load(contextKey); ok {
+			if mongoCtx, ok := ctx.(*mongoContext); ok {
+				mongoCtx.Completed = true
+			}
+		}
 	}
 }
 
@@ -1552,7 +1594,7 @@ func filterWithRegex(regex string) gtm.OpFilter {
 		match := validNameSpace.MatchString(op.Namespace)
 		if !match {
 			// Log when document is filtered out by namespace regex
-			infoLog.Printf("DOCUMENT_FILTERED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: namespace regex filter excluded (%s)", 
+			infoLog.Printf("DOCUMENT_FILTERED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: namespace regex filter excluded (%s)",
 				opIDToString(op), op.GetDatabase(), op.GetCollection(), op.Namespace, regex)
 		}
 		return match
@@ -1587,7 +1629,7 @@ func filterWithPlugin(mc *mongo.Client) gtm.OpFilter {
 				keep = ok
 				if !keep {
 					// Log when document is filtered out by filter plugin
-					infoLog.Printf("DOCUMENT_FILTERED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: filter plugin excluded document", 
+					infoLog.Printf("DOCUMENT_FILTERED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: filter plugin excluded document",
 						opIDToString(op), op.GetDatabase(), op.GetCollection(), op.Namespace)
 				}
 			} else {
@@ -1624,7 +1666,7 @@ func filterWithScript() gtm.OpFilter {
 				}
 				if !keep {
 					// Log when document is filtered out by JavaScript filter
-					infoLog.Printf("DOCUMENT_FILTERED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: JavaScript filter excluded document", 
+					infoLog.Printf("DOCUMENT_FILTERED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: JavaScript filter excluded document",
 						opIDToString(op), op.GetDatabase(), op.GetCollection(), op.Namespace)
 					break
 				}
@@ -1643,7 +1685,7 @@ func filterInverseWithRegex(regex string) gtm.OpFilter {
 		match := invalidNameSpace.MatchString(op.Namespace)
 		if match {
 			// Log when document is filtered out by namespace exclude regex
-			infoLog.Printf("DOCUMENT_FILTERED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: namespace exclude regex filter excluded (%s)", 
+			infoLog.Printf("DOCUMENT_FILTERED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: namespace exclude regex filter excluded (%s)",
 				opIDToString(op), op.GetDatabase(), op.GetCollection(), op.Namespace, regex)
 		}
 		return !match
@@ -2586,13 +2628,29 @@ func (config *configOptions) setupLogging() *configOptions {
 		}
 		infoLog.SetOutput(gelfWriter)
 		warnLog.SetOutput(gelfWriter)
+		noticeLog.SetOutput(gelfWriter)
 		errorLog.SetOutput(gelfWriter)
 		traceLog.SetOutput(gelfWriter)
 		statsLog.SetOutput(gelfWriter)
 	} else {
+		// Helper function to set enhanced prefix with PID
+		setLogPrefix := func(logger *log.Logger, level string) {
+			logger.SetPrefix(fmt.Sprintf("monstache[%d]: %s ", os.Getpid(), level))
+		}
+
+		// Apply enhanced formatting to ALL loggers
+		setLogPrefix(infoLog, "INFO")
+		setLogPrefix(warnLog, "WARN")
+		setLogPrefix(noticeLog, "NOTICE")
+		setLogPrefix(errorLog, "ERROR")
+		setLogPrefix(traceLog, "TRACE")
+		setLogPrefix(statsLog, "STATS")
+
 		logs := config.Logs
 		if logs.Info != "" {
 			infoLog.SetOutput(config.newLogger(logs.Info))
+		} else if config.Verbose {
+			infoLog.SetOutput(os.Stdout)
 		}
 		if logs.Warn != "" {
 			warnLog.SetOutput(config.newLogger(logs.Warn))
@@ -2602,9 +2660,13 @@ func (config *configOptions) setupLogging() *configOptions {
 		}
 		if logs.Trace != "" {
 			traceLog.SetOutput(config.newLogger(logs.Trace))
+		} else if config.Verbose {
+			traceLog.SetOutput(os.Stdout)
 		}
 		if logs.Stats != "" {
 			statsLog.SetOutput(config.newLogger(logs.Stats))
+		} else if config.Stats {
+			statsLog.SetOutput(os.Stdout)
 		}
 	}
 	return config
@@ -3265,7 +3327,7 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 	meta := parseIndexMeta(op)
 	if meta.Skip {
 		// Log document skipping due to metadata Skip flag
-		infoLog.Printf("DOCUMENT_SKIPPED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: metadata Skip=true", 
+		infoLog.Printf("DOCUMENT_SKIPPED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: metadata Skip=true",
 			opIDToString(op), op.GetDatabase(), op.GetCollection(), op.Namespace)
 		return
 	}
@@ -3325,12 +3387,13 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 				DocumentID: finalID,
 				Namespace:  op.Namespace,
 				Operation:  "update",
+				Completed:  false,
 			}
 			requestContexts.Store(finalID+":"+finalIndex, mongoCtx)
 			ic.bulk.Add(req)
 		} else {
 			// Log when document fails to be added to bulk due to req.Source() error
-			errorLog.Printf("DOCUMENT_NOT_INDEXED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: update, Reason: req.Source() failed: %s", 
+			errorLog.Printf("DOCUMENT_NOT_INDEXED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: update, Reason: req.Source() failed: %s",
 				objectID, op.GetDatabase(), op.GetCollection(), op.Namespace, err)
 		}
 	} else {
@@ -3383,12 +3446,13 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 				DocumentID: finalID,
 				Namespace:  op.Namespace,
 				Operation:  "index",
+				Completed:  false,
 			}
 			requestContexts.Store(finalID+":"+finalIndex, mongoCtx)
 			ic.bulk.Add(req)
 		} else {
 			// Log when document fails to be added to bulk due to req.Source() error
-			errorLog.Printf("DOCUMENT_NOT_INDEXED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: index, Reason: req.Source() failed: %s", 
+			errorLog.Printf("DOCUMENT_NOT_INDEXED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: index, Reason: req.Source() failed: %s",
 				objectID, op.GetDatabase(), op.GetCollection(), op.Namespace, err)
 		}
 	}
@@ -3445,12 +3509,13 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 					DocumentID: objectID,
 					Namespace:  op.Namespace,
 					Operation:  "timemachine_index",
+					Completed:  false,
 				}
 				requestContexts.Store(objectID+":"+finalIndex, mongoCtx)
 				ic.bulk.Add(req)
 			} else {
 				// Log when time machine document fails to be added to bulk due to req.Source() error
-				errorLog.Printf("DOCUMENT_NOT_INDEXED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: timemachine_index, Reason: req.Source() failed: %s", 
+				errorLog.Printf("DOCUMENT_NOT_INDEXED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: timemachine_index, Reason: req.Source() failed: %s",
 					objectID, op.GetDatabase(), op.GetCollection(), op.Namespace, err)
 			}
 		}
@@ -3466,12 +3531,12 @@ func (ic *indexClient) doIndex(op *gtm.Op) (err error) {
 			ic.doDelete(op)
 		} else {
 			// Log when a document is skipped due to nil Data (not an update) - potential data quality issue
-			warnLog.Printf("DOCUMENT_SKIPPED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: %s, Reason: op.Data is nil", 
+			warnLog.Printf("DOCUMENT_SKIPPED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: %s, Reason: op.Data is nil",
 				opIDToString(op), op.GetDatabase(), op.GetCollection(), op.Namespace, op.Operation)
 		}
 	} else {
 		// Log when data mapping fails - could cause document to be lost
-		errorLog.Printf("DOCUMENT_NOT_INDEXED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: %s, Reason: mapData failed: %s", 
+		errorLog.Printf("DOCUMENT_NOT_INDEXED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Operation: %s, Reason: mapData failed: %s",
 			opIDToString(op), op.GetDatabase(), op.GetCollection(), op.Namespace, op.Operation, err)
 	}
 	return
@@ -3648,7 +3713,7 @@ func (ic *indexClient) routeData(op *gtm.Op) (err error) {
 		}
 	} else {
 		// Log when document is skipped due to relation configuration - potential data quality issue
-		warnLog.Printf("DOCUMENT_SKIPPED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: skipped by relation configuration", 
+		warnLog.Printf("DOCUMENT_SKIPPED - MongoDB _id: %s, Database: %s, Collection: %s, Namespace: %s, Reason: skipped by relation configuration",
 			opIDToString(op), op.GetDatabase(), op.GetCollection(), op.Namespace)
 	}
 	return
@@ -4333,6 +4398,7 @@ func (ic *indexClient) doDelete(op *gtm.Op) {
 		DocumentID: finalID,
 		Namespace:  op.Namespace,
 		Operation:  "delete",
+		Completed:  false,
 	}
 	requestContexts.Store(finalID+":"+finalIndex, mongoCtx)
 	ic.bulk.Add(req)
@@ -5226,7 +5292,11 @@ func (ic *indexClient) eventLoop() {
 	if !ic.config.Stats {
 		printStats.Stop()
 	}
-	infoLog.Println("Listening for events")
+
+	// Timer for context cleanup (once per minute)
+	contextCleanup := time.NewTicker(1 * time.Minute)
+
+	noticeLog.Println("Listening for events")
 	ic.sigH.clientStartedC <- ic
 	for {
 		select {
@@ -5255,6 +5325,8 @@ func (ic *indexClient) eventLoop() {
 				break
 			}
 			ic.nextStats()
+		case <-contextCleanup.C:
+			cleanupCompletedContexts()
 		case req := <-ic.statusReqC:
 			enabled, lastTs := ic.enabled, ic.lastTs
 			statusResp := &statusResponse{
@@ -5510,7 +5582,7 @@ func buildMongoClient(config *configOptions) *mongo.Client {
 }
 
 func (ic *indexClient) logVersionInfo() {
-	infoLog.Printf("Started monstache version %s", version)
+	noticeLog.Printf("Started monstache version %s", version)
 	infoLog.Printf("Go version %s", runtime.Version())
 	infoLog.Printf("MongoDB go driver %s", mongoversion.Driver)
 	infoLog.Printf("Elasticsearch go driver %s", elastic.Version)

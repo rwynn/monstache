@@ -35,7 +35,7 @@ services:
   sut:
     image: rwynn/monstache-test-runner
     container_name: c-sut
-    command: go test -v
+    command: go test -tags integration -v
     build:
       context: ../..
       dockerfile: ./docker/test/Dockerfile
