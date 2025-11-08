@@ -44,12 +44,12 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
-      - name: Login to Azure Container Registry
-        uses: azure/docker-login@v1
+      - name: Login to ACR
+        uses: docker/login-action@v2
         with:
-          login-server: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+          registry: motion.azurecr.io
+          username: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }}
+          password: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }}
       
       - name: Determine Upstream Monstache Version
         id: upstream_version
@@ -119,9 +119,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.build_tag.outputs.build_tag }}
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
+          tags: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.build_tag.outputs.build_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       
@@ -131,7 +129,6 @@ jobs:
           BUILD_TAG="${{ steps.build_tag.outputs.build_tag }}"
           echo "✅ Successfully built and pushed:"
           echo "📦 ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:$BUILD_TAG"
-          echo "📦 ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest"
       
       - name: Skipped Summary
         if: steps.build_decision.outputs.should_build == 'false'
