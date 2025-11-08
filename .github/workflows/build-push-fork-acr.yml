@@ -120,8 +120,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.build_tag.outputs.build_tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
       
       - name: Build Summary
         if: steps.build_decision.outputs.should_build == 'true'
