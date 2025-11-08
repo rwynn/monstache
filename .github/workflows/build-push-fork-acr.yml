@@ -27,7 +27,7 @@ on:
 
 env:
   # Use same configuration as build-monstache-datadog.yml
-  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+  ACR_LOGIN_SERVER: "motion.azurecr.io"
   IMAGE_NAME: monstache/fork
 
 jobs:
@@ -47,7 +47,7 @@ jobs:
       - name: Login to ACR
         uses: docker/login-action@v2
         with:
-          registry: motion.azurecr.io
+          registry: ${{ env.ACR_LOGIN_SERVER }}
           username: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }}
           password: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }}
       
