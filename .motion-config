@@ -1,0 +1,12 @@
+# Motion-specific configuration for forked monstache
+# This file should be added to .gitignore if you want to keep it local
+# or committed if you want to share the config across your team
+
+# Azure Container Registry settings
+ACR_REGISTRY=motionacr.azurecr.io
+IMAGE_NAME=motion/monstache
+
+# Build configuration
+PLATFORMS=linux/amd64,linux/arm64
+
+# Additional Motion-specific settings can go here

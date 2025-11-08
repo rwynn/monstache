@@ -1,0 +1,10 @@
+# Test artifacts
+test_results.log
+*.log
+
+# Test databases
+*.db
+data/
+
+# Docker build cache
+.docker/
