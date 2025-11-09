@@ -210,10 +210,55 @@ type indexClient struct {
 	bulkBackoff        elastic.Backoff
 	bulkBackoffC       chan time.Duration
 	bulkBackoffMax     time.Duration
+	// Custom counters for better failure categorization
+	versionConflicts atomic.Int64 // 409 conflicts - documents already indexed
+	actualFailures   atomic.Int64 // Real failures that need attention
 }
 
 type sigHandler struct {
 	clientStartedC chan *indexClient
+}
+
+// enhancedStats provides better categorization of bulk processor statistics
+type enhancedStats struct {
+	Flushed          int64                               `json:"Flushed"`
+	Committed        int64                               `json:"Committed"`
+	Indexed          int64                               `json:"Indexed"`
+	Created          int64                               `json:"Created"`
+	Updated          int64                               `json:"Updated"`
+	Deleted          int64                               `json:"Deleted"`
+	Succeeded        int64                               `json:"Succeeded"`
+	Failed           int64                               `json:"Failed"`           // Real failures only (excluding version conflicts)
+	VersionConflicts int64                               `json:"VersionConflicts"` // 409 conflicts - documents already indexed
+	Workers          []*elastic.BulkProcessorWorkerStats `json:"Workers"`
+}
+
+// getEnhancedStats returns statistics with proper categorization of failures vs version conflicts
+func (ic *indexClient) getEnhancedStats() *enhancedStats {
+	originalStats := ic.bulk.Stats()
+
+	// Calculate actual failures by subtracting version conflicts from total failed
+	versionConflictCount := ic.versionConflicts.Load()
+	actualFailureCount := ic.actualFailures.Load()
+
+	// The original "Failed" count includes version conflicts, so we adjust it
+	adjustedFailedCount := originalStats.Failed - versionConflictCount
+	if adjustedFailedCount < 0 {
+		adjustedFailedCount = actualFailureCount
+	}
+
+	return &enhancedStats{
+		Flushed:          originalStats.Flushed,
+		Committed:        originalStats.Committed,
+		Indexed:          originalStats.Indexed,
+		Created:          originalStats.Created,
+		Updated:          originalStats.Updated,
+		Deleted:          originalStats.Deleted,
+		Succeeded:        originalStats.Succeeded,
+		Failed:           adjustedFailedCount,  // Real failures only
+		VersionConflicts: versionConflictCount, // Separate 409 conflicts
+		Workers:          originalStats.Workers,
+	}
 }
 
 type awsConnect struct {
@@ -325,12 +370,13 @@ type elasticPKIAuth struct {
 }
 
 type httpServerCtx struct {
-	httpServer *http.Server
-	bulk       *elastic.BulkProcessor
-	config     *configOptions
-	shutdown   bool
-	started    time.Time
-	statusReqC chan *statusRequest
+	httpServer  *http.Server
+	bulk        *elastic.BulkProcessor
+	config      *configOptions
+	shutdown    bool
+	started     time.Time
+	statusReqC  chan *statusRequest
+	indexClient *indexClient // Reference to parent for enhanced stats
 }
 
 type instanceStatus struct {
@@ -633,10 +679,14 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 			backoff := false
 			for _, item := range failed {
 				if item.Status == http.StatusConflict {
+					// Track version conflicts separately - not really a failure
+					ic.versionConflicts.Add(1)
 					// ignore version conflict since this simply means the doc
 					// is already in the index
 					continue
 				}
+				// Track actual failures that need attention
+				ic.actualFailures.Add(1)
 				logFailedResponseItem(item)
 				if _, ok := backoffExemptStatusCodes[item.Status]; ok {
 					continue
@@ -4468,7 +4518,8 @@ func (ctx *httpServerCtx) buildServer() {
 	})
 	if ctx.config.Stats {
 		mux.HandleFunc("/stats", func(w http.ResponseWriter, req *http.Request) {
-			stats, err := json.MarshalIndent(ctx.bulk.Stats(), "", "    ")
+			// Use enhanced stats that properly separate version conflicts from actual failures
+			stats, err := json.MarshalIndent(ctx.indexClient.getEnhancedStats(), "", "    ")
 			if err == nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(200)
@@ -4670,9 +4721,10 @@ func (ic *indexClient) startHTTPServer() {
 	config := ic.config
 	if config.EnableHTTPServer {
 		ic.hsc = &httpServerCtx{
-			bulk:       ic.bulk,
-			config:     ic.config,
-			statusReqC: ic.statusReqC,
+			bulk:        ic.bulk,
+			config:      ic.config,
+			statusReqC:  ic.statusReqC,
+			indexClient: ic,
 		}
 		ic.hsc.buildServer()
 		go ic.hsc.serveHTTP()
@@ -5219,7 +5271,8 @@ func (ic *indexClient) nextStats() {
 			errorLog.Printf("Error indexing statistics: %s", err)
 		}
 	} else {
-		stats, err := json.Marshal(ic.bulk.Stats())
+		// Use enhanced stats that properly separate version conflicts from actual failures
+		stats, err := json.Marshal(ic.getEnhancedStats())
 		if err != nil {
 			errorLog.Printf("Unable to log statistics: %s", err)
 		} else {
