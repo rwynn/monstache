@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  monstache:
+    container_name: monstache
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    environment:
+      - MONSTACHE_LOG_DIR=logs
+      - MONSTACHE_MONGO_URL=${MONGODB_URI}
+      - MONSTACHE_ES_URLS=${ELASTIC_URL}
+      - MONSTACHE_ES_USER=${ELASTIC_USERNAME}
+      - MONSTACHE_ES_PASS=${ELASTIC_PASSWORD}
+      - KAFKA_BROKERS=${KAFKA_BROKERS}
+    volumes:
+      - ./monstache.toml:/monstache/monstache.toml
+      - ./scripts:/monstache/scripts
+      - ./logs:/monstache/logs
+    networks:
+      - external
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+        compress: "true"
+networks:
+  external:
+    name: kafka_network
