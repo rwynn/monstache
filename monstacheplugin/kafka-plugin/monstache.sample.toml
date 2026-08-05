@@ -1,0 +1,19 @@
+# Example Monstache config with Kafka + Elasticsearch sync via Go plugin
+# Collections to sync (customize for your database and collections)
+direct-read-namespaces = ["example_db.example_primary", "example_db.example_related", "example_db.example_detail"]
+# Enable change stream monitoring for real-time sync
+change-stream-namespaces = ["example_db.example_primary", "example_db.example_related", "example_db.example_detail"]
+
+# Resume Configuration - maintains sync state
+resume = true
+direct-read-stateful = true
+resume-strategy = 1  # 1 = token-based, 0 = timestamp-based
+resume-name = "example-monstache-sync"
+config-database-name = "monstache"
+
+# Index Configuration
+index-as-update = true  # Updates existing ES docs instead of replacement
+# verbose = true  # Uncomment for detailed logging
+
+# Plugin: Go mapper handles Kafka + Elasticsearch transformation and sync
+# Uses kafka_plugin.go for custom business logic and field filtering
