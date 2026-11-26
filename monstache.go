@@ -5051,6 +5051,9 @@ func (ic *indexClient) eventLoop() {
 	}
 	infoLog.Println("Listening for events")
 	ic.sigH.clientStartedC <- ic
+	// gtm closes both channels when it stops. Set them to nil once closed so
+	// the select below doesn't spin on them.
+	opC, errC := ic.gtmCtx.OpC, ic.gtmCtx.ErrC
 	for {
 		select {
 		case wait := <-ic.bulkBackoffC:
@@ -5085,20 +5088,26 @@ func (ic *indexClient) eventLoop() {
 				lastTs:  lastTs,
 			}
 			req.responseC <- statusResp
-		case err = <-ic.gtmCtx.ErrC:
-			if err == nil {
+		case e, open := <-errC:
+			if !open {
+				errC = nil
 				break
 			}
-			ic.processErr(err)
-		case op, open := <-ic.gtmCtx.OpC:
-			if !ic.enabled {
-				break
+			if e != nil {
+				ic.processErr(e)
 			}
-			if op == nil {
-				if !open && !allOpsVisited {
+		case op, open := <-opC:
+			if !open {
+				// Signal this even while paused (a non-active cluster member),
+				// otherwise stopAllWorkers waits for it forever.
+				opC = nil
+				if !allOpsVisited {
 					allOpsVisited = true
 					ic.opsConsumed <- true
 				}
+				break
+			}
+			if !ic.enabled || op == nil {
 				break
 			}
 			if op.IsSourceOplog() {
