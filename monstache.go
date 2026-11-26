@@ -597,6 +597,12 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 				if _, ok := backoffExemptStatusCodes[item.Status]; ok {
 					continue
 				}
+				if !retryableItemStatus(item.Status) {
+					// A permanent failure for this document (e.g. a mapping
+					// error). Waiting won't help it, and pausing would hold up
+					// every other document.
+					continue
+				}
 				backoff = true
 			}
 			if backoff {
@@ -610,6 +616,13 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 			}
 		}
 	}
+}
+
+// retryableItemStatus reports whether a bulk item failure is transient
+// (overload, timeout, server error), so backing off can help. Other 4xx
+// failures are permanent for that document and are only logged.
+func retryableItemStatus(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500
 }
 
 func logFailedResponseItem(item *elastic.BulkResponseItem) {
