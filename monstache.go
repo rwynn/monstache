@@ -602,8 +602,14 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 			if backoff {
 				wait := ic.backoffDuration()
 				infoLog.Printf("Backing off for %.1f minutes after bulk indexing failures.", wait.Minutes())
-				// signal the event loop to pause pulling new events for a duration
-				ic.bulkBackoffC <- wait
+				// Signal the event loop to pause pulling new events for a duration.
+				// This must not block: the event loop may itself be waiting for this
+				// worker in bulk.Flush(), or be blocked handing ops to index workers
+				// that are waiting on bulk.Add().
+				select {
+				case ic.bulkBackoffC <- wait:
+				default:
+				}
 				// pause the bulk worker for a duration
 				ic.backoff(wait)
 				ic.bulkErrs.Add(1)
@@ -5408,7 +5414,7 @@ func main() {
 		statusReqC:     make(chan *statusRequest),
 		sigH:           sh,
 		tokens:         bson.M{},
-		bulkBackoffC:   make(chan time.Duration),
+		bulkBackoffC:   make(chan time.Duration, 1),
 		bulkBackoff:    elastic.NewExponentialBackoff(30*time.Second, 1*time.Hour),
 		bulkBackoffMax: 1 * time.Hour,
 	}
