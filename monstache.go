@@ -3096,6 +3096,30 @@ func (ic *indexClient) hasFileContent(op *gtm.Op) (ingest bool) {
 	return fileNamespaces[op.Namespace]
 }
 
+// parseMergePatches validates the merge-patch history stored on a document.
+// It comes back from Elasticsearch as untyped JSON and may have been edited by
+// someone else, so it is checked rather than type-asserted.
+func parseMergePatches(attr string, val interface{}) ([]interface{}, error) {
+	merges, ok := val.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("stored %s is a %T, want an array", attr, val)
+	}
+	for i, m := range merges {
+		entry, ok := m.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("stored %s[%d] is a %T, want an object", attr, i, m)
+		}
+		for _, k := range []string{"ts", "v"} {
+			n, ok := entry[k].(float64)
+			if !ok {
+				return nil, fmt.Errorf("stored %s[%d].%s is a %T, want a number", attr, i, k, entry[k])
+			}
+			entry[k] = int(n)
+		}
+	}
+	return merges, nil
+}
+
 func (ic *indexClient) addPatch(op *gtm.Op, objectID string,
 	indexType *indexMapping, meta *indexingMeta) (err error) {
 	var merges []interface{}
@@ -3130,11 +3154,8 @@ func (ic *indexClient) addPatch(op *gtm.Op, objectID string,
 				var src map[string]interface{}
 				if err = json.Unmarshal(resp.Source, &src); err == nil {
 					if val, ok := src[config.MergePatchAttr]; ok {
-						merges = val.([]interface{})
-						for _, m := range merges {
-							entry := m.(map[string]interface{})
-							entry["ts"] = int(entry["ts"].(float64))
-							entry["v"] = int(entry["v"].(float64))
+						if merges, err = parseMergePatches(config.MergePatchAttr, val); err != nil {
+							return
 						}
 					}
 					delete(src, config.MergePatchAttr)
