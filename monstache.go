@@ -660,11 +660,12 @@ func (config *configOptions) parseElasticsearchVersion(number string) (err error
 		versionParts := strings.Split(number, ".")
 		var majorVersion, minorVersion int
 		majorVersion, err = strconv.Atoi(versionParts[0])
-		if err == nil {
-			config.ElasticMajorVersion = majorVersion
-			if majorVersion == 0 {
-				err = errors.New("Invalid Elasticsearch major version 0")
-			}
+		if err != nil {
+			return
+		}
+		config.ElasticMajorVersion = majorVersion
+		if majorVersion == 0 {
+			return errors.New("Invalid Elasticsearch major version 0")
 		}
 		if len(versionParts) > 1 {
 			minorVersion, err = strconv.Atoi(versionParts[1])
@@ -1153,7 +1154,7 @@ func extractData(srcField string, data map[string]interface{}) (result interface
 		if e == nil {
 			detail = string(b)
 		} else {
-			detail = err
+			detail = e
 		}
 		err = fmt.Errorf("Source field %s not found in document: %s", srcField, detail)
 	}
@@ -1360,7 +1361,8 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 		batch = q
 		q = nil
 	}
-	return
+	// every error above was already reported via processErr
+	return nil
 }
 
 func cloneOp(op *gtm.Op) *gtm.Op {
