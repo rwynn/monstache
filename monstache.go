@@ -1308,10 +1308,18 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 						ic.processErr(err)
 						continue
 					}
-					now := time.Now().UTC()
-					tstamp := primitive.Timestamp{
-						T: uint32(now.Unix()),
-						I: uint32(now.Nanosecond()),
+					// Version related docs by the event that triggered them, so
+					// they order correctly against that doc's own change events.
+					// The host's clock can run ahead of MongoDB's, and then later
+					// real changes to the doc lose with a 409, which is ignored.
+					// Direct reads have no event time, so use the clock for them.
+					tstamp := root.Timestamp
+					if tstamp.T == 0 {
+						now := time.Now().UTC()
+						tstamp = primitive.Timestamp{
+							T: uint32(now.Unix()),
+							I: uint32(now.Nanosecond()),
+						}
 					}
 					rop := &gtm.Op{
 						Id:                doc["_id"],
