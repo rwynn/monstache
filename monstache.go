@@ -1627,7 +1627,7 @@ func (ic *indexClient) resetClusterState() error {
 }
 
 func (ic *indexClient) ensureEnabled() (enabled bool, err error) {
-	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("cluster")
+	col := ic.mongoWriter.Database(ic.config.ConfigDatabaseName).Collection("cluster")
 	result := col.FindOne(context.Background(), bson.M{
 		"_id": ic.config.ResumeName,
 	})
@@ -1662,7 +1662,7 @@ func (ic *indexClient) pauseWork() {
 }
 
 func (ic *indexClient) resumeWork() {
-	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("monstache")
+	col := ic.mongoWriter.Database(ic.config.ConfigDatabaseName).Collection("monstache")
 	result := col.FindOne(context.Background(), bson.M{
 		"_id": ic.config.ResumeName,
 	})
@@ -1726,7 +1726,7 @@ func (ic *indexClient) saveTimestamp() error {
 
 func (ic *indexClient) filterDirectReadNamespaces(wanted []string) (results []string, err error) {
 	results = make([]string, 0)
-	col := ic.mongo.Database(ic.config.ConfigDatabaseName).Collection("directreads")
+	col := ic.mongoWriter.Database(ic.config.ConfigDatabaseName).Collection("directreads")
 	filter := bson.M{
 		"_id": ic.config.ResumeName,
 	}
@@ -3646,7 +3646,7 @@ func (ic *indexClient) setIndexMeta(namespace, id string, meta *indexingMeta) er
 func (ic *indexClient) getIndexMeta(namespace, id string) (meta *indexingMeta) {
 	meta = &indexingMeta{}
 	config := ic.config
-	col := ic.mongo.Database(config.ConfigDatabaseName).Collection("meta")
+	col := ic.mongoWriter.Database(config.ConfigDatabaseName).Collection("meta")
 	metaID := fmt.Sprintf("%s.%s", namespace, id)
 	result := col.FindOne(context.Background(), bson.M{
 		"_id": metaID,
@@ -4655,7 +4655,7 @@ func (ic *indexClient) buildTokenGen() gtm.ResumeTokenGenenerator {
 	token = func(client *mongo.Client, streamID string, options *gtm.Options) (interface{}, error) {
 		var t interface{} = nil
 		var err error
-		col := client.Database(config.ConfigDatabaseName).Collection("tokens")
+		col := ic.mongoWriter.Database(config.ConfigDatabaseName).Collection("tokens")
 		result := col.FindOne(context.Background(), bson.M{
 			"resumeName": config.ResumeName,
 			"streamID":   streamID,
@@ -4702,7 +4702,7 @@ func (ic *indexClient) buildTimestampGen() gtm.TimestampGenerator {
 			var candidateTs primitive.Timestamp
 			var tsSource string
 			var err error
-			col := client.Database(config.ConfigDatabaseName).Collection("monstache")
+			col := ic.mongoWriter.Database(config.ConfigDatabaseName).Collection("monstache")
 			result := col.FindOne(context.Background(), bson.M{
 				"_id": config.ResumeName,
 			})
