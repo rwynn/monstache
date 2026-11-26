@@ -1946,7 +1946,7 @@ func (config *configOptions) loadPipelines() {
 				errorLog.Fatalf("Unable to load pipeline at path %s: %s", s.Path, err)
 			}
 		}
-		if _, exists := filterEnvs[s.Namespace]; exists {
+		if _, exists := pipeEnvs[s.Namespace]; exists {
 			errorLog.Fatalf("Multiple pipelines with namespace: %s", s.Namespace)
 		}
 		env := &executionEnv{
@@ -4356,8 +4356,8 @@ func buildPipe() func(string, bool) ([]interface{}, error) {
 			mux.Lock()
 			defer mux.Unlock()
 			nss := []string{"", ns}
-			for _, ns := range nss {
-				if env := pipeEnvs[ns]; env != nil {
+			for _, name := range nss {
+				if env := pipeEnvs[name]; env != nil {
 					env.lock.Lock()
 					defer env.lock.Unlock()
 					val, err := env.VM.Call("module.exports", ns, ns, changeEvent)
