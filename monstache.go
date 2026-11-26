@@ -581,13 +581,24 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 	}
 
 	return func(executionID int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
-		if response == nil || !response.Errors {
+		backoff := false
+		if err != nil && !errors.Is(err, elastic.ErrBulkItemRetry) && (response == nil || !response.Errors) {
+			// The whole _bulk request failed (connection error, timeout, HTTP
+			// error status), so none of these requests were applied.
+			errorLog.Printf("Bulk request of %d actions failed: %s", len(requests), err)
+			backoff = true
+			var ee *elastic.Error
+			if errors.As(err, &ee) {
+				if _, ok := backoffExemptStatusCodes[ee.Status]; ok {
+					backoff = false
+				}
+			}
+		} else if response == nil || !response.Errors {
 			ic.bulkErrs.Store(0)
 			return
 		}
-		if failed := response.Failed(); failed != nil {
-			backoff := false
-			for _, item := range failed {
+		if response != nil && response.Errors {
+			for _, item := range response.Failed() {
 				if item.Status == http.StatusConflict {
 					// ignore version conflict since this simply means the doc
 					// is already in the index
@@ -599,15 +610,15 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 				}
 				backoff = true
 			}
-			if backoff {
-				wait := ic.backoffDuration()
-				infoLog.Printf("Backing off for %.1f minutes after bulk indexing failures.", wait.Minutes())
-				// signal the event loop to pause pulling new events for a duration
-				ic.bulkBackoffC <- wait
-				// pause the bulk worker for a duration
-				ic.backoff(wait)
-				ic.bulkErrs.Add(1)
-			}
+		}
+		if backoff {
+			wait := ic.backoffDuration()
+			infoLog.Printf("Backing off for %.1f minutes after bulk indexing failures.", wait.Minutes())
+			// signal the event loop to pause pulling new events for a duration
+			ic.bulkBackoffC <- wait
+			// pause the bulk worker for a duration
+			ic.backoff(wait)
+			ic.bulkErrs.Add(1)
 		}
 	}
 }
