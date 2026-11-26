@@ -3783,7 +3783,6 @@ func (fc *findCall) setSort(topts map[string]interface{}) (err error) {
 		} else {
 			err = errors.New("Invalid sort option value")
 		}
-		fc.setSort(map[string]interface{}{"joe": "rick"})
 	}
 	return
 }
