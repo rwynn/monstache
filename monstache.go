@@ -3195,7 +3195,10 @@ func (ic *indexClient) doIndexing(op *gtm.Op) (err error) {
 	if ic.hasFileContent(op) {
 		ingestAttachment = op.Data["file"] != nil
 	}
-	if ic.config.IndexAsUpdate && meta.Pipeline == "" && !ingestAttachment {
+	// The update API can't run ingest pipelines, so any pipeline (per document,
+	// from [[mapping]], or for attachments) needs a full index request.
+	usePipeline := meta.Pipeline != "" || indexType.Pipeline != "" || ingestAttachment
+	if ic.config.IndexAsUpdate && !usePipeline {
 		req := elastic.NewBulkUpdateRequest()
 		req.UseEasyJSON(ic.config.EnableEasyJSON)
 		req.Id(objectID)
