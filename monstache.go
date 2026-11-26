@@ -1353,6 +1353,9 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 						}
 					}
 				}
+				if cerr := cursor.Err(); cerr != nil {
+					ic.processErr(cerr)
+				}
 				cursor.Close(context.Background())
 			}
 		}
@@ -3957,6 +3960,7 @@ func (fc *findCall) execute() (r otto.Value, err error) {
 				return
 			}
 		}
+		defer cursor.Close(context.Background())
 		var rdocs []map[string]interface{}
 		for cursor.Next(context.Background()) {
 			doc := make(map[string]interface{})
@@ -3964,6 +3968,9 @@ func (fc *findCall) execute() (r otto.Value, err error) {
 				return
 			}
 			rdocs = append(rdocs, convertMapJavascript(doc))
+		}
+		if err = cursor.Err(); err != nil {
+			return
 		}
 		r, err = fc.getVM().ToValue(rdocs)
 	} else {
