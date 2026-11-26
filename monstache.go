@@ -1883,7 +1883,7 @@ func (config *configOptions) parseCommandLineFlags() *configOptions {
 func (config *configOptions) loadReplacements() {
 	if config.Relate != nil {
 		for _, r := range config.Relate {
-			if r.Namespace != "" || r.WithNamespace != "" {
+			if r.Namespace != "" && r.WithNamespace != "" {
 				dbCol := strings.SplitN(r.WithNamespace, ".", 2)
 				if len(dbCol) != 2 {
 					errorLog.Fatalf("Replacement namespace is invalid: %s", r.WithNamespace)
