@@ -613,6 +613,11 @@ func (ic *indexClient) afterBulk() func(int64, []elastic.BulkableRequest, *elast
 				// pause the bulk worker for a duration
 				ic.backoff(wait)
 				ic.bulkErrs.Add(1)
+			} else {
+				// Only permanent or exempt failures: Elasticsearch is healthy,
+				// so the next transient failure isn't consecutive with earlier
+				// ones.
+				ic.bulkErrs.Store(0)
 			}
 		}
 	}

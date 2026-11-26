@@ -41,3 +41,21 @@ func TestBackoffOnlyOnTransientItemFailures(t *testing.T) {
 		}
 	}
 }
+
+// A batch with only permanent failures means Elasticsearch is healthy, so it
+// resets the consecutive-error count that sizes the next backoff.
+func TestPermanentItemFailuresResetBackoffCount(t *testing.T) {
+	ic := &indexClient{
+		config:         &configOptions{},
+		bulkBackoff:    elastic.NewConstantBackoff(time.Millisecond),
+		bulkBackoffMax: time.Millisecond,
+		bulkBackoffC:   make(chan time.Duration, 1),
+	}
+	ic.bulkErrs.Store(5)
+	ic.afterBulk()(1, nil, &elastic.BulkResponse{Errors: true, Items: []map[string]*elastic.BulkResponseItem{
+		{"index": {Index: "idx", Id: "1", Status: http.StatusBadRequest}},
+	}}, nil)
+	if n := ic.bulkErrs.Load(); n != 0 {
+		t.Fatalf("consecutive error count = %d after a permanent-only batch, want 0", n)
+	}
+}
