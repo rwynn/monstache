@@ -155,9 +155,9 @@ type indexClient struct {
 	closeC             chan bool
 	doneC              chan int
 	enabled            bool
-	lastTs             primitive.Timestamp
+	tracker            *opTracker
 	lastTsSaved        primitive.Timestamp
-	tokens             bson.M
+	lastTokenGenSaved  uint64
 	indexC             chan *gtm.Op
 	processC           chan *gtm.Op
 	fileC              chan *gtm.Op
@@ -642,10 +642,9 @@ func (ic *indexClient) backoff(wait time.Duration) {
 		case <-sigs:
 			return
 		case req := <-ic.statusReqC:
-			enabled, lastTs := ic.enabled, ic.lastTs
 			statusResp := &statusResponse{
-				enabled: enabled,
-				lastTs:  lastTs,
+				enabled: ic.enabled,
+				lastTs:  ic.tracker.safe(),
 				backoff: true,
 			}
 			req.responseC <- statusResp
@@ -1327,7 +1326,9 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 						continue
 					}
 					if processPlugin != nil {
-						ic.processC <- cloneOp(rop)
+						pop := cloneOp(rop)
+						ic.tracker.link(root, pop)
+						ic.processC <- pop
 					}
 					skip := false
 					if rs2 := relates[rop.Namespace]; len(rs2) != 0 {
@@ -1346,6 +1347,7 @@ func (ic *indexClient) processRelated(root *gtm.Op) (err error) {
 						}
 					}
 					if !skip {
+						ic.tracker.link(root, rop)
 						if ic.hasFileContent(rop) {
 							ic.fileC <- rop
 						} else {
@@ -1678,15 +1680,15 @@ func (ic *indexClient) resumeWork() {
 	ic.gtmCtx.Resume()
 }
 
-func (ic *indexClient) saveTokens() error {
+func (ic *indexClient) saveTokens(tokens map[string]interface{}) error {
 	var err error
-	if len(ic.tokens) == 0 {
+	if len(tokens) == 0 {
 		return err
 	}
 	col := ic.mongoWriter.Database(ic.config.ConfigDatabaseName).Collection("tokens")
 	bwo := options.BulkWrite().SetOrdered(false)
 	var models []mongo.WriteModel
-	for streamID, token := range ic.tokens {
+	for streamID, token := range tokens {
 		filter := bson.M{
 			"resumeName": ic.config.ResumeName,
 			"streamID":   streamID,
@@ -1703,16 +1705,13 @@ func (ic *indexClient) saveTokens() error {
 		models = append(models, model)
 	}
 	_, err = col.BulkWrite(context.Background(), models, bwo)
-	if err == nil {
-		ic.tokens = bson.M{}
-	}
 	return err
 }
 
-func (ic *indexClient) saveTimestamp() error {
+func (ic *indexClient) saveTimestamp(ts primitive.Timestamp) error {
 	col := ic.mongoWriter.Database(ic.config.ConfigDatabaseName).Collection("monstache")
 	doc := map[string]interface{}{
-		"ts": ic.lastTs,
+		"ts": ts,
 	}
 	opts := options.Update()
 	opts.SetUpsert(true)
@@ -3360,8 +3359,23 @@ func (ic *indexClient) routeProcess(op *gtm.Op) (err error) {
 			}
 		}
 	}
+	ic.tracker.link(op, rop)
 	ic.processC <- rop
 	return
+}
+
+// trySendRelate queues rop for relate processing as work belonging to op, or
+// drops it with an error if the relate queue is full.
+func (ic *indexClient) trySendRelate(op, rop *gtm.Op) {
+	linked := ic.tracker.link(op, rop)
+	select {
+	case ic.relateC <- rop:
+	default:
+		if linked {
+			ic.tracker.done(rop)
+		}
+		errorLog.Printf(relateQueueOverloadMsg, rop.Namespace, rop.Id)
+	}
 }
 
 func (ic *indexClient) routeDrop(op *gtm.Op) (err error) {
@@ -3409,11 +3423,7 @@ func (ic *indexClient) routeDeleteRelate(op *gtm.Op) (err error) {
 				Timestamp: op.Timestamp,
 				Data:      delData,
 			}
-			select {
-			case ic.relateC <- rop:
-			default:
-				errorLog.Printf(relateQueueOverloadMsg, rop.Namespace, rop.Id)
-			}
+			ic.trySendRelate(op, rop)
 		}
 	}
 	return
@@ -3444,11 +3454,7 @@ func (ic *indexClient) routeDataRelate(op *gtm.Op) (skip bool, err error) {
 		}
 	}
 	if skip {
-		select {
-		case ic.relateC <- op:
-		default:
-			errorLog.Printf(relateQueueOverloadMsg, op.Namespace, op.Id)
-		}
+		ic.trySendRelate(op, op)
 	} else {
 		rop := &gtm.Op{
 			Id:                op.Id,
@@ -3467,11 +3473,7 @@ func (ic *indexClient) routeDataRelate(op *gtm.Op) (skip bool, err error) {
 				rop.Data = m
 			}
 		}
-		select {
-		case ic.relateC <- rop:
-		default:
-			errorLog.Printf(relateQueueOverloadMsg, rop.Namespace, rop.Id)
-		}
+		ic.trySendRelate(op, rop)
 	}
 	return
 }
@@ -3482,6 +3484,7 @@ func (ic *indexClient) routeData(op *gtm.Op) (err error) {
 		skip, err = ic.routeDataRelate(op)
 	}
 	if !skip {
+		ic.tracker.link(op, op)
 		if ic.hasFileContent(op) {
 			ic.fileC <- op
 		} else {
@@ -4506,6 +4509,7 @@ func (ic *indexClient) startPostProcess() {
 				if err := ic.runProcessor(op); err != nil {
 					ic.processErr(err)
 				}
+				ic.tracker.done(op)
 			}
 		}()
 	}
@@ -4940,33 +4944,33 @@ func (ic *indexClient) clusterWait() {
 	}
 }
 
-func (ic *indexClient) hasNewEvents() bool {
-	if ic.lastTs.T > ic.lastTsSaved.T ||
-		(ic.lastTs.T == ic.lastTsSaved.T && ic.lastTs.I > ic.lastTsSaved.I) {
-		return true
-	}
-	return false
-}
-
 func (ic *indexClient) nextTokens() {
-	if ic.hasNewEvents() {
-		ic.bulk.Flush()
-		if err := ic.saveTokens(); err == nil {
-			ic.lastTsSaved = ic.lastTs
-		} else {
-			ic.processErr(err)
-		}
+	// Compare token generations, not timestamps: events in a transaction
+	// share a timestamp but each one advances its stream's token.
+	tokens, gen := ic.tracker.tokenSnapshot()
+	if gen == ic.lastTokenGenSaved {
+		return
+	}
+	// everything the snapshot covers is already in the bulk processor
+	ic.bulk.Flush()
+	if err := ic.saveTokens(tokens); err == nil {
+		ic.lastTokenGenSaved = gen
+	} else {
+		ic.processErr(err)
 	}
 }
 
 func (ic *indexClient) nextTimestamp() {
-	if ic.hasNewEvents() {
-		ic.bulk.Flush()
-		if err := ic.saveTimestamp(); err == nil {
-			ic.lastTsSaved = ic.lastTs
-		} else {
-			ic.processErr(err)
-		}
+	ts := ic.tracker.safe()
+	if !tsAfter(ts, ic.lastTsSaved) {
+		return
+	}
+	// everything ts covers is already in the bulk processor
+	ic.bulk.Flush()
+	if err := ic.saveTimestamp(ts); err == nil {
+		ic.lastTsSaved = ts
+	} else {
+		ic.processErr(err)
 	}
 }
 
@@ -5079,10 +5083,9 @@ func (ic *indexClient) eventLoop() {
 			}
 			ic.nextStats()
 		case req := <-ic.statusReqC:
-			enabled, lastTs := ic.enabled, ic.lastTs
 			statusResp := &statusResponse{
-				enabled: enabled,
-				lastTs:  lastTs,
+				enabled: ic.enabled,
+				lastTs:  ic.tracker.safe(),
 			}
 			req.responseC <- statusResp
 		case err = <-ic.gtmCtx.ErrC:
@@ -5101,14 +5104,15 @@ func (ic *indexClient) eventLoop() {
 				}
 				break
 			}
-			if op.IsSourceOplog() {
-				ic.lastTs = op.Timestamp
-				if ic.config.ResumeStrategy == tokenResumeStrategy {
-					ic.tokens[op.ResumeToken.StreamID] = op.ResumeToken.ResumeToken
-				}
+			tracked := op.IsSourceOplog()
+			if tracked {
+				ic.tracker.begin(op, ic.config.ResumeStrategy == tokenResumeStrategy)
 			}
 			if err = ic.routeOp(op); err != nil {
 				ic.processErr(err)
+			}
+			if tracked {
+				ic.tracker.done(op)
 			}
 		}
 	}
@@ -5123,6 +5127,7 @@ func (ic *indexClient) startIndex() {
 				if err := ic.doIndex(op); err != nil {
 					ic.processErr(err)
 				}
+				ic.tracker.done(op)
 			}
 		}()
 	}
@@ -5138,6 +5143,7 @@ func (ic *indexClient) startRelate() {
 					if err := ic.processRelated(op); err != nil {
 						ic.processErr(err)
 					}
+					ic.tracker.done(op)
 				}
 			}()
 		}
@@ -5244,11 +5250,11 @@ func (ic *indexClient) saveTimestampFromServerStatus() {
 				ic.processErr(err)
 				return
 			}
-			ic.lastTs = primitive.Timestamp{
+			ts := primitive.Timestamp{
 				T: t,
 				I: i,
 			}
-			if err = ic.saveTimestamp(); err != nil {
+			if err = ic.saveTimestamp(ts); err != nil {
 				ic.processErr(err)
 			}
 		} else {
@@ -5261,8 +5267,9 @@ func (ic *indexClient) saveTimestampFromServerStatus() {
 
 func (ic *indexClient) saveTimestampFromReplStatus() {
 	if rs, err := gtm.GetReplStatus(ic.mongo); err == nil {
-		if ic.lastTs, err = rs.GetLastCommitted(); err == nil {
-			if err = ic.saveTimestamp(); err != nil {
+		var ts primitive.Timestamp
+		if ts, err = rs.GetLastCommitted(); err == nil {
+			if err = ic.saveTimestamp(ts); err != nil {
 				ic.processErr(err)
 			}
 		} else {
@@ -5407,7 +5414,7 @@ func main() {
 		relateC:        make(chan *gtm.Op, config.RelateBuffer),
 		statusReqC:     make(chan *statusRequest),
 		sigH:           sh,
-		tokens:         bson.M{},
+		tracker:        newOpTracker(),
 		bulkBackoffC:   make(chan time.Duration),
 		bulkBackoff:    elastic.NewExponentialBackoff(30*time.Second, 1*time.Hour),
 		bulkBackoffMax: 1 * time.Hour,
