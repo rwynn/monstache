@@ -170,6 +170,7 @@ type indexClient struct {
 	externalShutdown   bool
 	rwmutex            sync.RWMutex
 	bulkErrs           atomic.Int64
+	stopOnce           sync.Once
 	bulkBackoff        elastic.Backoff
 	bulkBackoffC       chan time.Duration
 	bulkBackoffMax     time.Duration
@@ -4541,7 +4542,14 @@ func (ic *indexClient) directReadChan() chan struct{} {
 	return c
 }
 
+// stopAllWorkers can be called by both the signal handler and the
+// exit-after-direct-reads goroutine. The second caller waits for the first to
+// finish instead of closing the worker channels again.
 func (ic *indexClient) stopAllWorkers() {
+	ic.stopOnce.Do(ic.doStopAllWorkers)
+}
+
+func (ic *indexClient) doStopAllWorkers() {
 	infoLog.Println("Stopping all workers")
 	ic.gtmCtx.Stop()
 	<-ic.opsConsumed
